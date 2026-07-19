@@ -150,6 +150,7 @@ These items establish only part of the product foundation and Phase 2 trace mode
 
 - Implement issue #20 role-separated statement fidelity evidence as an independent axis from Lean verification.
 - Keep proof authority and mathematical status impossible while fidelity and publication-profile controls remain incomplete.
+- The first issue #20 slice defines closed, versioned request and report contracts, all six specified review levels, explicit findings and definition mappings, ambiguity disposition, compatible verdict rules, and report-level reviewer role separation. Committed JSON Schemas and adversarial unit tests exist. Persistence, derived status, shared application and CLI paths, supersession, and restart evidence remain active work.
 
 ## Next highest-priority criteria
 

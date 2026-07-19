@@ -10,6 +10,7 @@ pub mod artifact;
 pub mod audit;
 pub mod environment;
 pub mod evidence;
+pub mod fidelity;
 pub mod schemas;
 pub mod verifier;
 
@@ -28,6 +29,10 @@ pub use environment::{
 };
 pub use evidence::{
     EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult, EvidenceSnapshot,
+};
+pub use fidelity::{
+    AmbiguityDisposition, DefinitionMapping, FidelityReviewLevel, FidelityReviewReport,
+    FidelityReviewRequest, FidelityStatus, FidelityVerdict,
 };
 pub use verifier::{
     VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,

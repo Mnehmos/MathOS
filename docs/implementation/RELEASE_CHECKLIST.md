@@ -23,6 +23,8 @@ Phase 2 evidence: `mcl init` and storage health work locally and in Windows and 
 - [ ] Truth status is derived and cannot be directly mutated.
 - [ ] Verified intermediate results can be promoted and searched.
 
+Phase 3 fidelity contract evidence: closed request and report types now distinguish all specified review levels, attestation, benchmark alignment, verified review, rejection, ambiguity disposition, definition mappings, and exact source, claim, formalization, run, artifact, and supersession references. The report contract rejects same-author verified review. No review persistence or derived fidelity status exists yet, so all core lifecycle criteria remain unchecked.
+
 ## Verification
 
 - [ ] Lean verification uses pinned environments.
