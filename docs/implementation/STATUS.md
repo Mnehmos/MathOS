@@ -70,19 +70,24 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - The issue #13 CLI surface contains no proof, disproof, fidelity, novelty, certification, raw SQL, arbitrary shell, or unrestricted executable action. Its only process launch remains the allowlisted Lean availability check in `doctor`.
 - CLI integration rejects stale canonical version writers without changing the accepted head.
 - ADR-0004 pins the MCP `2025-11-25` stable protocol, stdio transport, exact official Rust SDK release, one-way application-service dependency, and disabled inference and network capabilities.
+- `mcl serve` now runs a real MCP `2025-11-25` server over newline-delimited stdio through the exactly pinned official Rust SDK.
+- The initial MCP surface exposes only closed `system` and `query` families. It provides identity, health, capability, policy, exact record, FTS5 search, and bounded graph actions without direct storage access.
+- MCP tool schemas have an object root, reject unknown fields, bound search and graph work, and return stable application errors as structured tool failures.
+- Real subprocess tests exercise initialization, tool discovery, tool calls, invalid parameters, forbidden tool names, stdout purity, clean EOF shutdown, restart, and persisted-state recovery.
+- CLI-created canonical state produces the same serialized search and exact-record results when read through MCP, establishing parity for the implemented read surface.
 
-These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, MCP behavior, pilot, portable release, or 1.0 acceptance result.
+These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, complete MCP mutation surface, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Implement issue #14 as a narrow official-SDK adapter over the existing application service.
-- Begin with protocol lifecycle and closed read-only system/query actions before enabling typed mutations.
+- Extend issue #14 from its proven lifecycle and read-only actions to closed source, claim, formalization, and research mutation actions.
+- Require attribution, idempotency, compare-and-swap, and dry-run controls on every MCP mutation.
 - Keep the local Lean launch limitation visible without misclassifying it as a project-wide blocker.
 
 ## Next highest-priority criteria
 
-1. Add the MCP adapter over the real application path without direct storage access.
-2. Prove CLI and MCP semantic parity through the real binary and restarted SQLite instance.
+1. Complete the remaining typed MCP mutation families over the real application path without direct storage access.
+2. Prove CLI and MCP semantic parity for mutations, conflicts, idempotent retry, and run-chain behavior.
 3. Implement environment manifests and the narrow Lean elaboration boundary now that the pinned toolchain is executable in CI.
 4. Implement evidence records and derived truth rules before any proof-status surface exists.
 5. Complete Pilot A through the real interfaces only after those authority controls exist.
@@ -99,16 +104,16 @@ PYTHONPATH=src PYTHONWARNINGS=error::ResourceWarning python -m unittest discover
 git diff --check
 ```
 
-Observed Rust evidence before this update:
+Observed validation evidence for this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
 - 44 Rust unit tests passed;
-- 6 Rust CLI integration tests passed;
+- 6 Rust CLI integration tests and 2 Rust MCP subprocess integration tests passed;
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.
 - GitHub Actions runs `29696708243` and `29697132394` passed all five jobs, including exact pinned Lean availability and both Rust operating-system targets.
 
 ## Release readiness
 
-Not ready. The release checklist is overwhelmingly open, all four mandatory pilots are incomplete in the specified architecture, MCP is not implemented in Rust, and no authoritative Lean evidence has been produced.
+Not ready. The release checklist is overwhelmingly open, all four mandatory pilots are incomplete in the specified architecture, the Rust MCP mutation surface is incomplete, and no authoritative Lean evidence has been produced.

@@ -42,6 +42,8 @@ enum Command {
     Health,
     /// Run storage checks and report Lean toolchain readiness.
     Doctor,
+    /// Serve the Model Context Protocol over newline-delimited stdio.
+    Serve,
     /// Create, version, or retrieve a source through the canonical application path.
     Source(EntityOptions),
     /// Create, version, or retrieve a mathematical concept.
@@ -298,6 +300,13 @@ impl Cli {
                 Ok(CliOutcome {
                     value: to_value(report).expect("diagnostic report is serializable"),
                     success,
+                })
+            }
+            Command::Serve => {
+                crate::mcp::serve_stdio(config)?;
+                Ok(CliOutcome {
+                    value: Value::Null,
+                    success: true,
                 })
             }
             Command::Source(options) => execute_entity(&config, RecordKind::Source, options),

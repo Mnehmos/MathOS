@@ -12,7 +12,7 @@ This checklist mirrors section 30 of [SPEC.md](../../SPEC.md). A checked item re
 - [ ] MCP and CLI operate over the same canonical service layer.
 - [ ] Process restart preserves committed state and resumes or safely requeues durable jobs.
 
-Phase 1 evidence: `mcl init` and storage health work in the local Linux environment. Windows, CI, Lean health, MCP, and durable job recovery remain open.
+Phase 2 evidence: `mcl init` and storage health work locally and in Windows and Linux CI. The initial Rust MCP system and query actions call the same application service as CLI and survive process restart. The complete MCP mutation surface and durable job recovery remain open, so the release criteria remain unchecked.
 
 ## Core lifecycle
 
@@ -39,7 +39,7 @@ Phase 1 evidence: `lean-toolchain` pins Lean 4.32.0. No proof-authority item is 
 - [ ] Context compilation is deterministic and provenance-bearing.
 - [ ] Agents outside the originating campaign can locate and reuse verified results.
 
-Phase 2 evidence: exact stable-ID lookup, exact version-hash lookup, and current-head FTS5 search work. Graph, declaration, and prior-failure search remain unimplemented, so the release criterion is open.
+Phase 2 evidence: exact stable-ID lookup, exact version-hash lookup, current-head FTS5 search, and bounded typed graph traversal work through the application service, CLI, and initial MCP query surface. Declaration and prior-failure search remain unimplemented, so the release criterion is open.
 
 ## Pedagogy
 

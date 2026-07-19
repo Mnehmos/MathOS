@@ -9,7 +9,9 @@ fn main() -> ExitCode {
     match cli.execute() {
         Ok(outcome) => {
             let value = outcome.value;
-            if json {
+            if value.is_null() {
+                // Long-running protocol commands reserve stdout for their transport.
+            } else if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&value).expect("JSON value")
