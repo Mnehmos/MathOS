@@ -50,6 +50,8 @@ enum Command {
     Artifact(ArtifactOptions),
     /// Enqueue or inspect verifier work without directly mutating mathematical status.
     Verify(VerifyOptions),
+    /// Lease and execute at most one contained verifier job.
+    Worker(WorkerOptions),
     /// Serve the Model Context Protocol over newline-delimited stdio.
     Serve,
     /// Create, version, or retrieve a source through the canonical application path.
@@ -195,6 +197,15 @@ struct VerifyStatusOptions {
 struct VerifyListOptions {
     #[arg(long, default_value_t = 20)]
     limit: usize,
+}
+
+#[derive(Debug, Args)]
+struct WorkerOptions {
+    #[arg(long)]
+    worker_id: String,
+
+    #[arg(long, default_value_t = 3_660)]
+    lease_seconds: u64,
 }
 
 #[derive(Debug, Args)]
@@ -428,6 +439,23 @@ impl Cli {
             Command::Environment(options) => execute_environment(&config, options),
             Command::Artifact(options) => execute_artifact(&config, options),
             Command::Verify(options) => execute_verify(&config, options),
+            Command::Worker(options) => {
+                let mut application = Application::open(&config)?;
+                let outcome =
+                    application.work_one_verifier_job(&options.worker_id, options.lease_seconds)?;
+                Ok(CliOutcome {
+                    value: match outcome {
+                        Some(outcome) => {
+                            to_value(outcome).expect("verifier work outcome is serializable")
+                        }
+                        None => serde_json::json!({
+                            "worked": false,
+                            "message": "No queued verifier job was available."
+                        }),
+                    },
+                    success: true,
+                })
+            }
             Command::Serve => {
                 crate::mcp::serve_stdio(config)?;
                 Ok(CliOutcome {

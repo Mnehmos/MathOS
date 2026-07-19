@@ -6,4 +6,4 @@ Only irreducible external blockers belong here. Ordinary unfinished work belongs
 
 There are currently no irreducible external blockers.
 
-The managed local sandbox still cannot launch Lean, but the exact pinned toolchain is executable on a fresh GitHub-hosted Linux runner. This is a documented local environment limitation, not a project-wide blocker. The GitHub connector now publishes every controlled commit to the durable remote branch.
+The managed local sandbox still cannot launch Lean, but the exact pinned toolchain is executable on a fresh GitHub-hosted Linux runner. The contained worker integration runs there after each verifier change. This is a documented local environment limitation, not a project-wide blocker. The GitHub connector publishes every controlled commit to the durable remote branch.

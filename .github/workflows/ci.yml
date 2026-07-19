@@ -78,6 +78,11 @@ jobs:
           set -euo pipefail
           lean --version | tee "${RUNNER_TEMP}/lean-version.txt"
           grep --fixed-strings "Lean (version 4.32.0," "${RUNNER_TEMP}/lean-version.txt"
+      - name: Run real contained Lean worker integration
+        shell: bash
+        env:
+          MCL_RUN_LEAN_INTEGRATION: "1"
+        run: cargo test --test lean_worker -- --nocapture
 
   legacy-python-regression:
     name: Legacy Python regression evidence

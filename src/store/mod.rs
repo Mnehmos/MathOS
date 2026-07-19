@@ -771,6 +771,72 @@ impl Store {
         read_verifier_job(&self.connection, job_id)
     }
 
+    pub fn finish_verifier_job(
+        &mut self,
+        job_id: &str,
+        worker: &str,
+        result_artifact_hash: &str,
+        succeeded: bool,
+        last_error: Option<&Value>,
+    ) -> Result<VerifierJobSnapshot, AppError> {
+        validate_uuid(job_id, "verifier job")?;
+        validate_worker_lease(worker, 1)?;
+        validate_hash(result_artifact_hash, "verifier result artifact")?;
+        let result_media_type = self
+            .connection
+            .query_row(
+                "SELECT media_type FROM artifacts WHERE artifact_hash = ?1",
+                [result_artifact_hash],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| AppError::database("validate verifier result artifact", error))?;
+        if result_media_type.as_deref() != Some("application/json") {
+            return Err(AppError::new(
+                "MCL_VERIFIER_RESULT_INVALID",
+                "verifier result must resolve to a registered JSON artifact",
+                false,
+                "Register the exact structured verifier report before finishing the job.",
+            ));
+        }
+        let state = if succeeded { "succeeded" } else { "failed" };
+        let progress = if succeeded {
+            "{\"phase\":\"completed\"}"
+        } else {
+            "{\"phase\":\"failed\"}"
+        };
+        let last_error_json =
+            last_error
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| {
+                    AppError::new(
+                        "MCL_VERIFIER_RESULT_INVALID",
+                        error.to_string(),
+                        false,
+                        "Supply one structured verifier error object.",
+                    )
+                })?;
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE jobs SET state = ?3, lease_owner = NULL, lease_expires_at = NULL, progress_json = ?4, result_artifact_hash = ?5, last_error_json = ?6, updated_at = unixepoch() WHERE job_id = ?1 AND state = 'running' AND lease_owner = ?2 AND lease_expires_at >= unixepoch()",
+                params![
+                    job_id,
+                    worker,
+                    state,
+                    progress,
+                    result_artifact_hash,
+                    last_error_json,
+                ],
+            )
+            .map_err(|error| AppError::database("finish verifier job", error))?;
+        if changed != 1 {
+            return Err(verifier_job_conflict(job_id));
+        }
+        read_verifier_job(&self.connection, job_id)
+    }
+
     pub fn requeue_expired_verifier_jobs(&mut self) -> Result<usize, AppError> {
         requeue_expired_jobs(&self.connection)
     }
@@ -1385,13 +1451,13 @@ fn validate_worker_lease(worker: &str, lease_seconds: u64) -> Result<(), AppErro
         || !worker
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-        || !(1..=3_600).contains(&lease_seconds)
+        || !(1..=7_200).contains(&lease_seconds)
     {
         return Err(AppError::new(
             "MCL_VERIFIER_LEASE_INVALID",
             "verifier worker identity or lease duration is outside policy",
             false,
-            "Use a short stable worker name and a lease between 1 and 3600 seconds.",
+            "Use a short stable worker name and a lease between 1 and 7200 seconds.",
         ));
     }
     Ok(())

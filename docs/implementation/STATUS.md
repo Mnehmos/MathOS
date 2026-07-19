@@ -18,6 +18,8 @@ Issues [#14](https://github.com/Mnehmos/MathOS/issues/14) and [#15](https://gith
 
 Issue [#16](https://github.com/Mnehmos/MathOS/issues/16) closed after GitHub Actions run `29700398370` passed all jobs on the exact canonical artifact tree.
 
+The first issue #17 durable verifier-job slice passed all jobs in GitHub Actions run `29700933580` on its exact remote tree. Issue #17 remains open while proof authority is incomplete.
+
 Active branch: `feat/spec-driven-rust-rebuild`.
 
 ## Completed criteria with evidence
@@ -110,21 +112,28 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Enqueue is actor-attributed and idempotent. Exact retries return the original job, changed retries fail closed, and missing environments or non-Lean artifacts never enter the queue.
 - Worker leases are bounded and transactional. Only one worker can select a queued job, wrong-worker starts fail, and expired leased or running jobs return safely to the queue without losing attempt history.
 - `mcl verify check/status/list` uses the shared application service. Dry runs validate exact references and predict input identity without mutation.
-- Verifier jobs remain explicitly non-authoritative. No Lean process execution, evidence record, or derived mathematical status exists in this slice.
+- Verifier jobs remain explicitly non-authoritative. No evidence record or derived mathematical status exists in this slice.
+- A worker leases at most one canonical job, resolves its exact environment and Lean source artifact, and invokes only the configured `lean` or `lean.exe` executable with verifier-selected arguments.
+- Lean runs in a fresh temporary workspace below the instance root with null stdin, a cleared environment, a narrow runtime-variable allowlist, wall-clock timeout, and a combined retained-output bound.
+- The source policy rejects explicit holes, custom source axioms, unsafe declarations, native evaluation, command elaborators, initialization hooks, and file inclusion before launch.
+- Each completed attempt stores bounded stdout and stderr plus a canonical execution report as private content-addressed artifacts. The terminal job links the exact report and cannot be rewritten.
+- Execution classifications distinguish elaboration, Lean rejection, unsafe source, timeout, output exhaustion, toolchain mismatch, and launch failure from operational job state.
+- Every local execution report is permanently non-authoritative and records that memory and network isolation are not enforced. The worker refuses publication-profile environments.
+- ADR-0005 documents the contained local process boundary and its limitations. Dependency closure, proof evidence, proof-closure scans, axiom audits, fidelity review, and publication isolation remain separate gates.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, complete MCP mutation surface, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Publish the first issue #17 durable verifier-job slice and require fresh Linux and Windows CI.
-- Implement the narrow Lean subprocess boundary only from leased canonical jobs whose exact environment and module artifact both resolve.
-- Keep the local Lean launch limitation visible without misclassifying it as a project-wide blocker.
+- Publish the contained Lean execution slice and require real pinned Lean plus fresh Linux and Windows CI.
+- Inspect remote accepted and rejected Lean attempts and retain exact CI evidence.
+- Begin exact verifier evidence and proof-closure policy only after this non-authoritative boundary is green.
 
 ## Next highest-priority criteria
 
-1. Obtain remote CI evidence for durable verifier input, leasing, recovery, CLI, and migration behavior.
-2. Implement the narrow Lean elaboration boundary using leased jobs, registered environments, and canonical module artifacts.
-3. Implement evidence records and derived truth rules before any proof-status surface exists.
+1. Obtain remote real-Lean and cross-platform CI evidence for the contained execution boundary.
+2. Implement immutable evidence records tied to exact formalization, execution report, environment, and artifact versions.
+3. Implement proof-closure, hole, unsafe, and axiom audits before deriving any proof status.
 4. Complete Pilot A through the real interfaces only after those authority controls exist.
 
 ## Exact last validation commands
@@ -143,13 +152,14 @@ Observed validation evidence for this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 63 Rust unit tests passed;
+- 65 Rust unit tests passed;
 - 9 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.
 - GitHub Actions run `29699563931` passed all five jobs for the completed MCP invalid-action and environment-persistence state, including exact pinned Lean availability and both Rust operating-system targets.
 - GitHub Actions run `29700398370` passed all five jobs for the canonical artifact slice, including both Rust operating-system targets.
-- The first durable verifier-job slice awaits publication and a fresh branch CI run. Issue #17 remains open after that slice because Lean execution is not implemented.
+- GitHub Actions run `29700933580` passed all jobs for the durable verifier input, leasing, recovery, CLI, and migration slice on its exact remote tree.
+- The contained worker test passes locally through the unsafe-source path. The managed workspace lacks Lean, so its accepted and rejected real-Lean paths await the next GitHub Actions run.
 
 ## Release readiness
 

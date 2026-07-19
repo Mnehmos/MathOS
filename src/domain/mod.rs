@@ -20,7 +20,10 @@ pub use environment::{
     ResourceLimits, TrustProfile, VerifierArgument, VerifierCommandTemplate, VerifierExecutable,
     WorkingDirectoryPolicy,
 };
-pub use verifier::{VerifierJobRequest, VerifierJobSnapshot, VerifierJobState};
+pub use verifier::{
+    VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
+    VerifierJobSnapshot, VerifierJobState,
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

@@ -31,7 +31,13 @@ mcl verify status --job-id <uuidv7>
 mcl verify list --limit 20
 ```
 
-These commands enqueue and inspect work. They do not execute Lean yet.
+These commands enqueue and inspect work. A separate worker command leases and executes at most one eligible job:
+
+```text
+mcl worker --worker-id local-worker --lease-seconds 3660
+```
+
+The lease must cover the registered timeout plus a cleanup margin. An empty queue returns a successful structured response without launching a process.
 
 ## State and recovery
 
@@ -47,8 +53,26 @@ The database rejects state jumps, identity rewrites, and deletion. A lease recor
 
 Only one transaction can lease the highest-priority eligible job. A worker cannot start a job leased by another worker or one whose lease expired.
 
+## Local execution boundary
+
+The local worker:
+
+- accepts only the configured `lean` or `lean.exe` executable;
+- constructs arguments from typed state rather than request text;
+- verifies source bytes from CAS and materializes them below the instance root;
+- creates a controlled driver that checks the requested declaration;
+- clears the child environment and restores only a narrow runtime allowlist;
+- supplies null stdin;
+- bounds wall-clock time and retained stdout plus stderr;
+- preserves bounded diagnostics and a canonical execution report as private artifacts;
+- rejects explicit holes, custom source axioms, unsafe declarations, native evaluation, command elaborators, initialization hooks, and file inclusion before launch.
+
+The lexical rejection policy is intentionally conservative. It is defense in depth, not kernel proof-closure analysis.
+
+The local profile does not enforce a memory limit or network namespace, and its report says so. It is not a hardened virtualization boundary. Publication-profile environments are refused by this worker.
+
 ## Trust boundary
 
-Durability solves scheduling ambiguity, not mathematics. A queued, running, failed, or even eventually succeeded job is not authoritative evidence by itself. Authority will require a separate evidence record tied to exact verifier artifacts, environment, audits, and policy.
+Durability and controlled execution solve scheduling and process ambiguity, not mathematics. A queued, running, failed, or succeeded job is not authoritative evidence. An `elaborated` report says only that the observed Lean binary accepted the controlled driver. A `rejected` report does not disprove a source claim. Operational job success says only that an attempt completed and its immutable report was committed.
 
-The current slice deliberately stops before process execution. Issue #17 remains open until contained execution, bounded diagnostic artifacts, real Lean testing, and cross-platform CI satisfy its complete acceptance criteria.
+Every local execution report is permanently marked `authoritative: false`. Authority still requires exact proof evidence, dependency closure, hole and unsafe scans, axiom audit, fidelity review, and publication policy. Issue #17 therefore remains open after contained execution.

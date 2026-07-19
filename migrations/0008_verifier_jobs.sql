@@ -65,8 +65,8 @@ END;
 
 CREATE TRIGGER jobs_reject_invalid_result_shape
 BEFORE UPDATE ON jobs
-WHEN (NEW.state = 'succeeded' AND NEW.result_artifact_hash IS NULL)
-  OR (NEW.state <> 'succeeded' AND NEW.result_artifact_hash IS NOT NULL)
+WHEN (NEW.state IN ('succeeded', 'failed') AND NEW.result_artifact_hash IS NULL)
+  OR (NEW.state NOT IN ('succeeded', 'failed') AND NEW.result_artifact_hash IS NOT NULL)
 BEGIN
     SELECT RAISE(ABORT, 'job result artifact does not match state');
 END;

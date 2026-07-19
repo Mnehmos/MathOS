@@ -1,5 +1,6 @@
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Serialize;
@@ -7,11 +8,13 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::artifacts::ArtifactStore;
+use crate::canonical::canonical_json;
 use crate::config::ResolvedConfig;
 use crate::domain::{
     ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeSnapshot, EnvironmentManifest,
     EnvironmentSnapshot, GraphTraversalHit, GraphTraversalRequest, RecordDraft, RecordSnapshot,
-    RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot, VerifierJobRequest,
+    RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
+    VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
     VerifierJobSnapshot,
 };
 use crate::error::AppError;
@@ -87,9 +90,17 @@ pub struct VerifierEnqueueOutcome {
     pub job: Option<VerifierJobSnapshot>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct VerifierWorkOutcome {
+    pub job: VerifierJobSnapshot,
+    pub report: VerifierExecutionReport,
+}
+
 pub struct Application {
     store: Store,
     artifacts: ArtifactStore,
+    verifier_command: String,
+    workspace_root: PathBuf,
 }
 
 impl Application {
@@ -102,9 +113,25 @@ impl Application {
                 "Run `mcl init` for this instance root.",
             ));
         }
+        let workspace_root = config.data_dir.join("workspaces");
+        fs::create_dir_all(&workspace_root)
+            .map_err(|error| AppError::io("create verifier workspace root", error))?;
+        let workspace_root = workspace_root
+            .canonicalize()
+            .map_err(|error| AppError::io("canonicalize verifier workspace root", error))?;
+        if !workspace_root.starts_with(&config.root) {
+            return Err(AppError::new(
+                "MCL_VERIFIER_WORKSPACE_UNSAFE",
+                "verifier workspace root escaped the configured instance root",
+                false,
+                "Quarantine the instance and correct its configured data path.",
+            ));
+        }
         Ok(Self {
             store: Store::open(&config.database)?,
             artifacts: ArtifactStore::open(&config.artifacts)?,
+            verifier_command: config.verifier.lean_command.clone(),
+            workspace_root,
         })
     }
 
@@ -494,6 +521,246 @@ impl Application {
 
     pub fn list_verifier_jobs(&self, limit: usize) -> Result<Vec<VerifierJobSnapshot>, AppError> {
         self.store.list_verifier_jobs(limit)
+    }
+
+    pub fn work_one_verifier_job(
+        &mut self,
+        worker: &str,
+        lease_seconds: u64,
+    ) -> Result<Option<VerifierWorkOutcome>, AppError> {
+        let Some(leased) = self.store.lease_next_verifier_job(worker, lease_seconds)? else {
+            return Ok(None);
+        };
+        let running = self
+            .store
+            .mark_verifier_job_running(&leased.job_id, worker)?;
+        let environment = self
+            .store
+            .get_environment(&running.request.environment_hash)?;
+        if lease_seconds < environment.manifest.resource_limits.timeout_seconds + 60 {
+            return Err(AppError::new(
+                "MCL_VERIFIER_LEASE_TOO_SHORT",
+                "worker lease does not cover the environment timeout plus cleanup margin",
+                true,
+                "Use a lease at least 60 seconds longer than the registered verifier timeout.",
+            ));
+        }
+        let module = self
+            .store
+            .get_artifact(&running.request.module_artifact_hash)?;
+        if module.media_type != crate::domain::ArtifactMediaType::LeanSource {
+            return Err(AppError::new(
+                "MCL_VERIFIER_ARTIFACT_INVALID",
+                "leased verifier job no longer resolves to Lean source metadata",
+                false,
+                "Quarantine the database and restore a verified backup.",
+            ));
+        }
+        let source = self.artifacts.read(&module.artifact_hash)?;
+        let started = std::time::Instant::now();
+        let forbidden = crate::verifier::scan_forbidden_source_token(&source)?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_code = None;
+        let mut observed_toolchain_version = None;
+        let mut process_error = None;
+        let classification = if forbidden.is_some() {
+            VerifierExecutionClassification::UnsafeSource
+        } else {
+            let workspace = tempfile::Builder::new()
+                .prefix("mcl-lean-")
+                .tempdir_in(&self.workspace_root)
+                .map_err(|error| AppError::io("create verifier temporary workspace", error))?;
+            self.artifacts.materialize(
+                &module.artifact_hash,
+                workspace.path(),
+                "Submission.lean",
+            )?;
+            let mut driver = source.clone();
+            driver.extend_from_slice(
+                format!("\n#check {}\n", running.request.declaration_name).as_bytes(),
+            );
+            let driver_path = workspace.path().join("Driver.lean");
+            let mut driver_file = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&driver_path)
+                .map_err(|error| AppError::io("create verifier driver", error))?;
+            use std::io::Write as _;
+            driver_file
+                .write_all(&driver)
+                .map_err(|error| AppError::io("write verifier driver", error))?;
+            driver_file
+                .sync_all()
+                .map_err(|error| AppError::io("sync verifier driver", error))?;
+            drop(driver_file);
+            match crate::verifier::execute_lean(
+                &self.verifier_command,
+                workspace.path(),
+                "Driver.lean",
+                &environment.manifest,
+            ) {
+                Ok(result) => {
+                    exit_code = result.exit_code;
+                    stdout = result.stdout;
+                    stderr = result.stderr;
+                    observed_toolchain_version = Some(result.observed_toolchain_version);
+                    if result.timed_out {
+                        VerifierExecutionClassification::TimedOut
+                    } else if result.output_limit_exceeded {
+                        VerifierExecutionClassification::OutputLimitExceeded
+                    } else if result.exit_code == Some(0) {
+                        VerifierExecutionClassification::Elaborated
+                    } else {
+                        VerifierExecutionClassification::Rejected
+                    }
+                }
+                Err(error) => {
+                    let classification = match error.code {
+                        "MCL_VERIFIER_VERSION_MISMATCH" => {
+                            VerifierExecutionClassification::ToolchainMismatch
+                        }
+                        _ => VerifierExecutionClassification::LaunchFailed,
+                    };
+                    process_error = Some(error);
+                    classification
+                }
+            }
+        };
+        let stdout_artifact_hash =
+            self.register_verifier_output(&running, "stdout", &stdout, worker)?;
+        let stderr_artifact_hash =
+            self.register_verifier_output(&running, "stderr", &stderr, worker)?;
+        let report = VerifierExecutionReport {
+            schema_version: "verifier_execution_report/1".to_owned(),
+            job_id: running.job_id.clone(),
+            environment_hash: running.request.environment_hash.clone(),
+            module_artifact_hash: running.request.module_artifact_hash.clone(),
+            declaration_name: running.request.declaration_name.clone(),
+            classification,
+            exit_code,
+            stdout_artifact_hash,
+            stderr_artifact_hash,
+            duration_milliseconds: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+            observed_toolchain_version,
+            forbidden_source_token: forbidden,
+            trust_profile: environment.manifest.trust_profile,
+            memory_limit_enforced: false,
+            network_isolation_enforced: false,
+            authoritative: false,
+        };
+        let report_value = serde_json::to_value(&report).map_err(|error| {
+            AppError::new(
+                "MCL_VERIFIER_RESULT_INVALID",
+                error.to_string(),
+                false,
+                "Report this deterministic verifier result serialization defect.",
+            )
+        })?;
+        let report_bytes = canonical_json(&report_value)?;
+        let report_metadata = ArtifactMetadata {
+            schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION.to_owned(),
+            media_type: crate::domain::ArtifactMediaType::Json,
+            creation_source: crate::domain::ArtifactCreationSource::Verifier,
+            license_expression: None,
+            restriction: crate::domain::ArtifactRestriction::Private,
+            semantic_metadata: BTreeMap::from([
+                ("job_id".to_owned(), running.job_id.clone()),
+                ("artifact_role".to_owned(), "verifier_report".to_owned()),
+            ]),
+        };
+        let report_snapshot = self.ensure_verifier_artifact(
+            &report_bytes,
+            &report_metadata,
+            worker,
+            &format!(
+                "verifier-report-{}-{}",
+                running.job_id, running.attempt_count
+            ),
+        )?;
+        let operational_success = !matches!(
+            classification,
+            VerifierExecutionClassification::TimedOut
+                | VerifierExecutionClassification::OutputLimitExceeded
+                | VerifierExecutionClassification::ToolchainMismatch
+                | VerifierExecutionClassification::LaunchFailed
+        );
+        let last_error = process_error.as_ref().map(|error| {
+            json!({
+                "code": error.code,
+                "message": error.message,
+                "retryable": error.retryable,
+                "corrective_action": error.corrective_action,
+            })
+        });
+        let job = self.store.finish_verifier_job(
+            &running.job_id,
+            worker,
+            &report_snapshot.artifact_hash,
+            operational_success,
+            last_error.as_ref(),
+        )?;
+        Ok(Some(VerifierWorkOutcome { job, report }))
+    }
+
+    fn register_verifier_output(
+        &mut self,
+        job: &VerifierJobSnapshot,
+        stream: &str,
+        bytes: &[u8],
+        worker: &str,
+    ) -> Result<Option<String>, AppError> {
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        let metadata = ArtifactMetadata {
+            schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION.to_owned(),
+            media_type: crate::domain::ArtifactMediaType::OctetStream,
+            creation_source: crate::domain::ArtifactCreationSource::Verifier,
+            license_expression: None,
+            restriction: crate::domain::ArtifactRestriction::Private,
+            semantic_metadata: BTreeMap::from([
+                ("job_id".to_owned(), job.job_id.clone()),
+                ("artifact_role".to_owned(), stream.to_owned()),
+            ]),
+        };
+        Ok(Some(
+            self.ensure_verifier_artifact(
+                bytes,
+                &metadata,
+                worker,
+                &format!("verifier-{stream}-{}-{}", job.job_id, job.attempt_count),
+            )?
+            .artifact_hash,
+        ))
+    }
+
+    fn ensure_verifier_artifact(
+        &mut self,
+        bytes: &[u8],
+        metadata: &ArtifactMetadata,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<ArtifactSnapshot, AppError> {
+        metadata.validate_bytes(bytes)?;
+        let hash = self.artifacts.put(bytes)?;
+        match self.store.get_artifact(&hash) {
+            Ok(existing) if existing.media_type == metadata.media_type => Ok(existing),
+            Ok(_) => Err(AppError::new(
+                "MCL_ARTIFACT_METADATA_CONFLICT",
+                format!("existing artifact {hash} has incompatible metadata"),
+                false,
+                "Quarantine the conflicting artifact and inspect its provenance.",
+            )),
+            Err(error) if error.code == "MCL_ARTIFACT_NOT_FOUND" => self.store.register_artifact(
+                &hash,
+                bytes.len() as u64,
+                metadata,
+                actor,
+                idempotency_key,
+            ),
+            Err(error) => Err(error),
+        }
     }
 
     pub fn create_record(

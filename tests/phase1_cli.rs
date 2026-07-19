@@ -495,6 +495,74 @@ fn verifier_job_cli_dry_runs_enqueues_retries_and_survives_restart() {
     assert!(!injection.status.success());
     let error: Value = serde_json::from_slice(&injection.stderr).expect("verifier error JSON");
     assert_eq!(error["code"], "MCL_VERIFIER_REQUEST_INVALID");
+
+    let unsafe_module = root.path().join("UnsafeVerifierJob.lean");
+    fs::write(
+        &unsafe_module,
+        b"theorem unsafeFixture : True := by sorry\n",
+    )
+    .expect("unsafe module writes");
+    let unsafe_ingest = mcl_owned(
+        &root,
+        &[
+            "artifact".to_owned(),
+            "ingest".to_owned(),
+            "--input-file".to_owned(),
+            unsafe_module.to_string_lossy().into_owned(),
+            "--metadata-json".to_owned(),
+            metadata.to_string(),
+            "--actor".to_owned(),
+            "verifier-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "verifier-cli-unsafe-artifact".to_owned(),
+        ],
+    );
+    assert!(unsafe_ingest.status.success());
+    let unsafe_ingest = parse_stdout(&unsafe_ingest);
+    let unsafe_hash = unsafe_ingest["proposed_artifact_hash"]
+        .as_str()
+        .expect("unsafe artifact hash");
+    let unsafe_job = mcl_owned(
+        &root,
+        &[
+            "verify".to_owned(),
+            "check".to_owned(),
+            "--environment-hash".to_owned(),
+            environment_hash.to_owned(),
+            "--module-artifact-hash".to_owned(),
+            unsafe_hash.to_owned(),
+            "--declaration-name".to_owned(),
+            "MathOS.Verifier.unsafeFixture".to_owned(),
+            "--priority".to_owned(),
+            "100".to_owned(),
+            "--actor".to_owned(),
+            "verifier-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "verifier-cli-unsafe-job".to_owned(),
+        ],
+    );
+    assert!(unsafe_job.status.success());
+    let worked = mcl(
+        &root,
+        &[
+            "worker",
+            "--worker-id",
+            "cli-worker",
+            "--lease-seconds",
+            "3660",
+        ],
+    );
+    assert!(
+        worked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&worked.stderr)
+    );
+    let worked = parse_stdout(&worked);
+    assert_eq!(worked["report"]["classification"], "unsafe_source");
+    assert_eq!(worked["report"]["forbidden_source_token"], "sorry");
+    assert_eq!(worked["report"]["authoritative"], false);
+    assert_eq!(worked["job"]["state"], "succeeded");
+    assert!(worked["job"]["result_artifact_hash"].is_string());
 }
 
 #[test]

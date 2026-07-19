@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::str::FromStr;
 
+use crate::domain::TrustProfile;
 use crate::error::AppError;
 
 pub const VERIFIER_REQUEST_SCHEMA_VERSION: &str = "verifier_request/1";
@@ -81,6 +82,39 @@ pub struct VerifierJobSnapshot {
     pub updated_at: i64,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifierExecutionClassification {
+    Elaborated,
+    Rejected,
+    TimedOut,
+    OutputLimitExceeded,
+    ToolchainMismatch,
+    LaunchFailed,
+    UnsafeSource,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerifierExecutionReport {
+    pub schema_version: String,
+    pub job_id: String,
+    pub environment_hash: String,
+    pub module_artifact_hash: String,
+    pub declaration_name: String,
+    pub classification: VerifierExecutionClassification,
+    pub exit_code: Option<i32>,
+    pub stdout_artifact_hash: Option<String>,
+    pub stderr_artifact_hash: Option<String>,
+    pub duration_milliseconds: u64,
+    pub observed_toolchain_version: Option<String>,
+    pub forbidden_source_token: Option<String>,
+    pub trust_profile: TrustProfile,
+    pub memory_limit_enforced: bool,
+    pub network_isolation_enforced: bool,
+    pub authoritative: bool,
+}
+
 impl VerifierJobRequest {
     pub fn validate(&self) -> Result<(), AppError> {
         if self.schema_version != VERIFIER_REQUEST_SCHEMA_VERSION {
@@ -125,6 +159,35 @@ pub fn verifier_request_schema() -> Value {
             "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "module_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)*$"}
+        }
+    })
+}
+
+pub fn verifier_execution_report_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://mnehmos.ai/mathos/schemas/verifier/execution-report/1",
+        "title": "MathOS Lean Verifier Execution Report v1",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema_version", "job_id", "environment_hash", "module_artifact_hash", "declaration_name", "classification", "exit_code", "stdout_artifact_hash", "stderr_artifact_hash", "duration_milliseconds", "observed_toolchain_version", "forbidden_source_token", "trust_profile", "memory_limit_enforced", "network_isolation_enforced", "authoritative"],
+        "properties": {
+            "schema_version": {"const": "verifier_execution_report/1"},
+            "job_id": {"type": "string", "format": "uuid"},
+            "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "module_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256},
+            "classification": {"enum": ["elaborated", "rejected", "timed_out", "output_limit_exceeded", "toolchain_mismatch", "launch_failed", "unsafe_source"]},
+            "exit_code": {"type": ["integer", "null"]},
+            "stdout_artifact_hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+            "stderr_artifact_hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+            "duration_milliseconds": {"type": "integer", "minimum": 0},
+            "observed_toolchain_version": {"type": ["string", "null"]},
+            "forbidden_source_token": {"type": ["string", "null"]},
+            "trust_profile": {"enum": ["local", "publication"]},
+            "memory_limit_enforced": {"type": "boolean"},
+            "network_isolation_enforced": {"type": "boolean"},
+            "authoritative": {"const": false}
         }
     })
 }
@@ -185,5 +248,11 @@ mod tests {
         ))
         .expect("committed verifier request schema");
         assert_eq!(committed, verifier_request_schema());
+
+        let report: Value = serde_json::from_str(include_str!(
+            "../../schemas/verifier/verifier-execution-report-1.schema.json"
+        ))
+        .expect("committed verifier execution report schema");
+        assert_eq!(report, verifier_execution_report_schema());
     }
 }

@@ -29,3 +29,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 19. [Nothing Exists Until It Can Be Retrieved](0019-nothing-exists-until-it-can-be-retrieved.md)
 20. [The Orphan Is Not a Ghost](0020-the-orphan-is-not-a-ghost.md)
 21. [A Process Must Be Expected](0021-a-process-must-be-expected.md)
+22. [Success Must Name Its Kind](0022-success-must-name-its-kind.md)
