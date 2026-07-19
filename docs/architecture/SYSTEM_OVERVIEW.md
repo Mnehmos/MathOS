@@ -30,11 +30,9 @@ The provenance hash chain detects accidental corruption and incomplete rewriting
 1. Canonicalize the submitted claim and derive its identifier.
 2. Persist the claim and submission event.
 3. Produce an untrusted search candidate.
-4. Persist the candidate before verification.
-5. Independently verify the exact candidate against the exact formal specification.
-6. Apply the allowed state transition.
-7. Persist verification and pedagogy events.
-8. Export a trajectory containing the event-chain head and verifier evidence.
+4. Independently verify the exact candidate against the exact formal specification.
+5. Atomically persist the candidate, verification, allowed state transition, and pedagogy in that event order.
+6. Export a trajectory containing the event-chain head and verifier evidence.
 
 ## Dependency policy
 

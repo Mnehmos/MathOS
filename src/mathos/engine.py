@@ -80,16 +80,12 @@ class ClaimEngine:
             )
         else:
             candidate = FiniteSearchEngine(max_assignments).search(claim.formal_spec)
-        self.ledger.append_event(claim_id, "search.completed", candidate.to_dict())
 
         verifier = FiniteDomainVerifier(max_assignments=max(max_assignments, 1))
         if claim.formal_spec is None:
             verification = verifier.verify({}, candidate)
         else:
             verification = verifier.verify(claim.formal_spec, candidate)
-        self.ledger.append_event(
-            claim_id, "verification.completed", verification.to_dict()
-        )
 
         status = {
             VerificationOutcome.PROVED: ClaimStatus.VERIFIED_PROVED,
@@ -97,13 +93,18 @@ class ClaimEngine:
             VerificationOutcome.UNKNOWN: ClaimStatus.UNRESOLVED,
             VerificationOutcome.REJECTED: ClaimStatus.UNRESOLVED,
         }[verification.outcome]
-        claim = self.ledger.transition_status(
-            claim_id, status, reason=verification.outcome.value
-        )
         pedagogy = generate_pedagogy(
-            claim.informal_statement, claim.status, verification
+            claim.informal_statement, status, verification
         )
-        self.ledger.append_event(claim_id, "pedagogy.generated", pedagogy)
+        claim = self.ledger.record_run(
+            claim_id,
+            expected_status=claim.status,
+            new_status=status,
+            reason=verification.outcome.value,
+            candidate=candidate.to_dict(),
+            verification=verification.to_dict(),
+            pedagogy=pedagogy,
+        )
         return RunReport(
             claim=claim,
             candidate=candidate.to_dict(),

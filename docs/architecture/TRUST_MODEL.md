@@ -30,6 +30,6 @@ The informal statement is descriptive context. The v0.1 system does not prove th
 
 - Unknown operators, malformed values, mixed domain types, invalid branches, and exhausted budgets cannot authorize certainty.
 - Missing external verifier tooling returns unresolved.
-- A candidate is persisted before verification and can never certify itself.
+- A candidate is recorded before its verification result in one atomic lifecycle transaction and can never certify itself.
 - A verified claim cannot transition back to a weaker state.
 - Invalid provenance or trajectory evidence causes validation failure.

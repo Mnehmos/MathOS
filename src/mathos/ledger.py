@@ -194,6 +194,72 @@ class ProvenanceLedger:
             self._connection.rollback()
             raise
 
+    def record_run(
+        self,
+        claim_id: str,
+        *,
+        expected_status: ClaimStatus,
+        new_status: ClaimStatus,
+        reason: str,
+        candidate: dict[str, Any],
+        verification: dict[str, Any],
+        pedagogy: dict[str, Any],
+    ) -> Claim:
+        if new_status not in ALLOWED_TRANSITIONS[expected_status]:
+            raise StateTransitionError(
+                f"invalid claim transition: {expected_status.value} -> {new_status.value}"
+            )
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            row = self._connection.execute(
+                "SELECT status FROM claims WHERE claim_id = ?", (claim_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"unknown claim: {claim_id}")
+            if ClaimStatus(row["status"]) is not expected_status:
+                raise StateTransitionError("claim changed concurrently")
+
+            self._append_event_in_transaction(
+                claim_id, "search.completed", candidate
+            )
+            self._append_event_in_transaction(
+                claim_id, "verification.completed", verification
+            )
+            updated_at = utc_now()
+            changed = self._connection.execute(
+                """
+                UPDATE claims
+                SET status = ?, updated_at = ?
+                WHERE claim_id = ? AND status = ?
+                """,
+                (
+                    new_status.value,
+                    updated_at,
+                    claim_id,
+                    expected_status.value,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise StateTransitionError("claim changed concurrently")
+            self._append_event_in_transaction(
+                claim_id,
+                "claim.status_changed",
+                {
+                    "from": expected_status.value,
+                    "to": new_status.value,
+                    "reason": reason,
+                },
+                created_at=updated_at,
+            )
+            self._append_event_in_transaction(
+                claim_id, "pedagogy.generated", pedagogy
+            )
+            self._connection.commit()
+        except Exception:
+            self._connection.rollback()
+            raise
+        return self.get_claim(claim_id)
+
     def _append_event_in_transaction(
         self,
         claim_id: str,

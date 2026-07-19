@@ -3,6 +3,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from mathos.engine import ClaimEngine
 from mathos.models import ClaimStatus, StateTransitionError
@@ -200,6 +201,67 @@ class ClaimEngineTests(unittest.TestCase):
         result = verify_trajectory(trajectory)
         self.assertFalse(result.valid)
         self.assertEqual(result.reason, "candidate_verification_mismatch")
+
+    def test_rl_export_recomputes_pedagogy_certainty(self) -> None:
+        fixture = load_fixture("unresolved")
+        claim = self.engine.submit(
+            fixture["informal_statement"], fixture["formal_spec"]
+        )
+        self.engine.process(
+            claim.claim_id, max_assignments=fixture["max_assignments"]
+        )
+        trajectory = self.engine.export_trajectory(claim.claim_id)
+
+        pedagogy = next(
+            event
+            for event in trajectory["steps"]
+            if event["event_type"] == "pedagogy.generated"
+        )
+        pedagogy["payload"]["certainty"] = "verified"
+        pedagogy["payload"]["summary"] = "This unresolved claim is certainly true."
+        event_body = {
+            key: value for key, value in pedagogy.items() if key != "event_hash"
+        }
+        pedagogy["event_hash"] = hash_json(event_body)
+        body = {key: value for key, value in trajectory.items() if key != "trajectory_hash"}
+        trajectory["trajectory_hash"] = hash_json(body)
+
+        result = verify_trajectory(trajectory)
+        self.assertFalse(result.valid)
+        self.assertEqual(result.reason, "pedagogy_evidence_mismatch")
+
+    def test_processing_rolls_back_if_terminal_lifecycle_write_fails(self) -> None:
+        fixture = load_fixture("proved")
+        claim = self.engine.submit(
+            fixture["informal_statement"], fixture["formal_spec"]
+        )
+        original = self.engine.ledger._append_event_in_transaction
+
+        def fail_on_pedagogy(claim_id, event_type, payload, **kwargs):
+            if event_type == "pedagogy.generated":
+                raise RuntimeError("simulated write failure")
+            return original(claim_id, event_type, payload, **kwargs)
+
+        with patch.object(
+            self.engine.ledger,
+            "_append_event_in_transaction",
+            side_effect=fail_on_pedagogy,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulated write failure"):
+                self.engine.process(claim.claim_id, max_assignments=16)
+
+        self.assertEqual(
+            self.engine.get_claim(claim.claim_id).status,
+            ClaimStatus.FORMALIZED,
+        )
+        self.assertEqual(
+            [event["event_type"] for event in self.engine.ledger.events_for_claim(
+                claim.claim_id
+            )],
+            ["claim.submitted"],
+        )
+        completed = self.engine.process(claim.claim_id, max_assignments=16)
+        self.assertEqual(completed.claim.status, ClaimStatus.VERIFIED_PROVED)
 
     def test_provenance_tampering_is_detected(self) -> None:
         fixture = load_fixture("proved")

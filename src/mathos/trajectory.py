@@ -3,7 +3,8 @@ from typing import Any
 
 from .canonical import hash_json
 from .finite import FiniteDomainVerifier
-from .models import CandidateKind, SearchCandidate, TrajectoryVerification
+from .models import CandidateKind, ClaimStatus, SearchCandidate, TrajectoryVerification
+from .pedagogy import generate_pedagogy
 
 
 def verify_trajectory(value: Any) -> TrajectoryVerification:
@@ -150,9 +151,10 @@ def verify_trajectory(value: Any) -> TrajectoryVerification:
             return TrajectoryVerification(
                 False, offset + 2, supplied_hash, "status_evidence_mismatch"
             )
-        if pedagogy.get("verification_evidence_hash") != verification.get(
-            "evidence_hash"
-        ):
+        expected_pedagogy = generate_pedagogy(
+            claim["informal_statement"], ClaimStatus(expected_status), replayed
+        )
+        if pedagogy != expected_pedagogy:
             return TrajectoryVerification(
                 False, offset + 3, supplied_hash, "pedagogy_evidence_mismatch"
             )
