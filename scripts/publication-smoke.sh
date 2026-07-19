@@ -9,16 +9,29 @@ fi
 output_dir="$1"
 module="fixtures/publication/Smoke.lean"
 
-test -f "$module"
-test -x /usr/bin/bwrap
-test -x /usr/bin/prlimit
-test -z "$(git status --porcelain)"
+if [[ ! -f "$module" ]]; then
+  printf 'publication module is missing: %s\n' "$module" >&2
+  exit 66
+fi
+if [[ ! -x /usr/bin/bwrap ]]; then
+  printf 'publication isolation control is missing: /usr/bin/bwrap\n' >&2
+  exit 69
+fi
+if [[ ! -x /usr/bin/prlimit ]]; then
+  printf 'publication resource control is missing: /usr/bin/prlimit\n' >&2
+  exit 69
+fi
+if [[ -n "$(git status --porcelain)" ]]; then
+  printf 'publication boundary requires a clean checkout\n' >&2
+  exit 65
+fi
 mkdir -p "$output_dir"
 
 commit_sha="$(git rev-parse HEAD)"
 tree_sha="$(git rev-parse HEAD^{tree})"
 toolchain="$(tr -d '\r\n' < lean-toolchain)"
 lean_path="$(command -v lean)"
+bwrap_version="$(/usr/bin/bwrap --version)"
 
 sudo /usr/bin/bwrap \
   --unshare-all \
@@ -43,10 +56,11 @@ jq -n \
   --arg tree_sha "$tree_sha" \
   --arg source_ref "${GITHUB_REF:-local}" \
   --arg toolchain "$toolchain" \
+  --arg bwrap_version "$bwrap_version" \
   --arg module_hash "$module_hash" \
   --arg stdout_hash "$stdout_hash" \
   --arg stderr_hash "$stderr_hash" \
-  '{schema_version:$schema_version,source_commit_sha:$commit_sha,source_tree_sha:$tree_sha,source_ref:$source_ref,lean_toolchain:$toolchain,module_artifact_hash:$module_hash,stdout_artifact_hash:$stdout_hash,stderr_artifact_hash:$stderr_hash,runner_environment:"github_hosted",clean_checkout:true,network_isolation_enforced:true,memory_limit_enforced:true,authoritative:false}' \
+  '{schema_version:$schema_version,source_commit_sha:$commit_sha,source_tree_sha:$tree_sha,source_ref:$source_ref,lean_toolchain:$toolchain,isolation_control:$bwrap_version,module_artifact_hash:$module_hash,stdout_artifact_hash:$stdout_hash,stderr_artifact_hash:$stderr_hash,runner_environment:"github_hosted",clean_checkout:true,network_isolation_enforced:true,memory_limit_enforced:true,authoritative:false}' \
   >"${output_dir}/publication-smoke-report.json"
 
 jq -e '

@@ -28,7 +28,7 @@ Issue [#19](https://github.com/Mnehmos/MathOS/issues/19) closed after GitHub Act
 
 Issue [#20](https://github.com/Mnehmos/MathOS/issues/20) closed after GitHub Actions run `29706138708` passed all five jobs, including role-separated fidelity review through real CLI and MCP paths, adversarial provenance and corruption checks, the pinned Lean integration, and fresh Linux and Windows suites on exact remote tree `80b1d2e92e81192a2863bb445a7bef872fc21b72`. This closes statement fidelity evidence only, not proof authority or mathematical truth status.
 
-Active branch: `feat/spec-driven-rust-rebuild`.
+Active branch: `feat/publication-proof-authority`.
 
 ## Completed criteria with evidence
 
@@ -158,6 +158,7 @@ These items establish only part of the product foundation and Phase 2 trace mode
 ## Active work
 
 - Implement issue #21 publication-profile proof authority without allowing local diagnostic workers or caller-authored reports to self-promote.
+- Draft PR #22 carries the first hosted publication-boundary smoke. GitHub Actions run `29706858126` correctly failed closed because Bubblewrap was absent from the runner image. The repair installs the isolation control explicitly, records its version, and improves missing-control diagnostics before retrying the hosted boundary.
 - Keep proof authority and mathematical status impossible while fidelity and publication-profile controls remain incomplete.
 - Issue #20 is complete with exact-tree CI evidence. Issue #21 must now bind clean-checkout verification, dependency closure, retained artifacts, policy identity, and non-forgeable report provenance before authoritative proof or refutation evidence can exist.
 - The first issue #21 slice defines closed publication policy, request, and candidate-report contracts. The policy pins repository, protected workflow, main ref, GitHub-hosted runner, Lean toolchain, allowed axioms, required isolation controls, SLSA predicate, and action commit identities.
