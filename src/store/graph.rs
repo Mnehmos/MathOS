@@ -264,7 +264,16 @@ mod tests {
                 &RecordDraft {
                     kind: RecordKind::Concept,
                     schema_version: "concept/1".to_owned(),
-                    payload: json!({"name": label}),
+                    payload: json!({
+                        "name": label,
+                        "aliases": [],
+                        "description": format!("test concept {label}"),
+                        "subject_domains": ["test mathematics"],
+                        "formal_declarations": [],
+                        "external_taxonomy_crosswalks": [],
+                        "pedagogy_metadata_references": [],
+                        "provenance_references": []
+                    }),
                     searchable_text: label.to_owned(),
                 },
                 "graph-test",

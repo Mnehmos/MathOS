@@ -17,3 +17,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 7. [The Trace Remembers](0007-the-trace-remembers.md)
 8. [A Path Is Not a Proof](0008-a-path-is-not-a-proof.md)
 9. [The Original and the Claim](0009-the-original-and-the-claim.md)
+10. [An Interpretation Is Not a Verdict](0010-an-interpretation-is-not-a-verdict.md)

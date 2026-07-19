@@ -12,7 +12,7 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 Phase 2: Canonical records and trace.
 
-Active issue: [#12, make pinned Lean availability CI independent of Lake](https://github.com/Mnehmos/MathOS/issues/12).
+Active issue: [#10, add concept and formalization schemas](https://github.com/Mnehmos/MathOS/issues/10).
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -52,34 +52,38 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Claim records explicitly preserve exact source reference, normalized statement, kind, assumptions, variables, concept links, citations, and ambiguity.
 - Canonical create and version paths reject unknown fields, unsupported schema versions, malformed hashes, empty required text, and excessive collections before persistence.
 - Schema rejection leaves no record or idempotency receipt, while valid original source text survives restart byte-for-byte.
+- Concept payloads have a closed Rust type and committed `concept/1` JSON Schema covering aliases, domains, formal declarations, licensed taxonomy crosswalks, pedagogy references, and provenance.
+- Formalization payloads have a closed Rust type and committed `formalization/1` JSON Schema covering one exact claim version, Lean environment, module artifact, declaration identity, theorem type, imports, notes, and separate evidence references.
+- Formalization payloads reject embedded `proved`, `disproved`, `faithful`, and `certified` verdicts. These conclusions remain outside the formalization record.
+- One claim can retain multiple formalization objects, and changes to theorem type, environment, module artifact, or imports produce different canonical hashes.
+- A formalization must reference an exact existing claim object and version. Missing references and references to other record kinds fail before persistence.
+- GitHub Actions run `29696708243` passed Rust tests and warnings-denied lint on fresh Linux and Windows runners, the real-storage smoke test, and all legacy Python regression tests.
+- The fresh Linux runner installed the exact pinned Lean 4.32.0 toolchain from a SHA-256-verified Elan installer and executed `lean --version` successfully. This establishes toolchain availability only, not proof authority.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, MCP behavior, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Publish the local controlled commits and run the CI matrix once authenticated Git transport is available.
-- Validate the pinned Lean toolchain on a fresh Linux CI runner because the current managed execution sandbox cannot launch the Lean runtime.
-- Publish and run remote CI for the locally completed hash-chained run-event slice.
-- Extend typed schema enforcement to concepts and formalizations after source and claim review.
+- Finish issue #10 validation, publish the controlled commit through the GitHub connector, and retain fresh CI evidence on the draft pull request.
+- Keep the local Lean launch limitation visible without misclassifying it as a project-wide blocker.
+- Prepare the next shared application-service and CLI slice after issue #10 is remotely green.
 
 ## Next highest-priority criteria
 
-1. Close Phase 1 issue #4 and Phase 2 issue #5 with remote CI evidence.
-2. Establish concept and formalization schemas on the shared application path.
-3. Expose canonical records, runs, and bounded graph traversal through one shared application service and CLI.
-4. Add the MCP adapter only after it can call that same real application path.
-5. Begin the Lean authority path only after the environment is pinned and executable.
+1. Expose canonical records, runs, and bounded graph traversal through one shared application service and CLI.
+2. Add the MCP adapter only after it can call that same real application path.
+3. Implement environment manifests and the narrow Lean elaboration boundary now that the pinned toolchain is executable in CI.
+4. Implement evidence records and derived truth rules before any proof-status surface exists.
+5. Complete Pilot A through the real interfaces only after those authority controls exist.
 
 ## Exact last validation commands
 
-Run from the repository root with the repo-local Rust toolchain on `PATH`:
+Run from the repository root. The explicit local toolchain path is required only in this managed workspace:
 
 ```text
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
-target/debug/mcl --root /tmp/mathos-run-events-evidence-20260719-01 --json init --actor gpt-5.6-sol --idempotency-key run-events-cli-001
-target/debug/mcl --root /tmp/mathos-run-events-evidence-20260719-01 --json health
+PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo fmt --check
+PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo clippy --workspace --all-targets --all-features -- -D warnings
+PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo test --workspace
 PYTHONPATH=src PYTHONWARNINGS=error::ResourceWarning python -m unittest discover -s tests -v
 git diff --check
 ```
@@ -88,14 +92,11 @@ Observed Rust evidence before this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 41 Rust unit tests passed;
+- 44 Rust unit tests passed;
 - 4 Rust CLI integration tests passed;
-- manual initialization exited 0 with migrations through version 5 and WAL mode;
-- manual health exited 0 after an FTS5 probe defect was reproduced and repaired;
-- manual doctor exited 1 only because Lean could not execute in the managed local sandbox.
-
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.
+- GitHub Actions run `29696708243` passed all five jobs, including exact pinned Lean availability and both Rust operating-system targets.
 
 ## Release readiness
 

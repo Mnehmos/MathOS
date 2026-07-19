@@ -8,6 +8,8 @@ use crate::error::AppError;
 
 pub const SOURCE_SCHEMA_VERSION: &str = "source/1";
 pub const CLAIM_SCHEMA_VERSION: &str = "claim/1";
+pub const CONCEPT_SCHEMA_VERSION: &str = "concept/1";
+pub const FORMALIZATION_SCHEMA_VERSION: &str = "formalization/1";
 const MAX_TEXT_BYTES: usize = 1_048_576;
 const MAX_ITEMS: usize = 1_000;
 
@@ -103,6 +105,57 @@ pub struct ClaimPayload {
     pub ambiguity_notes: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormalDeclarationReference {
+    pub environment_hash: String,
+    pub declaration_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalTaxonomyCrosswalk {
+    pub taxonomy_name: String,
+    pub external_id: String,
+    pub source_reference: ExactVersionReference,
+    pub license_expression: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConceptPayload {
+    pub name: String,
+    pub aliases: Vec<String>,
+    pub description: String,
+    pub subject_domains: Vec<String>,
+    pub formal_declarations: Vec<FormalDeclarationReference>,
+    pub external_taxonomy_crosswalks: Vec<ExternalTaxonomyCrosswalk>,
+    pub pedagogy_metadata_references: Vec<ExactVersionReference>,
+    pub provenance_references: Vec<ExactVersionReference>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormalSystem {
+    Lean4,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormalizationPayload {
+    pub claim_version: ExactVersionReference,
+    pub formal_system: FormalSystem,
+    pub environment_hash: String,
+    pub module_artifact_hash: String,
+    pub declaration_name: String,
+    pub exact_theorem_type: String,
+    pub declaration_hash: String,
+    pub import_manifest: Vec<String>,
+    pub formalization_notes: String,
+    pub fidelity_evidence_references: Vec<String>,
+    pub verification_evidence_references: Vec<String>,
+}
+
 pub fn validate_record_payload(
     kind: RecordKind,
     schema_version: &str,
@@ -119,7 +172,17 @@ pub fn validate_record_payload(
             let claim: ClaimPayload = decode(kind, payload)?;
             validate_claim(&claim)
         }
-        RecordKind::Concept | RecordKind::Formalization | RecordKind::LearningUnit => Ok(()),
+        RecordKind::Concept => {
+            require_schema_version(kind, schema_version, CONCEPT_SCHEMA_VERSION)?;
+            let concept: ConceptPayload = decode(kind, payload)?;
+            validate_concept(&concept)
+        }
+        RecordKind::Formalization => {
+            require_schema_version(kind, schema_version, FORMALIZATION_SCHEMA_VERSION)?;
+            let formalization: FormalizationPayload = decode(kind, payload)?;
+            validate_formalization(&formalization)
+        }
+        RecordKind::LearningUnit => Ok(()),
     }
 }
 
@@ -149,15 +212,7 @@ pub fn source_schema() -> Value {
 }
 
 pub fn claim_schema() -> Value {
-    let reference = json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["object_id", "version_hash"],
-        "properties": {
-            "object_id": {"type": "string", "minLength": 1, "maxLength": 128},
-            "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-        }
-    });
+    let reference = exact_reference_schema();
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://mnehmos.ai/mathos/schemas/claim/1",
@@ -175,6 +230,64 @@ pub fn claim_schema() -> Value {
             "concept_links": {"type": "array", "maxItems": MAX_ITEMS, "items": reference.clone()},
             "source_citations": {"type": "array", "maxItems": MAX_ITEMS, "items": reference},
             "ambiguity_notes": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}}
+        }
+    })
+}
+
+pub fn concept_schema() -> Value {
+    let reference = exact_reference_schema();
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://mnehmos.ai/mathos/schemas/concept/1",
+        "title": "MathOS Concept Payload v1",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "aliases", "description", "subject_domains", "formal_declarations", "external_taxonomy_crosswalks", "pedagogy_metadata_references", "provenance_references"],
+        "properties": {
+            "name": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES},
+            "aliases": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}},
+            "description": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES},
+            "subject_domains": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}},
+            "formal_declarations": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "object", "additionalProperties": false, "required": ["environment_hash", "declaration_name"], "properties": {"environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "declaration_name": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}}}},
+            "external_taxonomy_crosswalks": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "object", "additionalProperties": false, "required": ["taxonomy_name", "external_id", "source_reference", "license_expression"], "properties": {"taxonomy_name": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}, "external_id": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}, "source_reference": reference.clone(), "license_expression": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}}}},
+            "pedagogy_metadata_references": {"type": "array", "maxItems": MAX_ITEMS, "items": reference.clone()},
+            "provenance_references": {"type": "array", "maxItems": MAX_ITEMS, "items": reference}
+        }
+    })
+}
+
+pub fn formalization_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://mnehmos.ai/mathos/schemas/formalization/1",
+        "title": "MathOS Formalization Payload v1",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim_version", "formal_system", "environment_hash", "module_artifact_hash", "declaration_name", "exact_theorem_type", "declaration_hash", "import_manifest", "formalization_notes", "fidelity_evidence_references", "verification_evidence_references"],
+        "properties": {
+            "claim_version": exact_reference_schema(),
+            "formal_system": {"enum": ["lean4"]},
+            "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "module_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "declaration_name": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES},
+            "exact_theorem_type": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES},
+            "declaration_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "import_manifest": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}},
+            "formalization_notes": {"type": "string", "maxLength": MAX_TEXT_BYTES},
+            "fidelity_evidence_references": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
+            "verification_evidence_references": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "string", "minLength": 1, "maxLength": 128}}
+        }
+    })
+}
+
+fn exact_reference_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["object_id", "version_hash"],
+        "properties": {
+            "object_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
         }
     })
 }
@@ -252,8 +365,93 @@ fn validate_claim(claim: &ClaimPayload) -> Result<(), AppError> {
     Ok(())
 }
 
+fn validate_concept(concept: &ConceptPayload) -> Result<(), AppError> {
+    nonempty("concept name", &concept.name)?;
+    nonempty("concept description", &concept.description)?;
+    bounded_items("concept aliases", &concept.aliases)?;
+    bounded_items("concept subject domains", &concept.subject_domains)?;
+    bounded_items("concept formal declarations", &concept.formal_declarations)?;
+    bounded_items(
+        "concept external taxonomy crosswalks",
+        &concept.external_taxonomy_crosswalks,
+    )?;
+    bounded_items(
+        "concept pedagogy metadata references",
+        &concept.pedagogy_metadata_references,
+    )?;
+    bounded_items(
+        "concept provenance references",
+        &concept.provenance_references,
+    )?;
+    for text in concept.aliases.iter().chain(&concept.subject_domains) {
+        nonempty("concept alias or subject domain", text)?;
+    }
+    for declaration in &concept.formal_declarations {
+        valid_hash(
+            &declaration.environment_hash,
+            "formal declaration environment",
+        )?;
+        nonempty("formal declaration name", &declaration.declaration_name)?;
+    }
+    for crosswalk in &concept.external_taxonomy_crosswalks {
+        nonempty("taxonomy name", &crosswalk.taxonomy_name)?;
+        nonempty("taxonomy external ID", &crosswalk.external_id)?;
+        nonempty("taxonomy license", &crosswalk.license_expression)?;
+        validate_reference(&crosswalk.source_reference, "taxonomy source reference")?;
+    }
+    for reference in concept
+        .pedagogy_metadata_references
+        .iter()
+        .chain(&concept.provenance_references)
+    {
+        validate_reference(reference, "concept linked version")?;
+    }
+    Ok(())
+}
+
+fn validate_formalization(formalization: &FormalizationPayload) -> Result<(), AppError> {
+    validate_reference(&formalization.claim_version, "formalization claim version")?;
+    valid_hash(&formalization.environment_hash, "formalization environment")?;
+    valid_hash(
+        &formalization.module_artifact_hash,
+        "formalization module artifact",
+    )?;
+    valid_hash(&formalization.declaration_hash, "formalization declaration")?;
+    nonempty(
+        "formalization declaration name",
+        &formalization.declaration_name,
+    )?;
+    nonempty(
+        "formalization exact theorem type",
+        &formalization.exact_theorem_type,
+    )?;
+    bounded_items(
+        "formalization import manifest",
+        &formalization.import_manifest,
+    )?;
+    bounded_items(
+        "formalization fidelity evidence references",
+        &formalization.fidelity_evidence_references,
+    )?;
+    bounded_items(
+        "formalization verification evidence references",
+        &formalization.verification_evidence_references,
+    )?;
+    for item in formalization.import_manifest.iter() {
+        nonempty("formalization list item", item)?;
+    }
+    for reference in formalization
+        .fidelity_evidence_references
+        .iter()
+        .chain(&formalization.verification_evidence_references)
+    {
+        bounded_text("formalization evidence reference", reference, 128)?;
+    }
+    Ok(())
+}
+
 fn validate_reference(reference: &ExactVersionReference, label: &str) -> Result<(), AppError> {
-    nonempty(label, &reference.object_id)?;
+    bounded_text(label, &reference.object_id, 128)?;
     valid_hash(&reference.version_hash, label)
 }
 
@@ -274,10 +472,14 @@ fn valid_hash(hash: &str, label: &str) -> Result<(), AppError> {
 }
 
 fn nonempty(label: &str, value: &str) -> Result<(), AppError> {
-    if value.trim().is_empty() || value.len() > MAX_TEXT_BYTES {
+    bounded_text(label, value, MAX_TEXT_BYTES)
+}
+
+fn bounded_text(label: &str, value: &str, maximum: usize) -> Result<(), AppError> {
+    if value.trim().is_empty() || value.len() > maximum {
         return Err(AppError::new(
             "MCL_SCHEMA_TEXT_INVALID",
-            format!("{label} must be nonempty and no larger than {MAX_TEXT_BYTES} bytes"),
+            format!("{label} must be nonempty and no larger than {maximum} bytes"),
             false,
             "Supply bounded, explicit text required by the committed schema.",
         ));
@@ -325,8 +527,17 @@ mod tests {
         let committed_claim: Value =
             serde_json::from_str(include_str!("../../schemas/claim/claim-1.schema.json"))
                 .expect("committed claim schema");
+        let committed_concept: Value =
+            serde_json::from_str(include_str!("../../schemas/concept/concept-1.schema.json"))
+                .expect("committed concept schema");
+        let committed_formalization: Value = serde_json::from_str(include_str!(
+            "../../schemas/formalization/formalization-1.schema.json"
+        ))
+        .expect("committed formalization schema");
         assert_eq!(committed_source, source_schema());
         assert_eq!(committed_claim, claim_schema());
+        assert_eq!(committed_concept, concept_schema());
+        assert_eq!(committed_formalization, formalization_schema());
     }
 
     #[test]
@@ -388,5 +599,36 @@ mod tests {
                 .code,
             "MCL_SCHEMA_COLLECTION_TOO_LARGE"
         );
+    }
+
+    #[test]
+    fn formalization_cannot_embed_truth_or_fidelity_verdicts() {
+        let mut payload = json!({
+            "claim_version": {"object_id": "claim", "version_hash": "a".repeat(64)},
+            "formal_system": "lean4",
+            "environment_hash": "b".repeat(64),
+            "module_artifact_hash": "c".repeat(64),
+            "declaration_name": "MathOS.Example",
+            "exact_theorem_type": "True",
+            "declaration_hash": "d".repeat(64),
+            "import_manifest": ["Mathlib"],
+            "formalization_notes": "an interpretation, not a verdict",
+            "fidelity_evidence_references": [],
+            "verification_evidence_references": []
+        });
+        for prohibited in ["proved", "disproved", "faithful", "certified"] {
+            payload[prohibited] = json!(true);
+            assert_eq!(
+                validate_record_payload(
+                    RecordKind::Formalization,
+                    FORMALIZATION_SCHEMA_VERSION,
+                    &payload,
+                )
+                .expect_err("verdict field must be rejected")
+                .code,
+                "MCL_SCHEMA_VALIDATION_FAILED"
+            );
+            payload.as_object_mut().expect("object").remove(prohibited);
+        }
     }
 }

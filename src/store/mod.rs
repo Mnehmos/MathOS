@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::canonical::{canonical_json, record_version_hash, value_hash};
-use crate::domain::schemas::validate_record_payload;
+use crate::domain::schemas::{FormalizationPayload, validate_record_payload};
 use crate::domain::{EdgeDraft, EdgeKind, EdgeSnapshot, RecordDraft, RecordKind, RecordSnapshot};
 use crate::error::AppError;
 
@@ -265,6 +265,7 @@ impl Store {
         {
             return Ok(existing);
         }
+        validate_record_references(&transaction, draft)?;
         if let Some(object_id) = transaction
             .query_row(
                 "SELECT object_id FROM record_versions WHERE version_hash = ?1",
@@ -360,6 +361,7 @@ impl Store {
         {
             return Ok(existing);
         }
+        validate_record_references(&transaction, draft)?;
         let current: Option<(String, String)> = transaction
             .query_row(
                 "SELECT record_type, head_version_hash FROM records WHERE object_id = ?1 AND tombstoned = 0",
@@ -576,6 +578,50 @@ impl Store {
 
     pub fn get_edge(&self, edge_id: &str) -> Result<EdgeSnapshot, AppError> {
         read_edge(&self.connection, edge_id)
+    }
+}
+
+fn validate_record_references(
+    transaction: &rusqlite::Transaction<'_>,
+    draft: &RecordDraft,
+) -> Result<(), AppError> {
+    if draft.kind != RecordKind::Formalization {
+        return Ok(());
+    }
+    let formalization: FormalizationPayload = serde_json::from_value(draft.payload.clone())
+        .map_err(|error| {
+            AppError::new(
+                "MCL_SCHEMA_VALIDATION_FAILED",
+                format!("formalization payload could not be decoded after validation: {error}"),
+                false,
+                "Submit a payload matching the committed formalization schema.",
+            )
+        })?;
+    let actual_kind = transaction
+        .query_row(
+            "SELECT r.record_type FROM record_versions rv JOIN records r ON r.object_id = rv.object_id WHERE rv.version_hash = ?1 AND rv.object_id = ?2",
+            params![
+                formalization.claim_version.version_hash,
+                formalization.claim_version.object_id
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| AppError::database("validate formalization claim version", error))?;
+    match actual_kind.as_deref() {
+        Some("claim") => Ok(()),
+        Some(kind) => Err(AppError::new(
+            "MCL_FORMALIZATION_CLAIM_INVALID",
+            format!("formalization claim reference resolves to `{kind}`, not `claim`"),
+            false,
+            "Reference an exact existing claim object and version.",
+        )),
+        None => Err(AppError::new(
+            "MCL_FORMALIZATION_CLAIM_INVALID",
+            "formalization claim reference does not resolve to an exact existing version",
+            false,
+            "Reference an exact existing claim object and version.",
+        )),
     }
 }
 
@@ -895,6 +941,8 @@ fn read_edge(connection: &Connection, edge_id: &str) -> Result<EdgeSnapshot, App
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use tempfile::TempDir;
 
     use super::*;
@@ -1368,6 +1416,186 @@ mod tests {
             }),
             searchable_text: label.to_owned(),
         }
+    }
+
+    fn formalization(
+        claim: &RecordSnapshot,
+        theorem_type: &str,
+        environment_marker: char,
+        artifact_marker: char,
+        imports: &[&str],
+    ) -> RecordDraft {
+        RecordDraft {
+            kind: RecordKind::Formalization,
+            schema_version: "formalization/1".to_owned(),
+            payload: json!({
+                "claim_version": {
+                    "object_id": claim.object_id,
+                    "version_hash": claim.version_hash
+                },
+                "formal_system": "lean4",
+                "environment_hash": environment_marker.to_string().repeat(64),
+                "module_artifact_hash": artifact_marker.to_string().repeat(64),
+                "declaration_name": "MathOS.Pilot.prime_claim",
+                "exact_theorem_type": theorem_type,
+                "declaration_hash": "d".repeat(64),
+                "import_manifest": imports,
+                "formalization_notes": "test formalization variant",
+                "fidelity_evidence_references": [],
+                "verification_evidence_references": []
+            }),
+            searchable_text: theorem_type.to_owned(),
+        }
+    }
+
+    #[test]
+    fn one_claim_retains_multiple_exact_formalizations_and_sensitive_changes_rehash() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let claim = store
+            .create_record(
+                &claim("Every prime number is odd"),
+                "author",
+                "claim-formalized",
+            )
+            .expect("claim created");
+        let variants = [
+            formalization(&claim, "∀ p, Nat.Prime p → Odd p", 'a', 'b', &["Mathlib"]),
+            formalization(
+                &claim,
+                "∀ p, Nat.Prime p → p % 2 = 1",
+                'a',
+                'b',
+                &["Mathlib"],
+            ),
+            formalization(&claim, "∀ p, Nat.Prime p → Odd p", 'c', 'b', &["Mathlib"]),
+            formalization(&claim, "∀ p, Nat.Prime p → Odd p", 'a', 'c', &["Mathlib"]),
+            formalization(
+                &claim,
+                "∀ p, Nat.Prime p → Odd p",
+                'a',
+                'b',
+                &["Mathlib", "MathOS.Foundation"],
+            ),
+        ];
+        let created = variants
+            .iter()
+            .enumerate()
+            .map(|(index, draft)| {
+                store
+                    .create_record(draft, "formalizer", &format!("formalization-{index}"))
+                    .expect("formalization created")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            created
+                .iter()
+                .map(|item| item.object_id.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            created.len()
+        );
+        assert_eq!(
+            created
+                .iter()
+                .map(|item| item.version_hash.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            created.len()
+        );
+        drop(store);
+        let reopened = Store::open(&database).expect("database reopens");
+        for formalization in created {
+            assert_eq!(
+                reopened
+                    .get_record_version(&formalization.version_hash)
+                    .expect("formalization remains addressable"),
+                formalization
+            );
+        }
+    }
+
+    #[test]
+    fn formalization_rejects_missing_or_non_claim_exact_references() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let source = store
+            .create_record(&source("not a claim"), "author", "reference-source")
+            .expect("source created");
+
+        let missing_claim = RecordSnapshot {
+            object_id: "missing-claim".to_owned(),
+            version_hash: "a".repeat(64),
+            kind: RecordKind::Claim,
+            schema_version: "claim/1".to_owned(),
+            payload: json!({}),
+            predecessor_hash: None,
+            created_at: 0,
+            created_by: "test".to_owned(),
+        };
+        assert_eq!(
+            store
+                .create_record(
+                    &formalization(&missing_claim, "True", 'b', 'c', &["Mathlib"]),
+                    "formalizer",
+                    "missing-claim",
+                )
+                .expect_err("missing claim rejected")
+                .code,
+            "MCL_FORMALIZATION_CLAIM_INVALID"
+        );
+
+        assert_eq!(
+            store
+                .create_record(
+                    &formalization(&source, "True", 'b', 'c', &["Mathlib"]),
+                    "formalizer",
+                    "source-is-not-claim",
+                )
+                .expect_err("wrong referenced kind rejected")
+                .code,
+            "MCL_FORMALIZATION_CLAIM_INVALID"
+        );
+
+        let claim = store
+            .create_record(&claim("A valid claim"), "author", "valid-claim")
+            .expect("claim created");
+        let created = store
+            .create_record(
+                &formalization(&claim, "True", 'b', 'c', &["Mathlib"]),
+                "formalizer",
+                "valid-formalization",
+            )
+            .expect("valid formalization created");
+        let mut invalid_version = formalization(&claim, "True ∧ True", 'b', 'c', &["Mathlib"]);
+        invalid_version.payload["claim_version"] = json!({
+            "object_id": "missing-claim",
+            "version_hash": "a".repeat(64)
+        });
+        assert_eq!(
+            store
+                .version_record(
+                    &created.object_id,
+                    &created.version_hash,
+                    &invalid_version,
+                    "formalizer",
+                    "invalid-formalization-version",
+                )
+                .expect_err("invalid exact reference rejected on version")
+                .code,
+            "MCL_FORMALIZATION_CLAIM_INVALID"
+        );
+        assert_eq!(
+            store
+                .get_record(&created.object_id)
+                .expect("formalization remains readable")
+                .version_hash,
+            created.version_hash
+        );
     }
 
     #[test]
