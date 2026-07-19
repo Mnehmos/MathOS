@@ -34,6 +34,18 @@ lean_path="$(elan which lean)"
 lean_root="$(dirname "$(dirname "$lean_path")")"
 bwrap_version="$(/usr/bin/bwrap --version)"
 
+make_traversable_for_namespace_setup() {
+  local current="$1"
+  while [[ "$current" == "$HOME"/* ]]; do
+    chmod o+x "$current"
+    current="$(dirname "$current")"
+  done
+  chmod o+x "$HOME"
+}
+
+make_traversable_for_namespace_setup "$PWD"
+make_traversable_for_namespace_setup "$lean_root"
+
 if ! sudo /usr/bin/bwrap \
   --unshare-all \
   --die-with-parent \
