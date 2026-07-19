@@ -25,6 +25,8 @@ Phase 2 evidence: `mcl init` and storage health work locally and in Windows and 
 
 Phase 3 fidelity evidence: closed request and report types distinguish all specified review levels, attestation, benchmark alignment, verified review, rejection, ambiguity disposition, definition mappings, and exact source, claim, formalization, run, artifact, and supersession references. Reviews persist through one shared CLI and MCP application path. Controlled private reports bind human-review provenance, derived status follows one compare-and-swap evidence head, and superseded reviews remain visible. Self-verification, stale heads, missing artifacts, substituted lineage, erased ambiguity, report corruption, restart, and retry paths are tested. Fidelity is only one part of the full claim lifecycle, so the complete core lifecycle criteria remain unchecked.
 
+Remote fidelity evidence: GitHub Actions run `29706138708` passed fresh Linux, Windows, storage, Python, and real pinned Lean jobs on exact tree `80b1d2e92e81192a2863bb445a7bef872fc21b72`. Issue #20 is closed. Proof authority and derived mathematical status remain absent, so the complete lifecycle criteria remain unchecked.
+
 ## Verification
 
 - [ ] Lean verification uses pinned environments.

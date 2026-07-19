@@ -12,7 +12,7 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 Transition from Phase 2 canonical interfaces to Phase 3 formalization and Lean authority.
 
-Active implementation issue: [#20, implement role-separated statement fidelity evidence](https://github.com/Mnehmos/MathOS/issues/20).
+Active implementation issue: [#21, define publication-profile proof authority and retained evidence](https://github.com/Mnehmos/MathOS/issues/21).
 
 Issues [#14](https://github.com/Mnehmos/MathOS/issues/14) and [#15](https://github.com/Mnehmos/MathOS/issues/15) closed after GitHub Actions run `29699563931` passed all jobs on fresh Linux and Windows runners.
 
@@ -25,6 +25,8 @@ Issue [#17](https://github.com/Mnehmos/MathOS/issues/17) closed after GitHub Act
 Issue [#18](https://github.com/Mnehmos/MathOS/issues/18) closed after GitHub Actions run `29703359524` passed all five jobs, including real pinned Lean integration, on exact remote tree `7622bf7c2408061104f2b27fcca0fb451d4653a2`. This closes immutable diagnostic-evidence binding only, not proof authority.
 
 Issue [#19](https://github.com/Mnehmos/MathOS/issues/19) closed after GitHub Actions run `29704542965` passed all five jobs, including the real pinned Lean audit lifecycle and fresh Linux and Windows suites, on exact remote tree `30d55d6e2ce7b0de2d921cff3e1368124fd9f66f`. This closes local proof-closure and axiom-audit evidence only, not proof authority or statement fidelity.
+
+Issue [#20](https://github.com/Mnehmos/MathOS/issues/20) closed after GitHub Actions run `29706138708` passed all five jobs, including role-separated fidelity review through real CLI and MCP paths, adversarial provenance and corruption checks, the pinned Lean integration, and fresh Linux and Windows suites on exact remote tree `80b1d2e92e81192a2863bb445a7bef872fc21b72`. This closes statement fidelity evidence only, not proof authority or mathematical truth status.
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -155,14 +157,14 @@ These items establish only part of the product foundation and Phase 2 trace mode
 
 ## Active work
 
-- Verify issue #20 role-separated statement fidelity evidence on the exact GitHub tree and close the issue only after fresh Linux, Windows, storage, Python, and pinned Lean jobs pass.
+- Implement issue #21 publication-profile proof authority without allowing local diagnostic workers or caller-authored reports to self-promote.
 - Keep proof authority and mathematical status impossible while fidelity and publication-profile controls remain incomplete.
-- The issue #20 implementation is complete locally: contracts, persistence, controlled reports, exact lineage, role separation, supersession, derived status, shared CLI and MCP paths, restart behavior, and adversarial integrity checks pass. Remote exact-tree CI evidence remains active work.
+- Issue #20 is complete with exact-tree CI evidence. Issue #21 must now bind clean-checkout verification, dependency closure, retained artifacts, policy identity, and non-forgeable report provenance before authoritative proof or refutation evidence can exist.
 
 ## Next highest-priority criteria
 
-1. Complete issue #20 role-separated fidelity evidence and exact derived fidelity status.
-2. Implement the publication-profile verifier and authoritative exact proof/refutation evidence without weakening local isolation claims.
+1. Implement issue #21 publication-profile verification and authoritative exact proof/refutation evidence without weakening local isolation claims.
+2. Prove that local diagnostics, caller-authored reports, and altered retained artifacts cannot cross the authority boundary.
 3. Derive mathematical status only from exact current proof and fidelity evidence.
 4. Complete Pilot A through the real interfaces only after both authority and fidelity controls exist.
 
@@ -192,6 +194,7 @@ Observed validation evidence for this update:
 - GitHub Actions run `29701916437` passed all jobs for exact contained execution, including real Lean 4.32.0 acceptance and rejection plus wrong-version refusal.
 - GitHub Actions run `29703359524` passed all jobs for exact diagnostic evidence, including the real pinned Lean worker and fresh Linux and Windows suites.
 - GitHub Actions run `29704542965` passed all jobs for local proof-closure and axiom-audit evidence, including the exact real Lean lifecycle and fresh Linux and Windows suites.
+- GitHub Actions run `29706138708` passed all jobs for controlled statement-fidelity evidence on exact tree `80b1d2e92e81192a2863bb445a7bef872fc21b72`, including fresh Linux and Windows, real storage, legacy regression, and pinned Lean jobs.
 - The managed workspace still lacks Lean; local `mcl doctor` correctly reports that one unhealthy check while database, CAS, leases, environments, and artifact inventory remain healthy.
 
 ## Release readiness
