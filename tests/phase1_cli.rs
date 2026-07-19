@@ -103,7 +103,7 @@ fn init_creates_real_storage_and_health_passes() {
         String::from_utf8_lossy(&initialized.stderr)
     );
     let value = parse_stdout(&initialized);
-    assert_eq!(value["migration_version"], 5);
+    assert_eq!(value["migration_version"], 6);
     assert_eq!(value["journal_mode"], "wal");
     assert!(root.path().join("mcl.toml").is_file());
     assert!(root.path().join(".mcl/state.sqlite3").is_file());
@@ -115,6 +115,112 @@ fn init_creates_real_storage_and_health_passes() {
         String::from_utf8_lossy(&health.stdout)
     );
     assert_eq!(parse_stdout(&health)["healthy"], true);
+}
+
+#[test]
+fn environment_cli_registers_dry_runs_retries_and_survives_restart() {
+    let root = TempDir::new().expect("temporary root");
+    assert!(
+        mcl(
+            &root,
+            &[
+                "init",
+                "--actor",
+                "environment-cli-test",
+                "--idempotency-key",
+                "environment-cli-init",
+            ],
+        )
+        .status
+        .success()
+    );
+    let manifest = include_str!("../fixtures/environment/lean-4.32-local.json").to_owned();
+    let register = |dry_run: bool, idempotency_key: &str| {
+        let mut arguments = vec![
+            "environment".to_owned(),
+            "register".to_owned(),
+            "--manifest-json".to_owned(),
+            manifest.clone(),
+            "--actor".to_owned(),
+            "environment-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            idempotency_key.to_owned(),
+        ];
+        if dry_run {
+            arguments.push("--dry-run".to_owned());
+        }
+        mcl_owned(&root, &arguments)
+    };
+
+    let preview = register(true, "environment-cli-preview");
+    assert!(preview.status.success());
+    assert_eq!(parse_stdout(&preview)["dry_run"], true);
+    assert_eq!(parse_stdout(&preview)["environment"], Value::Null);
+    assert_eq!(
+        parse_stdout(&mcl(&root, &["environment", "list"])),
+        json!([])
+    );
+
+    let created = register(false, "environment-cli-register");
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let created = parse_stdout(&created);
+    let expected_hash = include_str!("../fixtures/environment/lean-4.32-local.sha256").trim();
+    assert_eq!(created["proposed_environment_hash"], expected_hash);
+    assert_eq!(created["environment"]["environment_hash"], expected_hash);
+    assert_eq!(created["environment"]["created_by"], "environment-cli-test");
+
+    let retried = parse_stdout(&register(false, "environment-cli-register"));
+    assert_eq!(retried["environment"], created["environment"]);
+    let loaded = mcl(
+        &root,
+        &["environment", "get", "--environment-hash", expected_hash],
+    );
+    assert!(loaded.status.success());
+    assert_eq!(parse_stdout(&loaded), created["environment"]);
+    assert_eq!(
+        parse_stdout(&mcl(&root, &["environment", "list", "--limit", "10"]))
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+
+    let mut invalid: Value = serde_json::from_str(&manifest).expect("manifest JSON");
+    invalid["machine_name"] = json!("must-not-enter-identity");
+    let invalid = mcl_owned(
+        &root,
+        &[
+            "environment".to_owned(),
+            "register".to_owned(),
+            "--manifest-json".to_owned(),
+            invalid.to_string(),
+            "--actor".to_owned(),
+            "environment-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "environment-cli-invalid".to_owned(),
+        ],
+    );
+    assert!(!invalid.status.success());
+    let error: Value = serde_json::from_slice(&invalid.stderr).expect("environment error JSON");
+    assert_eq!(error["code"], "MCL_ENVIRONMENT_JSON_INVALID");
+
+    let doctor = mcl(&root, &["doctor"]);
+    let doctor = parse_stdout(&doctor);
+    let environment_check = doctor["checks"]
+        .as_array()
+        .expect("doctor checks")
+        .iter()
+        .find(|check| check["name"] == "environments")
+        .expect("environment doctor check");
+    assert_eq!(environment_check["healthy"], true);
+    assert!(
+        environment_check["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("registered=1"))
+    );
 }
 
 #[test]

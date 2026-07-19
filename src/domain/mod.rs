@@ -10,8 +10,9 @@ pub mod environment;
 pub mod schemas;
 
 pub use environment::{
-    DependencyRevision, EnvironmentManifest, EnvironmentPlatform, ResourceLimits, TrustProfile,
-    VerifierArgument, VerifierCommandTemplate, VerifierExecutable, WorkingDirectoryPolicy,
+    DependencyRevision, EnvironmentManifest, EnvironmentPlatform, EnvironmentSnapshot,
+    ResourceLimits, TrustProfile, VerifierArgument, VerifierCommandTemplate, VerifierExecutable,
+    WorkingDirectoryPolicy,
 };
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

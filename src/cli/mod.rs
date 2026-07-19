@@ -7,8 +7,8 @@ use serde_json::{Value, to_value};
 use crate::app::{Application, root_exists};
 use crate::config::ResolvedConfig;
 use crate::domain::{
-    EdgeDraft, EdgeKind, GraphTraversalRequest, RecordDraft, RecordKind, RecordSnapshot,
-    RunEventDraft, RunEventKind, RunKind, TraversalDirection,
+    EdgeDraft, EdgeKind, EnvironmentManifest, GraphTraversalRequest, RecordDraft, RecordKind,
+    RecordSnapshot, RunEventDraft, RunEventKind, RunKind, TraversalDirection,
 };
 use crate::error::AppError;
 
@@ -42,6 +42,8 @@ enum Command {
     Health,
     /// Run storage checks and report Lean toolchain readiness.
     Doctor,
+    /// Register or retrieve an immutable pinned Lean environment manifest.
+    Environment(EnvironmentOptions),
     /// Serve the Model Context Protocol over newline-delimited stdio.
     Serve,
     /// Create, version, or retrieve a source through the canonical application path.
@@ -72,6 +74,40 @@ struct MutationOptions {
 
     #[arg(long)]
     idempotency_key: String,
+}
+
+#[derive(Debug, Args)]
+struct EnvironmentOptions {
+    #[command(subcommand)]
+    action: EnvironmentAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum EnvironmentAction {
+    Register(EnvironmentRegisterOptions),
+    Get(EnvironmentGetOptions),
+    List(EnvironmentListOptions),
+}
+
+#[derive(Debug, Args)]
+struct EnvironmentRegisterOptions {
+    #[arg(long)]
+    manifest_json: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct EnvironmentGetOptions {
+    #[arg(long)]
+    environment_hash: String,
+}
+
+#[derive(Debug, Args)]
+struct EnvironmentListOptions {
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
 }
 
 #[derive(Debug, Args)]
@@ -302,6 +338,7 @@ impl Cli {
                     success,
                 })
             }
+            Command::Environment(options) => execute_environment(&config, options),
             Command::Serve => {
                 crate::mcp::serve_stdio(config)?;
                 Ok(CliOutcome {
@@ -328,6 +365,43 @@ impl Cli {
             Command::Research(options) => execute_research(&config, options),
         }
     }
+}
+
+fn execute_environment(
+    config: &ResolvedConfig,
+    options: EnvironmentOptions,
+) -> Result<CliOutcome, AppError> {
+    let mut application = Application::open(config)?;
+    let value = match options.action {
+        EnvironmentAction::Register(options) => {
+            let manifest: EnvironmentManifest = serde_json::from_str(&options.manifest_json)
+                .map_err(|error| {
+                    AppError::new(
+                        "MCL_ENVIRONMENT_JSON_INVALID",
+                        format!("environment manifest JSON is invalid: {error}"),
+                        false,
+                        "Supply one complete manifest matching `schemas/environment/environment-1.schema.json`.",
+                    )
+                })?;
+            to_value(application.register_environment(
+                &manifest,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("environment registration outcome is serializable")
+        }
+        EnvironmentAction::Get(options) => {
+            to_value(application.get_environment(&options.environment_hash)?)
+                .expect("environment snapshot is serializable")
+        }
+        EnvironmentAction::List(options) => to_value(application.list_environments(options.limit)?)
+            .expect("environment list is serializable"),
+    };
+    Ok(CliOutcome {
+        value,
+        success: true,
+    })
 }
 
 fn execute_entity(

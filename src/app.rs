@@ -7,8 +7,9 @@ use serde_json::{Value, json};
 use crate::artifacts::ArtifactStore;
 use crate::config::ResolvedConfig;
 use crate::domain::{
-    EdgeDraft, EdgeSnapshot, GraphTraversalHit, GraphTraversalRequest, RecordDraft, RecordSnapshot,
-    RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
+    EdgeDraft, EdgeSnapshot, EnvironmentManifest, EnvironmentSnapshot, GraphTraversalHit,
+    GraphTraversalRequest, RecordDraft, RecordSnapshot, RunChainReport, RunEventDraft,
+    RunEventSnapshot, RunKind, RunSnapshot,
 };
 use crate::error::AppError;
 use crate::store::Store;
@@ -53,6 +54,13 @@ pub struct RunMutationOutcome {
 pub struct RunEventMutationOutcome {
     pub dry_run: bool,
     pub event: Option<RunEventSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EnvironmentRegistrationOutcome {
+    pub dry_run: bool,
+    pub proposed_environment_hash: String,
+    pub environment: Option<EnvironmentSnapshot>,
 }
 
 pub struct Application {
@@ -231,6 +239,20 @@ impl Application {
                     &error.corrective_action,
                 )),
             }
+
+            match Store::open(&config.database).and_then(|store| store.environment_count()) {
+                Ok(count) => report.checks.push(passed_check(
+                    "environments",
+                    format!(
+                        "registered={count}; environment identity does not itself establish proof authority"
+                    ),
+                )),
+                Err(error) => report.checks.push(failed_check(
+                    "environments",
+                    error.to_string(),
+                    &error.corrective_action,
+                )),
+            }
         }
 
         match lean_version(&config.verifier.lean_command) {
@@ -246,6 +268,40 @@ impl Application {
 
         report.healthy = report.checks.iter().all(|check| check.healthy);
         report
+    }
+
+    pub fn register_environment(
+        &mut self,
+        manifest: &EnvironmentManifest,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<EnvironmentRegistrationOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let (proposed_environment_hash, environment) = if dry_run {
+            (
+                self.store.validate_environment_registration(manifest)?,
+                None,
+            )
+        } else {
+            let environment = self
+                .store
+                .register_environment(manifest, actor, idempotency_key)?;
+            (environment.environment_hash.clone(), Some(environment))
+        };
+        Ok(EnvironmentRegistrationOutcome {
+            dry_run,
+            proposed_environment_hash,
+            environment,
+        })
+    }
+
+    pub fn get_environment(&self, environment_hash: &str) -> Result<EnvironmentSnapshot, AppError> {
+        self.store.get_environment(environment_hash)
+    }
+
+    pub fn list_environments(&self, limit: usize) -> Result<Vec<EnvironmentSnapshot>, AppError> {
+        self.store.list_environments(limit)
     }
 
     pub fn create_record(

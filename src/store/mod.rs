@@ -10,7 +10,10 @@ use uuid::Uuid;
 
 use crate::canonical::{canonical_json, record_version_hash, value_hash};
 use crate::domain::schemas::{FormalizationPayload, validate_record_payload};
-use crate::domain::{EdgeDraft, EdgeKind, EdgeSnapshot, RecordDraft, RecordKind, RecordSnapshot};
+use crate::domain::{
+    EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest, EnvironmentSnapshot, RecordDraft,
+    RecordKind, RecordSnapshot,
+};
 use crate::error::AppError;
 
 mod graph;
@@ -21,6 +24,7 @@ const MIGRATION_0002: &str = include_str!("../../migrations/0002_idempotency.sql
 const MIGRATION_0003: &str = include_str!("../../migrations/0003_record_invariants.sql");
 const MIGRATION_0004: &str = include_str!("../../migrations/0004_edge_invariants.sql");
 const MIGRATION_0005: &str = include_str!("../../migrations/0005_run_event_invariants.sql");
+const MIGRATION_0006: &str = include_str!("../../migrations/0006_environment_invariants.sql");
 const REQUIRED_TABLES: &[&str] = &[
     "artifacts",
     "edges",
@@ -177,6 +181,24 @@ impl Store {
                 )
                 .map_err(|error| AppError::database("record migration 0005", error))?;
         }
+        let migration_0006_applied: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 6)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::database("inspect migration 0006", error))?;
+        if !migration_0006_applied {
+            transaction
+                .execute_batch(MIGRATION_0006)
+                .map_err(|error| AppError::database("apply migration 0006", error))?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, unixepoch())",
+                    params![6_i64, "environment invariants"],
+                )
+                .map_err(|error| AppError::database("record migration 0006", error))?;
+        }
         transaction
             .commit()
             .map_err(|error| AppError::database("commit migrations", error))
@@ -244,6 +266,137 @@ impl Store {
                 |row| row.get(0),
             )
             .map_err(|error| AppError::database("count stale leases", error))
+    }
+
+    pub fn register_environment(
+        &mut self,
+        manifest: &EnvironmentManifest,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<EnvironmentSnapshot, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        let manifest_value = manifest.canonical_value()?;
+        let environment_hash = value_hash(&manifest_value)?;
+        let input_hash = value_hash(&json!({
+            "operation": "environment.register",
+            "manifest": manifest_value,
+            "actor": actor,
+        }))?;
+        let manifest_json =
+            String::from_utf8(canonical_json(&manifest_value)?).map_err(|error| {
+                AppError::new(
+                    "MCL_CANONICAL_JSON_INVALID",
+                    error.to_string(),
+                    false,
+                    "Report this canonical JSON encoding defect.",
+                )
+            })?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start environment registration", error))?;
+        if let Some(existing) = read_idempotent_result(
+            &transaction,
+            "environment.register",
+            idempotency_key,
+            &input_hash,
+        )? {
+            return Ok(existing);
+        }
+        if transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM environments WHERE environment_hash = ?1)",
+                [&environment_hash],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::database("search registered environment", error))?
+        {
+            return Err(AppError::new(
+                "MCL_ENVIRONMENT_EXISTS",
+                format!("environment {environment_hash} is already registered"),
+                false,
+                "Retrieve the existing environment or retry with the original idempotency key.",
+            ));
+        }
+        transaction
+            .execute(
+                "INSERT INTO environments(environment_hash, manifest_json, trust_profile, created_at, created_by) VALUES (?1, ?2, ?3, unixepoch(), ?4)",
+                params![environment_hash, manifest_json, manifest.trust_profile.as_str(), actor],
+            )
+            .map_err(|error| AppError::database("insert environment", error))?;
+        let snapshot = read_environment(&transaction, &environment_hash)?;
+        write_idempotent_result(
+            &transaction,
+            "environment.register",
+            idempotency_key,
+            &input_hash,
+            &snapshot,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit environment registration", error))?;
+        Ok(snapshot)
+    }
+
+    pub fn validate_environment_registration(
+        &self,
+        manifest: &EnvironmentManifest,
+    ) -> Result<String, AppError> {
+        let environment_hash = manifest.environment_hash()?;
+        if self
+            .connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM environments WHERE environment_hash = ?1)",
+                [&environment_hash],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::database("preview environment registration", error))?
+        {
+            return Err(AppError::new(
+                "MCL_ENVIRONMENT_EXISTS",
+                format!("environment {environment_hash} is already registered"),
+                false,
+                "Retrieve the existing environment instead of registering it again.",
+            ));
+        }
+        Ok(environment_hash)
+    }
+
+    pub fn get_environment(&self, environment_hash: &str) -> Result<EnvironmentSnapshot, AppError> {
+        validate_hash(environment_hash, "environment")?;
+        read_environment(&self.connection, environment_hash)
+    }
+
+    pub fn list_environments(&self, limit: usize) -> Result<Vec<EnvironmentSnapshot>, AppError> {
+        if !(1..=100).contains(&limit) {
+            return Err(AppError::new(
+                "MCL_ENVIRONMENT_LIMIT_INVALID",
+                "environment list limit must be between 1 and 100",
+                false,
+                "Use a bounded environment list limit.",
+            ));
+        }
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT environment_hash FROM environments ORDER BY created_at, environment_hash LIMIT ?1",
+            )
+            .map_err(|error| AppError::database("prepare environment list", error))?;
+        let hashes = statement
+            .query_map([limit as i64], |row| row.get::<_, String>(0))
+            .map_err(|error| AppError::database("list environments", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AppError::database("read environment list", error))?;
+        hashes
+            .iter()
+            .map(|hash| read_environment(&self.connection, hash))
+            .collect()
+    }
+
+    pub fn environment_count(&self) -> Result<i64, AppError> {
+        self.connection
+            .query_row("SELECT COUNT(*) FROM environments", [], |row| row.get(0))
+            .map_err(|error| AppError::database("count environments", error))
     }
 
     pub fn create_record(
@@ -718,20 +871,43 @@ fn validate_record_references(
         .optional()
         .map_err(|error| AppError::database("validate formalization claim version", error))?;
     match actual_kind.as_deref() {
-        Some("claim") => Ok(()),
-        Some(kind) => Err(AppError::new(
-            "MCL_FORMALIZATION_CLAIM_INVALID",
-            format!("formalization claim reference resolves to `{kind}`, not `claim`"),
-            false,
-            "Reference an exact existing claim object and version.",
-        )),
-        None => Err(AppError::new(
-            "MCL_FORMALIZATION_CLAIM_INVALID",
-            "formalization claim reference does not resolve to an exact existing version",
-            false,
-            "Reference an exact existing claim object and version.",
-        )),
+        Some("claim") => {}
+        Some(kind) => {
+            return Err(AppError::new(
+                "MCL_FORMALIZATION_CLAIM_INVALID",
+                format!("formalization claim reference resolves to `{kind}`, not `claim`"),
+                false,
+                "Reference an exact existing claim object and version.",
+            ));
+        }
+        None => {
+            return Err(AppError::new(
+                "MCL_FORMALIZATION_CLAIM_INVALID",
+                "formalization claim reference does not resolve to an exact existing version",
+                false,
+                "Reference an exact existing claim object and version.",
+            ));
+        }
     }
+    let environment_exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM environments WHERE environment_hash = ?1)",
+            [&formalization.environment_hash],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| AppError::database("validate formalization environment", error))?;
+    if !environment_exists {
+        return Err(AppError::new(
+            "MCL_FORMALIZATION_ENVIRONMENT_INVALID",
+            format!(
+                "formalization environment {} is not registered",
+                formalization.environment_hash
+            ),
+            false,
+            "Register and select an exact pinned environment before creating the formalization.",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_mutation_inputs(actor: &str, idempotency_key: &str) -> Result<(), AppError> {
@@ -860,6 +1036,66 @@ fn update_search_projection(
         )
         .map_err(|error| AppError::database("write search projection", error))?;
     Ok(())
+}
+
+fn read_environment(
+    connection: &Connection,
+    environment_hash: &str,
+) -> Result<EnvironmentSnapshot, AppError> {
+    let row = connection
+        .query_row(
+            "SELECT manifest_json, trust_profile, created_at, created_by FROM environments WHERE environment_hash = ?1",
+            [environment_hash],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| AppError::database("read environment", error))?;
+    let Some((manifest_json, stored_trust_profile, created_at, created_by)) = row else {
+        return Err(AppError::new(
+            "MCL_ENVIRONMENT_NOT_FOUND",
+            format!("environment {environment_hash} is not registered"),
+            false,
+            "Register or select an exact environment hash before formalization or verification.",
+        ));
+    };
+    let manifest: EnvironmentManifest = serde_json::from_str(&manifest_json).map_err(|error| {
+        AppError::new(
+            "MCL_ENVIRONMENT_INTEGRITY_FAILED",
+            format!("stored environment manifest is invalid: {error}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    let computed_hash = manifest.environment_hash().map_err(|error| {
+        AppError::new(
+            "MCL_ENVIRONMENT_INTEGRITY_FAILED",
+            format!("stored environment manifest fails validation: {error}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    if computed_hash != environment_hash || stored_trust_profile != manifest.trust_profile.as_str()
+    {
+        return Err(AppError::new(
+            "MCL_ENVIRONMENT_INTEGRITY_FAILED",
+            format!("stored environment identity does not match {environment_hash}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        ));
+    }
+    Ok(EnvironmentSnapshot {
+        environment_hash: environment_hash.to_owned(),
+        manifest,
+        created_at,
+        created_by,
+    })
 }
 
 fn read_snapshot(
@@ -1063,7 +1299,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("migration succeeds");
 
-        assert_eq!(store.migration_version().expect("migration version"), 5);
+        assert_eq!(store.migration_version().expect("migration version"), 6);
         assert_eq!(store.journal_mode().expect("journal mode"), "wal");
         assert_eq!(store.integrity_check().expect("integrity"), "ok");
         store.schema_check().expect("required schema exists");
@@ -1077,7 +1313,187 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("first migration succeeds");
         store.migrate().expect("second migration succeeds");
-        assert_eq!(store.migration_version().expect("migration version"), 5);
+        assert_eq!(store.migration_version().expect("migration version"), 6);
+    }
+
+    #[test]
+    fn migration_advances_v5_database() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        let transaction = store.connection.transaction().expect("legacy transaction");
+        for (version, name, sql) in [
+            (1_i64, "initial", MIGRATION_0001),
+            (2_i64, "idempotency results", MIGRATION_0002),
+            (3_i64, "record invariants", MIGRATION_0003),
+            (4_i64, "edge invariants", MIGRATION_0004),
+            (5_i64, "run event invariants", MIGRATION_0005),
+        ] {
+            transaction
+                .execute_batch(sql)
+                .expect("legacy migration applies");
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, unixepoch())",
+                    params![version, name],
+                )
+                .expect("legacy migration recorded");
+        }
+        transaction.commit().expect("legacy migrations commit");
+        assert_eq!(store.migration_version().expect("legacy version"), 5);
+
+        store.migrate().expect("forward migration succeeds");
+        assert_eq!(store.migration_version().expect("current version"), 6);
+        assert!(
+            store
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('environments') WHERE name = 'created_by')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .expect("environment attribution column")
+        );
+    }
+
+    fn environment_manifest() -> EnvironmentManifest {
+        serde_json::from_str(include_str!(
+            "../../fixtures/environment/lean-4.32-local.json"
+        ))
+        .expect("environment fixture")
+    }
+
+    #[test]
+    fn environments_are_immutable_idempotent_and_exact_after_restart() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let manifest = environment_manifest();
+
+        let first = store
+            .register_environment(&manifest, "environment-author", "environment-register")
+            .expect("environment registers");
+        assert_eq!(
+            first.environment_hash,
+            include_str!("../../fixtures/environment/lean-4.32-local.sha256").trim()
+        );
+        assert_eq!(first.created_by, "environment-author");
+        assert_eq!(store.environment_count().expect("environment count"), 1);
+        assert_eq!(
+            store
+                .register_environment(&manifest, "environment-author", "environment-register")
+                .expect("exact retry"),
+            first
+        );
+        assert_eq!(
+            store
+                .register_environment(&manifest, "environment-author", "different-key")
+                .expect_err("duplicate environment")
+                .code,
+            "MCL_ENVIRONMENT_EXISTS"
+        );
+
+        let mut changed = manifest.clone();
+        changed.resource_limits.timeout_seconds += 1;
+        assert_eq!(
+            store
+                .register_environment(&changed, "environment-author", "environment-register")
+                .expect_err("idempotency key reuse")
+                .code,
+            "MCL_IDEMPOTENCY_CONFLICT"
+        );
+        let second = store
+            .register_environment(&changed, "environment-author", "environment-second")
+            .expect("changed environment registers");
+        assert_ne!(first.environment_hash, second.environment_hash);
+        assert_eq!(
+            store.list_environments(10).expect("environment list").len(),
+            2
+        );
+
+        drop(store);
+        let restarted = Store::open(&database).expect("database reopens");
+        assert_eq!(
+            restarted
+                .get_environment(&first.environment_hash)
+                .expect("environment survives restart"),
+            first
+        );
+    }
+
+    #[test]
+    fn database_rejects_environment_rewrite_and_deletion() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let environment = store
+            .register_environment(
+                &environment_manifest(),
+                "environment-author",
+                "environment-protected",
+            )
+            .expect("environment registers");
+
+        assert!(
+            store
+                .connection
+                .execute(
+                    "UPDATE environments SET trust_profile = 'publication' WHERE environment_hash = ?1",
+                    [&environment.environment_hash],
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "DELETE FROM environments WHERE environment_hash = ?1",
+                    [&environment.environment_hash],
+                )
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .get_environment(&environment.environment_hash)
+                .expect("protected environment"),
+            environment
+        );
+    }
+
+    #[test]
+    fn detects_environment_manifest_corruption() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let environment = store
+            .register_environment(
+                &environment_manifest(),
+                "environment-author",
+                "environment-corruption",
+            )
+            .expect("environment registers");
+
+        store
+            .connection
+            .execute("DROP TRIGGER environments_reject_update", [])
+            .expect("test removes mutation guard");
+        store
+            .connection
+            .execute(
+                "UPDATE environments SET manifest_json = '{}' WHERE environment_hash = ?1",
+                [&environment.environment_hash],
+            )
+            .expect("test simulates corruption");
+        assert_eq!(
+            store
+                .get_environment(&environment.environment_hash)
+                .expect_err("corruption detected")
+                .code,
+            "MCL_ENVIRONMENT_INTEGRITY_FAILED"
+        );
     }
 
     fn claim(statement: &str) -> RecordDraft {
@@ -1530,7 +1946,7 @@ mod tests {
     fn formalization(
         claim: &RecordSnapshot,
         theorem_type: &str,
-        environment_marker: char,
+        environment_hash: &str,
         artifact_marker: char,
         imports: &[&str],
     ) -> RecordDraft {
@@ -1543,7 +1959,7 @@ mod tests {
                     "version_hash": claim.version_hash
                 },
                 "formal_system": "lean4",
-                "environment_hash": environment_marker.to_string().repeat(64),
+                "environment_hash": environment_hash,
                 "module_artifact_hash": artifact_marker.to_string().repeat(64),
                 "declaration_name": "MathOS.Pilot.prime_claim",
                 "exact_theorem_type": theorem_type,
@@ -1570,21 +1986,55 @@ mod tests {
                 "claim-formalized",
             )
             .expect("claim created");
+        let first_environment = store
+            .register_environment(
+                &environment_manifest(),
+                "environment-author",
+                "formalization-environment-a",
+            )
+            .expect("first environment");
+        let mut changed_environment = environment_manifest();
+        changed_environment.resource_limits.timeout_seconds += 1;
+        let second_environment = store
+            .register_environment(
+                &changed_environment,
+                "environment-author",
+                "formalization-environment-b",
+            )
+            .expect("second environment");
         let variants = [
-            formalization(&claim, "∀ p, Nat.Prime p → Odd p", 'a', 'b', &["Mathlib"]),
-            formalization(
-                &claim,
-                "∀ p, Nat.Prime p → p % 2 = 1",
-                'a',
-                'b',
-                &["Mathlib"],
-            ),
-            formalization(&claim, "∀ p, Nat.Prime p → Odd p", 'c', 'b', &["Mathlib"]),
-            formalization(&claim, "∀ p, Nat.Prime p → Odd p", 'a', 'c', &["Mathlib"]),
             formalization(
                 &claim,
                 "∀ p, Nat.Prime p → Odd p",
-                'a',
+                &first_environment.environment_hash,
+                'b',
+                &["Mathlib"],
+            ),
+            formalization(
+                &claim,
+                "∀ p, Nat.Prime p → p % 2 = 1",
+                &first_environment.environment_hash,
+                'b',
+                &["Mathlib"],
+            ),
+            formalization(
+                &claim,
+                "∀ p, Nat.Prime p → Odd p",
+                &second_environment.environment_hash,
+                'b',
+                &["Mathlib"],
+            ),
+            formalization(
+                &claim,
+                "∀ p, Nat.Prime p → Odd p",
+                &first_environment.environment_hash,
+                'c',
+                &["Mathlib"],
+            ),
+            formalization(
+                &claim,
+                "∀ p, Nat.Prime p → Odd p",
+                &first_environment.environment_hash,
                 'b',
                 &["Mathlib", "MathOS.Foundation"],
             ),
@@ -1635,6 +2085,13 @@ mod tests {
         let source = store
             .create_record(&source("not a claim"), "author", "reference-source")
             .expect("source created");
+        let environment = store
+            .register_environment(
+                &environment_manifest(),
+                "environment-author",
+                "reference-environment",
+            )
+            .expect("environment registered");
 
         let missing_claim = RecordSnapshot {
             object_id: "missing-claim".to_owned(),
@@ -1649,7 +2106,13 @@ mod tests {
         assert_eq!(
             store
                 .create_record(
-                    &formalization(&missing_claim, "True", 'b', 'c', &["Mathlib"]),
+                    &formalization(
+                        &missing_claim,
+                        "True",
+                        &environment.environment_hash,
+                        'c',
+                        &["Mathlib"],
+                    ),
                     "formalizer",
                     "missing-claim",
                 )
@@ -1661,7 +2124,13 @@ mod tests {
         assert_eq!(
             store
                 .create_record(
-                    &formalization(&source, "True", 'b', 'c', &["Mathlib"]),
+                    &formalization(
+                        &source,
+                        "True",
+                        &environment.environment_hash,
+                        'c',
+                        &["Mathlib"],
+                    ),
                     "formalizer",
                     "source-is-not-claim",
                 )
@@ -1673,14 +2142,37 @@ mod tests {
         let claim = store
             .create_record(&claim("A valid claim"), "author", "valid-claim")
             .expect("claim created");
+        assert_eq!(
+            store
+                .create_record(
+                    &formalization(&claim, "True", &"f".repeat(64), 'c', &["Mathlib"]),
+                    "formalizer",
+                    "missing-environment",
+                )
+                .expect_err("missing environment rejected")
+                .code,
+            "MCL_FORMALIZATION_ENVIRONMENT_INVALID"
+        );
         let created = store
             .create_record(
-                &formalization(&claim, "True", 'b', 'c', &["Mathlib"]),
+                &formalization(
+                    &claim,
+                    "True",
+                    &environment.environment_hash,
+                    'c',
+                    &["Mathlib"],
+                ),
                 "formalizer",
                 "valid-formalization",
             )
             .expect("valid formalization created");
-        let mut invalid_version = formalization(&claim, "True ∧ True", 'b', 'c', &["Mathlib"]);
+        let mut invalid_version = formalization(
+            &claim,
+            "True ∧ True",
+            &environment.environment_hash,
+            'c',
+            &["Mathlib"],
+        );
         invalid_version.payload["claim_version"] = json!({
             "object_id": "missing-claim",
             "version_hash": "a".repeat(64)

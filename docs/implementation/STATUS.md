@@ -86,19 +86,25 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Environment identity includes exact Lean release, dependency revisions, imports, project configuration hashes, platform, trust profile, typed verifier command, explicit resource limits, network policy, and working-directory policy.
 - Environment validation rejects unpinned dependencies, unknown and machine-specific fields, path-shaped imports, duplicates, noncanonical ordering, arbitrary commands, network-enabled verification, unsafe hashes, and zero or excessive limits before hashing.
 - Changing an environment-relevant field changes the canonical environment hash. This establishes context identity only and does not establish a proof.
+- Migration 0006 adds immutable environment attribution and database triggers that reject environment update and deletion.
+- Environment registration is content-addressed, actor-attributed, idempotent, durable across restart, exactly retrievable, and deterministically listable through the shared application service and CLI.
+- Environment dry runs validate and predict the exact hash without mutation. Idempotency-key reuse for a different manifest fails closed.
+- Environment reads recompute manifest identity and trust profile, detecting corrupted stored JSON even if database mutation guards are bypassed.
+- `mcl doctor` reports registered environment count while explicitly stating that environment identity does not establish proof authority.
+- New formalizations must reference an exact registered environment hash. A syntactically valid but unresolved hash fails before canonical record persistence.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, complete MCP mutation surface, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
 - Require fresh Linux and Windows CI evidence containing the explicit unknown-action MCP test before closing issue #14 again.
-- Persist immutable environment manifests with idempotent registration, exact lookup, database invariants, application service, and CLI controls under issue #15.
-- Require formalizations to resolve an exact registered environment before implementing Lean execution.
+- Publish the completed issue #15 persistence and formalization-binding slice and require fresh Linux and Windows CI.
+- Design the narrow Lean subprocess boundary only after the exact environment can be resolved from canonical state.
 - Keep the local Lean launch limitation visible without misclassifying it as a project-wide blocker.
 
 ## Next highest-priority criteria
 
-1. Complete immutable environment persistence and formalization reference enforcement.
+1. Obtain remote CI evidence for environment persistence, forward migration, CLI, corruption detection, and formalization binding.
 2. Implement the narrow Lean elaboration boundary using registered environments.
 3. Implement evidence records and derived truth rules before any proof-status surface exists.
 4. Complete Pilot A through the real interfaces only after those authority controls exist.
@@ -119,8 +125,8 @@ Observed validation evidence for this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 48 Rust unit tests passed;
-- 6 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
+- 52 Rust unit tests passed;
+- 7 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.
 - GitHub Actions run `29698741558` passed all five jobs for the completed MCP mutation surface, including exact pinned Lean availability and both Rust operating-system targets. The subsequent explicit invalid-action test awaits a branch CI run.

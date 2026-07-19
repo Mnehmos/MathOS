@@ -384,6 +384,25 @@ fn query_tool_matches_cli_state_and_returns_structured_application_errors() {
 fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs() {
     let root = TempDir::new().expect("temporary root");
     initialize_instance(root.path());
+    let registered_environment = mcl(
+        root.path(),
+        &[
+            "environment",
+            "register",
+            "--manifest-json",
+            include_str!("../fixtures/environment/lean-4.32-local.json"),
+            "--actor",
+            "mcp-test",
+            "--idempotency-key",
+            "mcp-environment-register",
+        ],
+    );
+    assert!(
+        registered_environment.status.success(),
+        "{}",
+        String::from_utf8_lossy(&registered_environment.stderr)
+    );
+    let environment_hash = include_str!("../fixtures/environment/lean-4.32-local.sha256").trim();
     let mut server = McpProcess::spawn(root.path());
     initialize_protocol(&mut server, "2025-11-25");
 
@@ -470,7 +489,7 @@ fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs(
     let formalization_payload = json!({
         "claim_version": {"object_id": claim_id, "version_hash": claim_hash},
         "formal_system": "lean4",
-        "environment_hash": "a".repeat(64),
+        "environment_hash": environment_hash,
         "module_artifact_hash": "b".repeat(64),
         "declaration_name": "MathOS.Pilot.primeParity",
         "exact_theorem_type": "forall p : Nat, Nat.Prime p -> Odd p",
@@ -501,7 +520,7 @@ fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs(
             "payload": {
                 "claim_version": {"object_id": claim_id, "version_hash": claim_hash},
                 "formal_system": "lean4",
-                "environment_hash": "a".repeat(64),
+                "environment_hash": environment_hash,
                 "module_artifact_hash": "b".repeat(64),
                 "declaration_name": "MathOS.Pilot.falseAuthority",
                 "exact_theorem_type": "True",

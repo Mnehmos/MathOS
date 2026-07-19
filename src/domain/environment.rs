@@ -33,6 +33,14 @@ pub struct EnvironmentManifest {
     pub working_directory_policy: WorkingDirectoryPolicy,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EnvironmentSnapshot {
+    pub environment_hash: String,
+    pub manifest: EnvironmentManifest,
+    pub created_at: i64,
+    pub created_by: String,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentFormalSystem {

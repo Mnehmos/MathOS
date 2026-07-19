@@ -25,3 +25,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 15. [A Bridge Must Carry the Same Weight](0015-a-bridge-must-carry-the-same-weight.md)
 16. [A Mutation Must Introduce Itself](0016-a-mutation-must-introduce-itself.md)
 17. [The World Around a Proof](0017-the-world-around-a-proof.md)
+18. [A Name Must Lead Somewhere](0018-a-name-must-lead-somewhere.md)

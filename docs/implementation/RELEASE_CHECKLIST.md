@@ -33,6 +33,8 @@ Phase 2 evidence: `mcl init` and storage health work locally and in Windows and 
 
 Phase 1 evidence: `lean-toolchain` pins Lean 4.32.0. No proof-authority item is complete.
 
+Phase 3 environment evidence: a closed canonical manifest, exact hash, immutable persistence, CLI registration, restart retrieval, corruption detection, and formalization reference gate exist. No Lean artifact has been executed or accepted as evidence, so every verification item remains unchecked.
+
 ## Search and context
 
 - [ ] Exact, FTS, graph, declaration, and failure searches work.
