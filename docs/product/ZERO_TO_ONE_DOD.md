@@ -16,7 +16,7 @@ This is the implementation ledger for v1.0.0. An item is complete only when its 
 | MCP stdio interface | Complete | `tests/test_mcp.py` protocol and lifecycle tests |
 | Adversarial playtesting | Complete | Thirteen scenarios plus 200 deterministic randomized claims |
 | Clean environment installation | Complete | Wheel build, isolated install, demo, export validation, and `pip check` |
-| All review threads and checks pass | Pending | v1.0 release-correction pull request |
+| All review threads and checks pass | Complete | PR #3: GitHub Actions and CodeRabbit pass; no actionable review comments |
 | Main tagged v1.0.0 | Ready after merge | Release tag |
 
 ## Terminal release gate
