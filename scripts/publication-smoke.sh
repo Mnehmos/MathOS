@@ -31,6 +31,7 @@ commit_sha="$(git rev-parse HEAD)"
 tree_sha="$(git rev-parse HEAD^{tree})"
 toolchain="$(tr -d '\r\n' < lean-toolchain)"
 lean_path="$(elan which lean)"
+lean_root="$(dirname "$(dirname "$lean_path")")"
 bwrap_version="$(/usr/bin/bwrap --version)"
 runner_uid="$(id -u)"
 runner_gid="$(id -g)"
@@ -42,11 +43,13 @@ if ! sudo /usr/bin/bwrap \
   --uid "$runner_uid" \
   --gid "$runner_gid" \
   --ro-bind / / \
+  --ro-bind "$PWD" /work \
+  --ro-bind "$lean_root" /toolchain \
   --proc /proc \
   --dev /dev \
   --tmpfs /tmp \
-  --chdir "$PWD" \
-  /usr/bin/prlimit --as=1073741824 -- "$lean_path" "$module" \
+  --chdir /work \
+  /usr/bin/prlimit --as=1073741824 -- /toolchain/bin/lean "$module" \
   >"${output_dir}/lean.stdout" \
   2>"${output_dir}/lean.stderr"; then
   printf 'isolated Lean execution failed\n' >&2
