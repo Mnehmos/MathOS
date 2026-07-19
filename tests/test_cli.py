@@ -85,6 +85,27 @@ class CliTests(unittest.TestCase):
                 self.run_cli("replay", "--db", str(database))["valid"]
             )
 
+    def test_invalid_export_returns_a_failing_process_status(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            invalid = Path(directory) / "invalid.json"
+            invalid.write_text("{}\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "mathos",
+                    "validate-export",
+                    "--input",
+                    str(invalid),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertFalse(json.loads(completed.stdout)["valid"])
+
 
 if __name__ == "__main__":
     unittest.main()

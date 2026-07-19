@@ -120,6 +120,10 @@ def main(argv: list[str] | None = None) -> int:
             else _engine_command(args)
         )
         _write(result)
+        if args.command == "validate-export" and not result["valid"]:
+            return 1
+        if args.command == "replay" and not result["valid"]:
+            return 1
         return 0
     except (KeyError, OSError, ValueError, json.JSONDecodeError) as error:
         _write({"error": type(error).__name__, "message": str(error)})
