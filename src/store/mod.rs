@@ -3,16 +3,19 @@ use std::path::Path;
 use std::str::FromStr;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::canonical::{canonical_json, record_version_hash, value_hash};
-use crate::domain::{RecordDraft, RecordKind, RecordSnapshot};
+use crate::domain::{EdgeDraft, EdgeKind, EdgeSnapshot, RecordDraft, RecordKind, RecordSnapshot};
 use crate::error::AppError;
 
 const MIGRATION_0001: &str = include_str!("../../migrations/0001_initial.sql");
 const MIGRATION_0002: &str = include_str!("../../migrations/0002_idempotency.sql");
 const MIGRATION_0003: &str = include_str!("../../migrations/0003_record_invariants.sql");
+const MIGRATION_0004: &str = include_str!("../../migrations/0004_edge_invariants.sql");
 const REQUIRED_TABLES: &[&str] = &[
     "artifacts",
     "edges",
@@ -34,6 +37,17 @@ type RawRecordRow = (
     String,
     String,
     Option<String>,
+    i64,
+    String,
+);
+type RawEdgeRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
     i64,
     String,
 );
@@ -121,6 +135,24 @@ impl Store {
                     params![3_i64, "record invariants"],
                 )
                 .map_err(|error| AppError::database("record migration 0003", error))?;
+        }
+        let migration_0004_applied: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 4)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::database("inspect migration 0004", error))?;
+        if !migration_0004_applied {
+            transaction
+                .execute_batch(MIGRATION_0004)
+                .map_err(|error| AppError::database("apply migration 0004", error))?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, unixepoch())",
+                    params![4_i64, "edge invariants"],
+                )
+                .map_err(|error| AppError::database("record migration 0004", error))?;
         }
         transaction
             .commit()
@@ -433,6 +465,93 @@ impl Store {
             .map(|object_id| read_snapshot(&self.connection, object_id, None))
             .collect()
     }
+
+    pub fn create_edge(
+        &mut self,
+        draft: &EdgeDraft,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<EdgeSnapshot, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        validate_hash(&draft.source_version_hash, "source version")?;
+        validate_hash(&draft.target_version_hash, "target version")?;
+        let input_hash = value_hash(&json!({
+            "operation": "edge.create",
+            "kind": draft.kind,
+            "source_object_id": draft.source_object_id,
+            "source_version_hash": draft.source_version_hash,
+            "target_object_id": draft.target_object_id,
+            "target_version_hash": draft.target_version_hash,
+            "payload": draft.payload,
+            "actor": actor,
+        }))?;
+        let payload_json = String::from_utf8(canonical_json(&draft.payload)?).map_err(|error| {
+            AppError::new(
+                "MCL_CANONICAL_JSON_INVALID",
+                error.to_string(),
+                false,
+                "Report this canonical JSON encoding defect.",
+            )
+        })?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start edge creation", error))?;
+        if let Some(existing) =
+            read_idempotent_result(&transaction, "edge.create", idempotency_key, &input_hash)?
+        {
+            return Ok(existing);
+        }
+        validate_edge_endpoint(
+            &transaction,
+            "source",
+            &draft.source_object_id,
+            &draft.source_version_hash,
+        )?;
+        validate_edge_endpoint(
+            &transaction,
+            "target",
+            &draft.target_object_id,
+            &draft.target_version_hash,
+        )?;
+        if draft.kind == EdgeKind::PedagogyHardPrerequisite
+            && hard_prerequisite_would_cycle(
+                &transaction,
+                &draft.source_object_id,
+                &draft.target_object_id,
+            )?
+        {
+            return Err(AppError::new(
+                "MCL_PEDAGOGY_CYCLE",
+                "hard pedagogical prerequisite edge would create a cycle",
+                false,
+                "Use a soft prerequisite or revise the curriculum dependency direction.",
+            ));
+        }
+        let edge_id = Uuid::now_v7().to_string();
+        transaction
+            .execute(
+                "INSERT INTO edges(edge_id, edge_type, source_object_id, source_version_hash, target_object_id, target_version_hash, payload_json, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch(), ?8)",
+                params![edge_id, draft.kind.as_str(), draft.source_object_id, draft.source_version_hash, draft.target_object_id, draft.target_version_hash, payload_json, actor],
+            )
+            .map_err(|error| AppError::database("insert canonical edge", error))?;
+        let snapshot = read_edge(&transaction, &edge_id)?;
+        write_idempotent_result(
+            &transaction,
+            "edge.create",
+            idempotency_key,
+            &input_hash,
+            &snapshot,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit edge creation", error))?;
+        Ok(snapshot)
+    }
+
+    pub fn get_edge(&self, edge_id: &str) -> Result<EdgeSnapshot, AppError> {
+        read_edge(&self.connection, edge_id)
+    }
 }
 
 fn validate_mutation_inputs(actor: &str, idempotency_key: &str) -> Result<(), AppError> {
@@ -482,12 +601,12 @@ fn mutation_input_hash(
     }))
 }
 
-fn read_idempotent_result(
+fn read_idempotent_result<T: DeserializeOwned>(
     connection: &Connection,
     operation: &str,
     key: &str,
     input_hash: &str,
-) -> Result<Option<RecordSnapshot>, AppError> {
+) -> Result<Option<T>, AppError> {
     let existing: Option<(String, String)> = connection
         .query_row(
             "SELECT input_hash, result_json FROM idempotency_results WHERE operation = ?1 AND idempotency_key = ?2",
@@ -519,12 +638,12 @@ fn read_idempotent_result(
         })
 }
 
-fn write_idempotent_result(
+fn write_idempotent_result<T: Serialize>(
     connection: &Connection,
     operation: &str,
     key: &str,
     input_hash: &str,
-    result: &RecordSnapshot,
+    result: &T,
 ) -> Result<(), AppError> {
     let result_json = serde_json::to_string(result).map_err(|error| {
         AppError::new(
@@ -660,6 +779,95 @@ fn conflict(object_id: &str, expected: &str, actual: &str) -> AppError {
     )
 }
 
+fn validate_edge_endpoint(
+    connection: &Connection,
+    label: &str,
+    object_id: &str,
+    version_hash: &str,
+) -> Result<(), AppError> {
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM record_versions WHERE object_id = ?1 AND version_hash = ?2)",
+            params![object_id, version_hash],
+            |row| row.get(0),
+        )
+        .map_err(|error| AppError::database("validate edge endpoint", error))?;
+    if !exists {
+        return Err(AppError::new(
+            "MCL_EDGE_ENDPOINT_INVALID",
+            format!("{label} version {version_hash} is not owned by object {object_id}"),
+            false,
+            "Use an exact object and version pair returned by canonical lookup.",
+        ));
+    }
+    Ok(())
+}
+
+fn hard_prerequisite_would_cycle(
+    connection: &Connection,
+    source_object_id: &str,
+    target_object_id: &str,
+) -> Result<bool, AppError> {
+    if source_object_id == target_object_id {
+        return Ok(true);
+    }
+    connection
+        .query_row(
+            "WITH RECURSIVE reachable(node) AS (SELECT target_object_id FROM edges WHERE edge_type = 'pedagogy.hard_prerequisite' AND source_object_id = ?1 UNION SELECT edge.target_object_id FROM edges edge JOIN reachable ON edge.source_object_id = reachable.node WHERE edge.edge_type = 'pedagogy.hard_prerequisite') SELECT EXISTS(SELECT 1 FROM reachable WHERE node = ?2)",
+            params![target_object_id, source_object_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| AppError::database("validate hard prerequisite cycle", error))
+}
+
+fn read_edge(connection: &Connection, edge_id: &str) -> Result<EdgeSnapshot, AppError> {
+    let raw: Option<RawEdgeRow> = connection
+        .query_row(
+            "SELECT edge_id, edge_type, source_object_id, source_version_hash, target_object_id, target_version_hash, payload_json, created_at, created_by FROM edges WHERE edge_id = ?1",
+            [edge_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?)),
+        )
+        .optional()
+        .map_err(|error| AppError::database("read canonical edge", error))?;
+    let Some((
+        edge_id,
+        kind,
+        source_object_id,
+        source_version_hash,
+        target_object_id,
+        target_version_hash,
+        payload_json,
+        created_at,
+        created_by,
+    )) = raw
+    else {
+        return Err(AppError::new(
+            "MCL_EDGE_NOT_FOUND",
+            format!("canonical edge {edge_id} does not exist"),
+            false,
+            "Use an exact edge ID returned by the canonical store.",
+        ));
+    };
+    Ok(EdgeSnapshot {
+        edge_id,
+        kind: EdgeKind::from_str(&kind)?,
+        source_object_id,
+        source_version_hash,
+        target_object_id,
+        target_version_hash,
+        payload: serde_json::from_str(&payload_json).map_err(|error| {
+            AppError::new(
+                "MCL_CANONICAL_PAYLOAD_INVALID",
+                error.to_string(),
+                false,
+                "Run `mcl doctor` and restore a verified backup if stored state was altered.",
+            )
+        })?,
+        created_at,
+        created_by,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
@@ -673,7 +881,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("migration succeeds");
 
-        assert_eq!(store.migration_version().expect("migration version"), 3);
+        assert_eq!(store.migration_version().expect("migration version"), 4);
         assert_eq!(store.journal_mode().expect("journal mode"), "wal");
         assert_eq!(store.integrity_check().expect("integrity"), "ok");
         store.schema_check().expect("required schema exists");
@@ -687,7 +895,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("first migration succeeds");
         store.migrate().expect("second migration succeeds");
-        assert_eq!(store.migration_version().expect("migration version"), 3);
+        assert_eq!(store.migration_version().expect("migration version"), 4);
     }
 
     fn claim(statement: &str) -> RecordDraft {
@@ -978,5 +1186,127 @@ mod tests {
             1,
             "{results:?}"
         );
+    }
+
+    fn edge(kind: EdgeKind, source: &RecordSnapshot, target: &RecordSnapshot) -> EdgeDraft {
+        EdgeDraft {
+            kind,
+            source_object_id: source.object_id.clone(),
+            source_version_hash: source.version_hash.clone(),
+            target_object_id: target.object_id.clone(),
+            target_version_hash: target.version_hash.clone(),
+            payload: json!({}),
+        }
+    }
+
+    fn three_records(store: &mut Store) -> (RecordSnapshot, RecordSnapshot, RecordSnapshot) {
+        (
+            store
+                .create_record(&claim("A"), "author", "record-a")
+                .expect("A"),
+            store
+                .create_record(&claim("B"), "author", "record-b")
+                .expect("B"),
+            store
+                .create_record(&claim("C"), "author", "record-c")
+                .expect("C"),
+        )
+    }
+
+    #[test]
+    fn edge_is_version_bound_immutable_and_idempotent() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let (a, b, _) = three_records(&mut store);
+        let draft = edge(EdgeKind::LogicDependsOn, &a, &b);
+        let created = store
+            .create_edge(&draft, "author", "edge-create")
+            .expect("edge created");
+        assert_eq!(
+            store.get_edge(&created.edge_id).expect("edge lookup"),
+            created
+        );
+        assert_eq!(
+            store
+                .create_edge(&draft, "author", "edge-create")
+                .expect("edge retry"),
+            created
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "UPDATE edges SET edge_type = 'logic.implies' WHERE edge_id = ?1",
+                    [&created.edge_id],
+                )
+                .is_err()
+        );
+
+        let mut invalid = draft;
+        invalid.source_version_hash = b.version_hash.clone();
+        assert_eq!(
+            store
+                .create_edge(&invalid, "author", "edge-invalid")
+                .expect_err("version belongs to another object")
+                .code,
+            "MCL_EDGE_ENDPOINT_INVALID"
+        );
+    }
+
+    #[test]
+    fn hard_prerequisite_cycle_fails_but_logical_equivalence_cycle_is_allowed() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let (a, b, c) = three_records(&mut store);
+        store
+            .create_edge(
+                &edge(EdgeKind::PedagogyHardPrerequisite, &a, &b),
+                "teacher",
+                "a-b",
+            )
+            .expect("A needs B");
+        store
+            .create_edge(
+                &edge(EdgeKind::PedagogyHardPrerequisite, &b, &c),
+                "teacher",
+                "b-c",
+            )
+            .expect("B needs C");
+        assert_eq!(
+            store
+                .create_edge(
+                    &edge(EdgeKind::PedagogyHardPrerequisite, &c, &a),
+                    "teacher",
+                    "c-a",
+                )
+                .expect_err("cycle rejected")
+                .code,
+            "MCL_PEDAGOGY_CYCLE"
+        );
+
+        let direct_cycle = store.connection.execute(
+            "INSERT INTO edges(edge_id, edge_type, source_object_id, source_version_hash, target_object_id, target_version_hash, payload_json, created_at, created_by) VALUES (?1, 'pedagogy.hard_prerequisite', ?2, ?3, ?4, ?5, '{}', unixepoch(), 'forger')",
+            params![Uuid::now_v7().to_string(), c.object_id, c.version_hash, a.object_id, a.version_hash],
+        );
+        assert!(direct_cycle.is_err());
+
+        store
+            .create_edge(
+                &edge(EdgeKind::LogicEquivalentTo, &a, &b),
+                "mathematician",
+                "equiv-a-b",
+            )
+            .expect("equivalence forward");
+        store
+            .create_edge(
+                &edge(EdgeKind::LogicEquivalentTo, &b, &a),
+                "mathematician",
+                "equiv-b-a",
+            )
+            .expect("equivalence reverse");
     }
 }

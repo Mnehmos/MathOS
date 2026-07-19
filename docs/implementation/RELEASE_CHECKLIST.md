@@ -48,6 +48,8 @@ Phase 2 evidence: exact stable-ID lookup, exact version-hash lookup, and current
 - [ ] Curriculum paths can be queried.
 - [ ] External taxonomy crosswalks preserve source and license.
 
+Phase 2 evidence: hard and soft prerequisite edge kinds are distinct and the database rejects hard-prerequisite cycles. Learning units, curriculum paths, and taxonomy crosswalks remain unimplemented, so all release criteria stay open.
+
 ## Releases and exports
 
 - [ ] Release bundles are complete, hashed, licensed, and policy-checked.

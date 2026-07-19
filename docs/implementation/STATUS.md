@@ -12,7 +12,7 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 Phase 2: Canonical records and trace.
 
-Active issue: [#5, implement immutable canonical records and deterministic identities](https://github.com/Mnehmos/MathOS/issues/5).
+Active issue: [#6, enforce typed version-bound graph edges](https://github.com/Mnehmos/MathOS/issues/6).
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -34,6 +34,9 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Compare-and-swap heads serialize concurrent writers into one winner and one structured conflict.
 - Database triggers reject version rewrites, head clearing, head downgrade, cross-object heads, identity rewrites, and idempotency-receipt mutation.
 - Exact object and version lookup, restart persistence, and current-head FTS5 projection work through the real SQLite store.
+- All 30 specified logical, pedagogical, research, provenance, and implementation edges are exhaustive Rust variants.
+- Edge endpoints bind exact versions owned by exact stable objects; edge payloads are canonical JSON and edge rows are immutable.
+- Hard pedagogical prerequisites remain acyclic through both application checks and SQLite triggers, while logical equivalence cycles remain valid.
 
 These items establish only part of Phase 1. They do not establish any mathematical claim, Lean proof authority, MCP behavior, pilot, portable release, or 1.0 acceptance result.
 
@@ -41,13 +44,13 @@ These items establish only part of Phase 1. They do not establish any mathematic
 
 - Publish the three local controlled commits and run the Phase 1 CI matrix once the required GitHub CLI is available.
 - Validate the pinned Lean toolchain on a fresh Linux CI runner because the current managed execution sandbox cannot launch the Lean runtime.
-- Continue Phase 2 with typed graph edges and hash-chained run events.
+- Continue Phase 2 with hash-chained run events.
 - Generate and commit the first typed JSON Schemas from the domain contract.
 
 ## Next highest-priority criteria
 
 1. Close Phase 1 issue #4 and Phase 2 issue #5 with remote CI evidence.
-2. Implement typed edges, runs, hash-chained events, and graph validation.
+2. Implement runs, hash-chained events, and graph traversal queries.
 3. Establish source and claim schemas on the shared application path.
 4. Add the MCP adapter only after it can call that same real application path.
 5. Begin the Lean authority path only after the environment is pinned and executable.
@@ -71,9 +74,9 @@ Observed Rust evidence before this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 19 Rust unit tests passed;
+- 22 Rust unit tests passed;
 - 4 Rust CLI integration tests passed;
-- manual initialization exited 0 with migrations through version 3 and WAL mode;
+- manual initialization exited 0 with migrations through version 4 and WAL mode;
 - manual health exited 0 after an FTS5 probe defect was reproduced and repaired;
 - manual doctor exited 1 only because Lean could not execute in the managed local sandbox.
 
