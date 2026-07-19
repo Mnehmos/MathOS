@@ -1,0 +1,8 @@
+# Default ownership
+* @Mnehmos
+
+# Administrative controls and repository policy
+/.github/ @Mnehmos
+/docs/administrative-controls/ @Mnehmos
+/CONTRIBUTING.md @Mnehmos
+/LICENSE @Mnehmos
