@@ -31,15 +31,15 @@ Run the pinned toolchain on a fresh GitHub-hosted Linux runner through CI. If it
 
 No user decision is currently required because unrelated implementation continues and CI is the next safe resolution path.
 
-## GitHub publication workflow lacks the required CLI
+## GitHub publication workflow lacks authenticated Git transport
 
 ### Description
 
-The repository publication workflow requires an authenticated GitHub CLI before it will push the branch and open a draft pull request. The current environment reports `gh: command not found`.
+The connected GitHub app can manage issues and pull-request metadata, but the local Git checkout has no authenticated transport for pushing its existing commit graph. The environment also reports `gh: command not found`.
 
 ### Impact
 
-Three controlled local commits can be created and tested, but the branch cannot be published through the required workflow. GitHub Actions therefore cannot validate Windows, fresh Linux, or pinned Lean behavior yet.
+Eight controlled local commits exist beyond `origin/main`, but the branch cannot yet be published without recreating a divergent commit history through the connector. GitHub Actions therefore cannot validate Windows, fresh Linux, or pinned Lean behavior yet.
 
 ### Attempts
 
@@ -49,6 +49,6 @@ Three controlled local commits can be created and tested, but the branch cannot 
 
 ### Smallest required resolution
 
-Install and authenticate GitHub CLI in this work environment, then run the existing publish workflow to push `feat/spec-driven-rust-rebuild` and open a draft pull request against `main`.
+From the authenticated home workstation, push `feat/spec-driven-rust-rebuild` and open a draft pull request against `main`. The connected GitHub app can then manage reviews, comments, checks, and merge metadata without rewriting the local commit graph.
 
 No user decision is currently required while unrelated implementation work remains available.
