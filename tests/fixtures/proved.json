@@ -1,0 +1,18 @@
+{
+  "name": "excluded_middle",
+  "informal_statement": "For every Boolean p, p or not p.",
+  "formal_spec": {
+    "schema": "mathos.finite/v1",
+    "quantifier": "forall",
+    "variables": {"p": [false, true]},
+    "predicate": {
+      "op": "or",
+      "args": [
+        {"var": "p"},
+        {"op": "not", "arg": {"var": "p"}}
+      ]
+    }
+  },
+  "max_assignments": 16,
+  "expected_status": "verified_proved"
+}

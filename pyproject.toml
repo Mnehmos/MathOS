@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=82"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mnehmos-mathos"
+version = "0.1.0"
+description = "Verifier-gated mathematical claim lifecycle platform"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "MnehmosAI" }]
+dependencies = []
+
+[project.scripts]
+mathos = "mathos.cli:main"
+mathos-mcp = "mathos.mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

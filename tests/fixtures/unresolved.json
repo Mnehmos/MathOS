@@ -1,0 +1,23 @@
+{
+  "name": "budget_limited_excluded_middle",
+  "informal_statement": "For every assignment to twelve Booleans, p0 or not p0.",
+  "formal_spec": {
+    "schema": "mathos.finite/v1",
+    "quantifier": "forall",
+    "variables": {
+      "p0": [false, true], "p1": [false, true], "p2": [false, true],
+      "p3": [false, true], "p4": [false, true], "p5": [false, true],
+      "p6": [false, true], "p7": [false, true], "p8": [false, true],
+      "p9": [false, true], "p10": [false, true], "p11": [false, true]
+    },
+    "predicate": {
+      "op": "or",
+      "args": [
+        {"var": "p0"},
+        {"op": "not", "arg": {"var": "p0"}}
+      ]
+    }
+  },
+  "max_assignments": 8,
+  "expected_status": "unresolved"
+}

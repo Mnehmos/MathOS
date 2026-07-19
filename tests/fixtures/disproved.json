@@ -1,0 +1,16 @@
+{
+  "name": "universal_implication",
+  "informal_statement": "For every pair of Booleans p and q, p implies q.",
+  "formal_spec": {
+    "schema": "mathos.finite/v1",
+    "quantifier": "forall",
+    "variables": {"p": [false, true], "q": [false, true]},
+    "predicate": {
+      "op": "implies",
+      "left": {"var": "p"},
+      "right": {"var": "q"}
+    }
+  },
+  "max_assignments": 16,
+  "expected_status": "verified_disproved"
+}
