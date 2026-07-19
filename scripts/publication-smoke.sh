@@ -58,7 +58,7 @@ if ! sudo /usr/bin/bwrap \
   --dev /dev \
   --tmpfs /tmp \
   --chdir /mnt \
-  /usr/bin/prlimit --as=4294967296 -- /opt/bin/lean "$module" \
+  /usr/bin/prlimit --as=4294967296 -- /opt/bin/lean -j=1 "$module" \
   >"${output_dir}/lean.stdout" \
   2>"${output_dir}/lean.stderr"; then
   printf 'isolated Lean execution failed\n' >&2
@@ -80,7 +80,7 @@ jq -n \
   --arg module_hash "$module_hash" \
   --arg stdout_hash "$stdout_hash" \
   --arg stderr_hash "$stderr_hash" \
-  '{schema_version:$schema_version,source_commit_sha:$commit_sha,source_tree_sha:$tree_sha,source_ref:$source_ref,lean_toolchain:$toolchain,isolation_control:$bwrap_version,memory_limit_bytes:4294967296,module_artifact_hash:$module_hash,stdout_artifact_hash:$stdout_hash,stderr_artifact_hash:$stderr_hash,runner_environment:"github_hosted",clean_checkout:true,network_isolation_enforced:true,memory_limit_enforced:true,authoritative:false}' \
+  '{schema_version:$schema_version,source_commit_sha:$commit_sha,source_tree_sha:$tree_sha,source_ref:$source_ref,lean_toolchain:$toolchain,lean_threads:1,isolation_control:$bwrap_version,memory_limit_bytes:4294967296,module_artifact_hash:$module_hash,stdout_artifact_hash:$stdout_hash,stderr_artifact_hash:$stderr_hash,runner_environment:"github_hosted",clean_checkout:true,network_isolation_enforced:true,memory_limit_enforced:true,authoritative:false}' \
   >"${output_dir}/publication-smoke-report.json"
 
 jq -e '
