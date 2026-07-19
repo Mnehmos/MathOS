@@ -2,9 +2,9 @@
 
 ## What MathOS may claim
 
-MathOS v0.1 may authorize certainty only for a formal claim accepted by the finite verifier. A proved result means exhaustive evaluation succeeded for every assignment in the declared finite domain. A disproved result means the verifier checked a concrete in-domain assignment that makes the claim false. Every other result is unresolved.
+MathOS v1.0 may authorize certainty only for a formal claim accepted by the finite verifier. A proved result means exhaustive evaluation succeeded for every assignment in the declared finite domain. A disproved result means the verifier checked a concrete in-domain assignment that makes the claim false. Every other result is unresolved.
 
-The informal statement is descriptive context. The v0.1 system does not prove that the formal specification faithfully expresses the author's natural-language intent.
+The informal statement is descriptive context. The v1.0 system does not prove that the formal specification faithfully expresses the author's natural-language intent.
 
 ## Authority boundary
 
@@ -16,7 +16,7 @@ The informal statement is descriptive context. The v0.1 system does not prove th
 | Provenance Ledger | Detecting ordinary corruption and broken chains | Resisting an attacker who can rewrite and rehash the database |
 | Pedagogy | Restating verified status and evidence | Increasing the certainty of a result |
 | RL Export | Preserving linked trajectory evidence | Establishing truth independently of the verifier |
-| Lean Adapter | Failing closed when Lean is absent | Claiming Lean verification in v0.1 |
+| Lean Adapter | Failing closed when Lean is absent | Claiming Lean verification in v1.0 |
 
 ## Residual risks
 

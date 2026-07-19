@@ -63,6 +63,9 @@ class McpTests(unittest.TestCase):
                 self.assertEqual(
                     initialized["result"]["protocolVersion"], "2025-11-25"
                 )
+                self.assertEqual(
+                    initialized["result"]["serverInfo"]["version"], "1.0.0"
+                )
 
                 assert process.stdin is not None
                 process.stdin.write(

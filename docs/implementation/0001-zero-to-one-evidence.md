@@ -4,7 +4,7 @@ Date: July 18, 2026
 
 ## Scope
 
-This cycle implements the smallest complete MathOS claim lifecycle: ingestion, finite formalization, untrusted search, verifier-gated outcome, pedagogy, provenance, CLI and MCP access, and RL trajectory export.
+This cycle implements the complete MathOS 1.0 claim lifecycle defined by the 0-to-1 product specification: ingestion, finite formalization, untrusted search, verifier-gated outcome, pedagogy, provenance, CLI and MCP access, and RL trajectory export.
 
 ## TDD record
 
@@ -28,7 +28,7 @@ git diff --check
 
 Observed evidence:
 
-- 38 total tests pass with `ResourceWarning` promoted to an error.
+- 39 total tests pass with `ResourceWarning` promoted to an error.
 - Thirteen dedicated adversarial scenarios pass.
 - A deterministic property test compares 200 Boolean expressions with an independent reference oracle.
 - The canonical demo produces one `verified_proved`, one `verified_disproved`, and one `unresolved` claim.
@@ -74,4 +74,4 @@ Observed evidence:
 - Pass GitHub Actions on the release pull request.
 - Resolve every actionable review thread.
 - Merge the reviewed release commit to `main`.
-- Create the `v0.1.0` tag on that exact commit.
+- Create the `v1.0.0` tag on that exact commit.
