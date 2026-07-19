@@ -45,6 +45,8 @@ MathOS must parse the verifier output and match it to the report and committed p
 
 ## Current implementation state
 
-The closed policy, request, and candidate-report contracts are implemented. Candidate generation, isolated clean-checkout execution, attestation, retention, attestation verification, and authoritative evidence promotion remain incomplete until issue #21 closes.
+The closed policy, request, and candidate-report contracts are implemented. A clean-checkout boundary smoke now runs a pinned trivial Lean theorem inside a Linux mount, PID, and network namespace with a one-gibibyte address-space limit. The protected `main` workflow attests the exact smoke-report bytes and retains the report, diagnostics, and Sigstore bundle. Pull-request CI exercises the same isolation script without granting authority.
+
+The boundary smoke proves infrastructure behavior only. Canonical candidate generation from exact stored evidence, attestation verification, and authoritative evidence promotion remain incomplete until issue #21 closes.
 
 No authoritative proof or refutation evidence exists yet. No mathematical claim status is derived.

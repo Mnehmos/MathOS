@@ -28,7 +28,7 @@ Issue [#19](https://github.com/Mnehmos/MathOS/issues/19) closed after GitHub Act
 
 Issue [#20](https://github.com/Mnehmos/MathOS/issues/20) closed after GitHub Actions run `29706138708` passed all five jobs, including role-separated fidelity review through real CLI and MCP paths, adversarial provenance and corruption checks, the pinned Lean integration, and fresh Linux and Windows suites on exact remote tree `80b1d2e92e81192a2863bb445a7bef872fc21b72`. This closes statement fidelity evidence only, not proof authority or mathematical truth status.
 
-Active branch: `feat/spec-driven-rust-rebuild`.
+Active branch: `feat/publication-proof-authority`.
 
 ## Completed criteria with evidence
 
@@ -158,12 +158,15 @@ These items establish only part of the product foundation and Phase 2 trace mode
 ## Active work
 
 - Implement issue #21 publication-profile proof authority without allowing local diagnostic workers or caller-authored reports to self-promote.
+- Draft PR #22 carries the first hosted publication-boundary smoke. Runs `29706858126` through `29707579646` progressively exposed missing isolation software, hidden toolchain lookup, namespace identity, path traversal, and read-only mount assumptions. Runs `29707668753` and `29707749539` showed that default host-sized thread creation exceeds the address-space ceiling. Run `29707844720` rejected the initially assumed `-j=1` syntax before executing. The invocation now uses Lean 4.32.0's observed `-j 1` form and records one-thread execution alongside the enforced 4 GiB limit.
 - Keep proof authority and mathematical status impossible while fidelity and publication-profile controls remain incomplete.
 - Issue #20 is complete with exact-tree CI evidence. Issue #21 must now bind clean-checkout verification, dependency closure, retained artifacts, policy identity, and non-forgeable report provenance before authoritative proof or refutation evidence can exist.
 - The first issue #21 slice defines closed publication policy, request, and candidate-report contracts. The policy pins repository, protected workflow, main ref, GitHub-hosted runner, Lean toolchain, allowed axioms, required isolation controls, SLSA predicate, and action commit identities.
 - Publication requests separately name proof and refutation outcomes and bind exact diagnostic, proof-closure, axiom-audit, environment, module, declaration, policy, Git commit, and Git tree identities.
 - Candidate reports must remain non-authoritative. A passed candidate fails validation if clean checkout, dependency closure, network isolation, memory enforcement, allowed axioms, retained artifacts, workflow identity, source identity, or policy identity is missing or inconsistent.
 - ADR-0006 requires GitHub OIDC and Sigstore attestation of the exact report bytes, followed by repository, workflow, ref, commit, predicate, runner, and subject-digest verification before authority promotion. Candidate generation and attestation ingestion remain active work.
+- The publication boundary smoke uses a clean checkout, pinned Lean, read-only root mount, separate mount, PID, and network namespaces, a private temporary filesystem, and a one-gibibyte address-space limit. Its report remains explicitly non-authoritative.
+- Pull-request CI exercises the isolation boundary. The protected `main` workflow additionally attests the exact smoke report with the SHA-pinned official GitHub action and retains report bytes, diagnostics, and the Sigstore bundle for 90 days.
 
 ## Next highest-priority criteria
 

@@ -1,0 +1,68 @@
+name: Publication authority boundary
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publication-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  boundary:
+    name: Attested publication boundary smoke
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Check out exact source without credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install repository-pinned Lean
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/elan.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "${archive}" \
+            https://github.com/leanprover/elan/releases/download/v4.2.3/elan-x86_64-unknown-linux-gnu.tar.gz
+          echo "df0b2b3a439961ffcbb3985214365ffe40f49bc871df04dff268c7d8e21ca8b2  ${archive}" \
+            | sha256sum --check --strict
+          tar --extract --gzip --file "${archive}" --directory "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/elan-init" -y --default-toolchain none --no-modify-path
+          echo "${HOME}/.elan/bin" >> "${GITHUB_PATH}"
+          "${HOME}/.elan/bin/elan" toolchain install "$(cat lean-toolchain)"
+      - name: Install publication isolation control
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap
+          /usr/bin/bwrap --version
+      - name: Run clean isolated boundary smoke
+        shell: bash
+        run: scripts/publication-smoke.sh "${RUNNER_TEMP}/publication-smoke"
+      - name: Attest exact smoke report
+        id: attest
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
+        with:
+          subject-path: ${{ runner.temp }}/publication-smoke/publication-smoke-report.json
+      - name: Retain report, diagnostics, and Sigstore bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: publication-boundary-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            ${{ runner.temp }}/publication-smoke/
+            ${{ steps.attest.outputs.bundle-path }}

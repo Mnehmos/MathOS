@@ -78,11 +78,21 @@ jobs:
           set -euo pipefail
           lean --version | tee "${RUNNER_TEMP}/lean-version.txt"
           grep --fixed-strings "Lean (version 4.32.0," "${RUNNER_TEMP}/lean-version.txt"
+      - name: Install publication isolation control
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap
+          /usr/bin/bwrap --version
       - name: Run real contained Lean worker integration
         shell: bash
         env:
           MCL_RUN_LEAN_INTEGRATION: "1"
         run: cargo test --test lean_worker -- --nocapture
+      - name: Exercise publication isolation boundary without authority
+        shell: bash
+        run: scripts/publication-smoke.sh "${RUNNER_TEMP}/publication-smoke"
 
   legacy-python-regression:
     name: Legacy Python regression evidence
