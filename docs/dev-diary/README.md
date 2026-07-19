@@ -21,3 +21,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 11. [One Door, Many Entrances](0011-one-door-many-entrances.md)
 12. [The Retry Is a Memory](0012-the-retry-is-a-memory.md)
 13. [The Shape of a Promise](0013-the-shape-of-a-promise.md)
+14. [The Interface Is Not the Mind](0014-the-interface-is-not-the-mind.md)

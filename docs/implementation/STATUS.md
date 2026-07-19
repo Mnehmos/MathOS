@@ -12,7 +12,7 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 Phase 2: Canonical records and trace.
 
-Active issue: [#13, expose one typed application service through CLI](https://github.com/Mnehmos/MathOS/issues/13).
+Active issue: [#14, add a thin MCP stdio adapter](https://github.com/Mnehmos/MathOS/issues/14).
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -69,19 +69,20 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Golden fixtures pin representative record-mutation, edge-mutation, and run-chain JSON response shapes after normalizing only dynamic identities and timestamps.
 - The issue #13 CLI surface contains no proof, disproof, fidelity, novelty, certification, raw SQL, arbitrary shell, or unrestricted executable action. Its only process launch remains the allowlisted Lean availability check in `doctor`.
 - CLI integration rejects stale canonical version writers without changing the accepted head.
+- ADR-0004 pins the MCP `2025-11-25` stable protocol, stdio transport, exact official Rust SDK release, one-way application-service dependency, and disabled inference and network capabilities.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, MCP behavior, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Publish the final issue #13 contract slice and close the issue only after fresh Linux and Windows CI pass.
-- Prepare the MCP adapter issue while CI runs, without implementing a second domain path.
+- Implement issue #14 as a narrow official-SDK adapter over the existing application service.
+- Begin with protocol lifecycle and closed read-only system/query actions before enabling typed mutations.
 - Keep the local Lean launch limitation visible without misclassifying it as a project-wide blocker.
 
 ## Next highest-priority criteria
 
-1. Finish stable CLI JSON contracts and close issue #13 with remote CI evidence.
-2. Add the MCP adapter only after it can call that same real application path.
+1. Add the MCP adapter over the real application path without direct storage access.
+2. Prove CLI and MCP semantic parity through the real binary and restarted SQLite instance.
 3. Implement environment manifests and the narrow Lean elaboration boundary now that the pinned toolchain is executable in CI.
 4. Implement evidence records and derived truth rules before any proof-status surface exists.
 5. Complete Pilot A through the real interfaces only after those authority controls exist.
