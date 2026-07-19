@@ -8,6 +8,8 @@ use crate::error::AppError;
 pub const PUBLICATION_POLICY_SCHEMA_VERSION: &str = "publication_policy/1";
 pub const PUBLICATION_REQUEST_SCHEMA_VERSION: &str = "publication_request/1";
 pub const PUBLICATION_REPORT_SCHEMA_VERSION: &str = "publication_report/1";
+pub const PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION: &str =
+    "publication_attestation_verification/1";
 const MAX_AXIOMS: usize = 256;
 const MAX_ARTIFACTS: usize = 256;
 
@@ -29,6 +31,9 @@ pub struct PublicationPolicy {
     pub attestation_predicate_type: String,
     pub attestation_action_sha: String,
     pub artifact_upload_action_sha: String,
+    pub attestation_verifier_version: String,
+    pub attestation_verifier_archive_sha256: String,
+    pub attestation_verifier_binary_sha256: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -95,6 +100,29 @@ pub struct PublicationReport {
     pub authoritative: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationAttestationVerification {
+    pub schema_version: String,
+    pub report_content_hash: String,
+    pub report_artifact_hash: String,
+    pub attestation_bundle_hash: String,
+    pub raw_verification_hash: String,
+    pub verifier_name: String,
+    pub verifier_version: String,
+    pub verifier_binary_sha256: String,
+    pub repository: String,
+    pub signer_workflow: String,
+    pub certificate_identity: String,
+    pub source_ref: String,
+    pub source_commit_sha: String,
+    pub predicate_type: String,
+    pub self_hosted_runners_denied: bool,
+    pub verified_attestation_count: u32,
+    pub verified_timestamp_count: u32,
+    pub authoritative: bool,
+}
+
 impl PublicationPolicy {
     pub fn validate(&self) -> Result<(), AppError> {
         if self.schema_version != PUBLICATION_POLICY_SCHEMA_VERSION
@@ -112,6 +140,9 @@ impl PublicationPolicy {
             || self.attestation_predicate_type != "https://slsa.dev/provenance/v1"
             || !is_git_sha(&self.attestation_action_sha)
             || !is_git_sha(&self.artifact_upload_action_sha)
+            || !is_semver(&self.attestation_verifier_version)
+            || !is_hash(&self.attestation_verifier_archive_sha256)
+            || !is_hash(&self.attestation_verifier_binary_sha256)
         {
             return Err(publication_error(
                 "MCL_PUBLICATION_POLICY_INVALID",
@@ -215,6 +246,47 @@ impl PublicationReport {
     }
 }
 
+impl PublicationAttestationVerification {
+    pub fn validate(
+        &self,
+        report: &PublicationReport,
+        policy: &PublicationPolicy,
+    ) -> Result<(), AppError> {
+        report.validate_candidate(policy)?;
+        let expected_certificate_identity = format!(
+            "https://github.com/{}/{}@{}",
+            policy.repository, policy.workflow_path, policy.required_source_ref
+        );
+        let expected_signer_workflow = format!("{}/{}", policy.repository, policy.workflow_path);
+        if self.schema_version != PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION
+            || self.report_content_hash != report.report_hash(policy)?
+            || !is_hash(&self.report_artifact_hash)
+            || !is_hash(&self.attestation_bundle_hash)
+            || !is_hash(&self.raw_verification_hash)
+            || self.verifier_name != "gh"
+            || self.verifier_version != policy.attestation_verifier_version
+            || self.verifier_binary_sha256 != policy.attestation_verifier_binary_sha256
+            || self.repository != policy.repository
+            || self.signer_workflow != expected_signer_workflow
+            || self.certificate_identity != expected_certificate_identity
+            || self.source_ref != policy.required_source_ref
+            || self.source_commit_sha != report.request.source_commit_sha
+            || self.predicate_type != policy.attestation_predicate_type
+            || !self.self_hosted_runners_denied
+            || self.verified_attestation_count == 0
+            || self.verified_timestamp_count == 0
+            || self.authoritative
+        {
+            return Err(publication_error(
+                "MCL_PUBLICATION_ATTESTATION_INVALID",
+                "attestation verification does not bind the exact publication candidate and protected workflow policy",
+                "Re-verify the exact retained report and bundle with the pinned verifier and closed policy constraints.",
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub fn publication_policy_schema() -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -222,7 +294,7 @@ pub fn publication_policy_schema() -> Value {
         "title": "MathOS Publication Policy v1",
         "type": "object",
         "additionalProperties": false,
-        "required": ["schema_version", "policy_name", "repository", "workflow_path", "required_source_ref", "required_runner_environment", "required_lean_toolchain", "allowed_axioms", "requires_clean_checkout", "requires_dependency_closure", "requires_network_isolation", "requires_memory_limit", "attestation_predicate_type", "attestation_action_sha", "artifact_upload_action_sha"],
+        "required": ["schema_version", "policy_name", "repository", "workflow_path", "required_source_ref", "required_runner_environment", "required_lean_toolchain", "allowed_axioms", "requires_clean_checkout", "requires_dependency_closure", "requires_network_isolation", "requires_memory_limit", "attestation_predicate_type", "attestation_action_sha", "artifact_upload_action_sha", "attestation_verifier_version", "attestation_verifier_archive_sha256", "attestation_verifier_binary_sha256"],
         "properties": {
             "schema_version": {"const": PUBLICATION_POLICY_SCHEMA_VERSION},
             "policy_name": {"type": "string", "minLength": 1, "maxLength": 128},
@@ -238,7 +310,10 @@ pub fn publication_policy_schema() -> Value {
             "requires_memory_limit": {"const": true},
             "attestation_predicate_type": {"const": "https://slsa.dev/provenance/v1"},
             "attestation_action_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-            "artifact_upload_action_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+            "artifact_upload_action_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "attestation_verifier_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+            "attestation_verifier_archive_sha256": hash_schema(64),
+            "attestation_verifier_binary_sha256": hash_schema(64)
         }
     })
 }
@@ -302,6 +377,37 @@ pub fn publication_report_schema() -> Value {
     })
 }
 
+pub fn publication_attestation_verification_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://mnehmos.ai/mathos/schemas/publication/attestation-verification/1",
+        "title": "MathOS Publication Attestation Verification v1",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema_version", "report_content_hash", "report_artifact_hash", "attestation_bundle_hash", "raw_verification_hash", "verifier_name", "verifier_version", "verifier_binary_sha256", "repository", "signer_workflow", "certificate_identity", "source_ref", "source_commit_sha", "predicate_type", "self_hosted_runners_denied", "verified_attestation_count", "verified_timestamp_count", "authoritative"],
+        "properties": {
+            "schema_version": {"const": PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION},
+            "report_content_hash": hash_schema(64),
+            "report_artifact_hash": hash_schema(64),
+            "attestation_bundle_hash": hash_schema(64),
+            "raw_verification_hash": hash_schema(64),
+            "verifier_name": {"const": "gh"},
+            "verifier_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+            "verifier_binary_sha256": hash_schema(64),
+            "repository": {"const": "Mnehmos/MathOS"},
+            "signer_workflow": {"const": "Mnehmos/MathOS/.github/workflows/publication.yml"},
+            "certificate_identity": {"const": "https://github.com/Mnehmos/MathOS/.github/workflows/publication.yml@refs/heads/main"},
+            "source_ref": {"const": "refs/heads/main"},
+            "source_commit_sha": hash_schema(40),
+            "predicate_type": {"const": "https://slsa.dev/provenance/v1"},
+            "self_hosted_runners_denied": {"const": true},
+            "verified_attestation_count": {"type": "integer", "minimum": 1},
+            "verified_timestamp_count": {"type": "integer", "minimum": 1},
+            "authoritative": {"const": false}
+        }
+    })
+}
+
 fn hash_serializable<T: Serialize>(value: &T, code: &'static str) -> Result<String, AppError> {
     value_hash(&serde_json::to_value(value).map_err(|error| {
         publication_error(
@@ -353,6 +459,14 @@ fn is_lean_toolchain(value: &str) -> bool {
         return false;
     };
     let parts = version.split('.').collect::<Vec<_>>();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn is_semver(value: &str) -> bool {
+    let parts = value.split('.').collect::<Vec<_>>();
     parts.len() == 3
         && parts
             .iter()
@@ -438,6 +552,35 @@ mod tests {
         }
     }
 
+    fn attestation_verification(
+        report: &PublicationReport,
+        policy: &PublicationPolicy,
+    ) -> PublicationAttestationVerification {
+        PublicationAttestationVerification {
+            schema_version: PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION.to_owned(),
+            report_content_hash: report.report_hash(policy).expect("report hash"),
+            report_artifact_hash: "3".repeat(64),
+            attestation_bundle_hash: "4".repeat(64),
+            raw_verification_hash: "5".repeat(64),
+            verifier_name: "gh".to_owned(),
+            verifier_version: policy.attestation_verifier_version.clone(),
+            verifier_binary_sha256: policy.attestation_verifier_binary_sha256.clone(),
+            repository: policy.repository.clone(),
+            signer_workflow: format!("{}/{}", policy.repository, policy.workflow_path),
+            certificate_identity: format!(
+                "https://github.com/{}/{}@{}",
+                policy.repository, policy.workflow_path, policy.required_source_ref
+            ),
+            source_ref: policy.required_source_ref.clone(),
+            source_commit_sha: report.request.source_commit_sha.clone(),
+            predicate_type: policy.attestation_predicate_type.clone(),
+            self_hosted_runners_denied: true,
+            verified_attestation_count: 1,
+            verified_timestamp_count: 1,
+            authoritative: false,
+        }
+    }
+
     #[test]
     fn candidate_cannot_assert_its_own_authority_or_hide_missing_controls() {
         let policy = policy();
@@ -498,6 +641,37 @@ mod tests {
     }
 
     #[test]
+    fn attestation_verification_binds_report_workflow_and_pinned_verifier() {
+        let policy = policy();
+        let report = candidate_report();
+        let verification = attestation_verification(&report, &policy);
+        verification
+            .validate(&report, &policy)
+            .expect("closed attestation verification");
+
+        for corrupt in [
+            |value: &mut PublicationAttestationVerification| value.authoritative = true,
+            |value: &mut PublicationAttestationVerification| {
+                value.source_commit_sha = "6".repeat(40)
+            },
+            |value: &mut PublicationAttestationVerification| {
+                value.verifier_binary_sha256 = "7".repeat(64)
+            },
+            |value: &mut PublicationAttestationVerification| value.verified_timestamp_count = 0,
+        ] {
+            let mut altered = verification.clone();
+            corrupt(&mut altered);
+            assert_eq!(
+                altered
+                    .validate(&report, &policy)
+                    .expect_err("altered verification fails")
+                    .code,
+                "MCL_PUBLICATION_ATTESTATION_INVALID"
+            );
+        }
+    }
+
+    #[test]
     fn committed_policy_and_schemas_match_rust_contracts() {
         let policy_value: Value = serde_json::from_str(include_str!(
             "../../schemas/publication/publication-policy-1.schema.json"
@@ -511,9 +685,17 @@ mod tests {
             "../../schemas/publication/publication-report-1.schema.json"
         ))
         .expect("report schema");
+        let attestation_value: Value = serde_json::from_str(include_str!(
+            "../../schemas/publication/publication-attestation-verification-1.schema.json"
+        ))
+        .expect("attestation verification schema");
         assert_eq!(policy_value, publication_policy_schema());
         assert_eq!(request_value, publication_request_schema());
         assert_eq!(report_value, publication_report_schema());
+        assert_eq!(
+            attestation_value,
+            publication_attestation_verification_schema()
+        );
         let policy = policy();
         policy.validate().expect("committed policy validates");
         assert_eq!(

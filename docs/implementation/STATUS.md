@@ -28,7 +28,9 @@ Issue [#19](https://github.com/Mnehmos/MathOS/issues/19) closed after GitHub Act
 
 Issue [#20](https://github.com/Mnehmos/MathOS/issues/20) closed after GitHub Actions run `29706138708` passed all five jobs, including role-separated fidelity review through real CLI and MCP paths, adversarial provenance and corruption checks, the pinned Lean integration, and fresh Linux and Windows suites on exact remote tree `80b1d2e92e81192a2863bb445a7bef872fc21b72`. This closes statement fidelity evidence only, not proof authority or mathematical truth status.
 
-Active branch: `feat/publication-proof-authority`.
+PR [#22](https://github.com/Mnehmos/MathOS/pull/22) merged the isolated publication-boundary smoke after all five checks passed in run `29707914210` on exact tree `496e8b5dc71550aa83f11e6ba659f3353195741a`. Protected `main` publication run `29707995584` and ordinary CI run `29707995606` then passed on merge commit `31ccfdda41d538bde7e01e061865580cab2f04e5`.
+
+Active branch: `feat/publication-attestation-verification`.
 
 ## Completed criteria with evidence
 
@@ -158,20 +160,22 @@ These items establish only part of the product foundation and Phase 2 trace mode
 ## Active work
 
 - Implement issue #21 publication-profile proof authority without allowing local diagnostic workers or caller-authored reports to self-promote.
-- Draft PR #22 carries the first hosted publication-boundary smoke. Runs `29706858126` through `29707579646` progressively exposed missing isolation software, hidden toolchain lookup, namespace identity, path traversal, and read-only mount assumptions. Runs `29707668753` and `29707749539` showed that default host-sized thread creation exceeds the address-space ceiling. Run `29707844720` rejected the initially assumed `-j=1` syntax before executing. The invocation now uses Lean 4.32.0's observed `-j 1` form and records one-thread execution alongside the enforced 4 GiB limit.
+- PR #22 established the first hosted publication-boundary smoke. Runs `29706858126` through `29707579646` progressively exposed missing isolation software, hidden toolchain lookup, namespace identity, path traversal, and read-only mount assumptions. Runs `29707668753` and `29707749539` showed that default host-sized thread creation exceeds the address-space ceiling. Run `29707844720` rejected the initially assumed `-j=1` syntax before executing. Run `29707914210` passed all five PR checks with Lean 4.32.0's observed `-j 1` form and the enforced 4 GiB limit.
 - Keep proof authority and mathematical status impossible while fidelity and publication-profile controls remain incomplete.
 - Issue #20 is complete with exact-tree CI evidence. Issue #21 must now bind clean-checkout verification, dependency closure, retained artifacts, policy identity, and non-forgeable report provenance before authoritative proof or refutation evidence can exist.
 - The first issue #21 slice defines closed publication policy, request, and candidate-report contracts. The policy pins repository, protected workflow, main ref, GitHub-hosted runner, Lean toolchain, allowed axioms, required isolation controls, SLSA predicate, and action commit identities.
 - Publication requests separately name proof and refutation outcomes and bind exact diagnostic, proof-closure, axiom-audit, environment, module, declaration, policy, Git commit, and Git tree identities.
 - Candidate reports must remain non-authoritative. A passed candidate fails validation if clean checkout, dependency closure, network isolation, memory enforcement, allowed axioms, retained artifacts, workflow identity, source identity, or policy identity is missing or inconsistent.
-- ADR-0006 requires GitHub OIDC and Sigstore attestation of the exact report bytes, followed by repository, workflow, ref, commit, predicate, runner, and subject-digest verification before authority promotion. Candidate generation and attestation ingestion remain active work.
-- The publication boundary smoke uses a clean checkout, pinned Lean, read-only root mount, separate mount, PID, and network namespaces, a private temporary filesystem, and a one-gibibyte address-space limit. Its report remains explicitly non-authoritative.
+- ADR-0006 requires GitHub OIDC and Sigstore attestation of the exact report bytes, followed by repository, workflow, ref, commit, predicate, runner, and subject-digest verification before authority promotion. The policy now additionally pins GitHub CLI 2.96.0 by release archive and executable SHA-256.
+- The publication boundary smoke uses a clean checkout, pinned Lean, read-only root mount, separate mount, PID, and network namespaces, a private temporary filesystem, one Lean worker thread, and a four-gibibyte address-space limit. Its report remains explicitly non-authoritative.
 - Pull-request CI exercises the isolation boundary. The protected `main` workflow additionally attests the exact smoke report with the SHA-pinned official GitHub action and retains report bytes, diagnostics, and the Sigstore bundle for 90 days.
+- Protected `main` publication run `29707995584` retained artifact `8448453305`. Its archive digest is `0e3d0007da30460b1918d98fea39fad08cffda4b0249035a88bb9a1cd2d30896`; the exact smoke report digest is `08bead82cea25ffdfc3424084cb0878f2a648b3375317daa0c799395751dba40`; and its Sigstore bundle digest is `5dd23a13fa66efef8885e2116bd994bce92244a290c3ce0d9467d5eeb6d5ac14`. Inspection confirmed the DSSE subject digest matches the report, while the certificate binds the protected workflow, `main`, exact source commit, push event, and GitHub-hosted runner.
+- The active slice adds a closed, permanently non-authoritative attestation-verification record plus a pinned verifier invocation that challenges exact report bytes and the retained bundle. Controlled canonical ingestion and authoritative evidence creation remain unavailable.
 
 ## Next highest-priority criteria
 
-1. Implement issue #21 publication-profile verification and authoritative exact proof/refutation evidence without weakening local isolation claims.
-2. Prove that local diagnostics, caller-authored reports, and altered retained artifacts cannot cross the authority boundary.
+1. Prove the pinned attestation-verification path on protected `main`, then implement controlled canonical ingestion for a real `publication_report/1`.
+2. Create authoritative exact proof/refutation evidence only from the verified retained closure, never from caller-authored reports.
 3. Derive mathematical status only from exact current proof and fidelity evidence.
 4. Complete Pilot A through the real interfaces only after both authority and fidelity controls exist.
 

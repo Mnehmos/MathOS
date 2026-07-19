@@ -17,5 +17,8 @@
   "requires_memory_limit": true,
   "attestation_predicate_type": "https://slsa.dev/provenance/v1",
   "attestation_action_sha": "59d89421af93a897026c735860bf21b6eb4f7b26",
-  "artifact_upload_action_sha": "ea165f8d65b6e75b540449e92b4886f43607fa02"
+  "artifact_upload_action_sha": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+  "attestation_verifier_version": "2.96.0",
+  "attestation_verifier_archive_sha256": "83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60",
+  "attestation_verifier_binary_sha256": "56b8bbbb27b066ecb33dbef9a256dc9d1314adaeff0908a752feba6c34053b40"
 }
