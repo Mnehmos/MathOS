@@ -325,6 +325,30 @@ impl Store {
         Ok(snapshot)
     }
 
+    pub fn validate_record_create(&self, draft: &RecordDraft) -> Result<String, AppError> {
+        validate_record_payload(draft.kind, &draft.schema_version, &draft.payload)?;
+        validate_record_references(&self.connection, draft)?;
+        let version_hash = record_version_hash(&draft.schema_version, &draft.payload)?;
+        let existing = self
+            .connection
+            .query_row(
+                "SELECT object_id FROM record_versions WHERE version_hash = ?1",
+                [&version_hash],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| AppError::database("preview duplicate record version", error))?;
+        if let Some(object_id) = existing {
+            return Err(AppError::new(
+                "MCL_RECORD_VERSION_EXISTS",
+                format!("identical canonical content already belongs to object {object_id}"),
+                false,
+                "Retrieve the existing object instead of creating a duplicate.",
+            ));
+        }
+        Ok(version_hash)
+    }
+
     pub fn version_record(
         &mut self,
         object_id: &str,
@@ -452,6 +476,58 @@ impl Store {
             .commit()
             .map_err(|error| AppError::database("commit record version", error))?;
         Ok(snapshot)
+    }
+
+    pub fn validate_record_version(
+        &self,
+        object_id: &str,
+        expected_head: &str,
+        draft: &RecordDraft,
+    ) -> Result<String, AppError> {
+        validate_record_payload(draft.kind, &draft.schema_version, &draft.payload)?;
+        validate_hash(expected_head, "expected head")?;
+        validate_record_references(&self.connection, draft)?;
+        let current = self.get_record(object_id)?;
+        if current.kind != draft.kind {
+            return Err(AppError::new(
+                "MCL_RECORD_KIND_IMMUTABLE",
+                format!(
+                    "object {object_id} is `{}`, not `{}`",
+                    current.kind, draft.kind
+                ),
+                false,
+                "Create a distinct object when the logical record kind changes.",
+            ));
+        }
+        if current.version_hash != expected_head {
+            return Err(conflict(object_id, expected_head, &current.version_hash));
+        }
+        let version_hash = record_version_hash(&draft.schema_version, &draft.payload)?;
+        if version_hash == expected_head {
+            return Err(AppError::new(
+                "MCL_RECORD_VERSION_UNCHANGED",
+                "new canonical content is identical to the expected head",
+                false,
+                "Do not create a new version unless canonical content changes.",
+            ));
+        }
+        if self
+            .connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM record_versions WHERE version_hash = ?1)",
+                [&version_hash],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::database("preview duplicate record version", error))?
+        {
+            return Err(AppError::new(
+                "MCL_RECORD_VERSION_EXISTS",
+                "canonical version already exists",
+                false,
+                "Use the existing version or submit different canonical content.",
+            ));
+        }
+        Ok(version_hash)
     }
 
     pub fn get_record(&self, object_id: &str) -> Result<RecordSnapshot, AppError> {
@@ -582,7 +658,7 @@ impl Store {
 }
 
 fn validate_record_references(
-    transaction: &rusqlite::Transaction<'_>,
+    connection: &Connection,
     draft: &RecordDraft,
 ) -> Result<(), AppError> {
     if draft.kind != RecordKind::Formalization {
@@ -597,7 +673,7 @@ fn validate_record_references(
                 "Submit a payload matching the committed formalization schema.",
             )
         })?;
-    let actual_kind = transaction
+    let actual_kind = connection
         .query_row(
             "SELECT r.record_type FROM record_versions rv JOIN records r ON r.object_id = rv.object_id WHERE rv.version_hash = ?1 AND rv.object_id = ?2",
             params![

@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 use crate::artifacts::ArtifactStore;
 use crate::config::ResolvedConfig;
+use crate::domain::{RecordDraft, RecordSnapshot};
 use crate::error::AppError;
 use crate::store::Store;
 
@@ -26,9 +27,32 @@ pub struct DiagnosticReport {
     pub checks: Vec<Check>,
 }
 
-pub struct Application;
+#[derive(Debug, Serialize)]
+pub struct RecordMutationOutcome {
+    pub dry_run: bool,
+    pub proposed_version_hash: String,
+    pub record: Option<RecordSnapshot>,
+}
+
+pub struct Application {
+    store: Store,
+}
 
 impl Application {
+    pub fn open(config: &ResolvedConfig) -> Result<Self, AppError> {
+        if !config.database.is_file() {
+            return Err(AppError::new(
+                "MCL_INSTANCE_NOT_INITIALIZED",
+                format!("database does not exist at {}", config.database.display()),
+                false,
+                "Run `mcl init` for this instance root.",
+            ));
+        }
+        Ok(Self {
+            store: Store::open(&config.database)?,
+        })
+    }
+
     pub fn initialize(
         config: &ResolvedConfig,
         actor: &str,
@@ -201,6 +225,88 @@ impl Application {
 
         report.healthy = report.checks.iter().all(|check| check.healthy);
         report
+    }
+
+    pub fn create_record(
+        &mut self,
+        draft: &RecordDraft,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<RecordMutationOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let proposed_version_hash = self.store.validate_record_create(draft)?;
+        let record = if dry_run {
+            None
+        } else {
+            Some(self.store.create_record(draft, actor, idempotency_key)?)
+        };
+        Ok(RecordMutationOutcome {
+            dry_run,
+            proposed_version_hash,
+            record,
+        })
+    }
+
+    pub fn version_record(
+        &mut self,
+        object_id: &str,
+        expected_head: &str,
+        draft: &RecordDraft,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<RecordMutationOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let proposed_version_hash =
+            self.store
+                .validate_record_version(object_id, expected_head, draft)?;
+        let record = if dry_run {
+            None
+        } else {
+            Some(self.store.version_record(
+                object_id,
+                expected_head,
+                draft,
+                actor,
+                idempotency_key,
+            )?)
+        };
+        Ok(RecordMutationOutcome {
+            dry_run,
+            proposed_version_hash,
+            record,
+        })
+    }
+
+    pub fn get_record(
+        &self,
+        object_id: &str,
+        version_hash: Option<&str>,
+    ) -> Result<RecordSnapshot, AppError> {
+        match version_hash {
+            Some(hash) => {
+                let record = self.store.get_record_version(hash)?;
+                if record.object_id != object_id {
+                    return Err(AppError::new(
+                        "MCL_RECORD_VERSION_MISMATCH",
+                        format!("version {hash} does not belong to object {object_id}"),
+                        false,
+                        "Use an exact object and version pair returned by canonical lookup.",
+                    ));
+                }
+                Ok(record)
+            }
+            None => self.store.get_record(object_id),
+        }
+    }
+
+    pub fn search_records(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<RecordSnapshot>, AppError> {
+        self.store.search_records(query, limit)
     }
 }
 

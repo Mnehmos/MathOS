@@ -12,7 +12,7 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 Phase 2: Canonical records and trace.
 
-Active issue: [#10, add concept and formalization schemas](https://github.com/Mnehmos/MathOS/issues/10).
+Active issue: [#13, expose one typed application service through CLI](https://github.com/Mnehmos/MathOS/issues/13).
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -59,18 +59,21 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - A formalization must reference an exact existing claim object and version. Missing references and references to other record kinds fail before persistence.
 - GitHub Actions run `29696708243` passed Rust tests and warnings-denied lint on fresh Linux and Windows runners, the real-storage smoke test, and all legacy Python regression tests.
 - The fresh Linux runner installed the exact pinned Lean 4.32.0 toolchain from a SHA-256-verified Elan installer and executed `lean --version` successfully. This establishes toolchain availability only, not proof authority.
+- Sources, concepts, claims, and formalizations now use one typed application service for CLI create, version, exact retrieval, and dry-run validation.
+- CLI entity mutations bind the committed schema version, require actor and idempotency attribution, and preserve compare-and-swap versioning.
+- Canonical FTS search is available through that same application service, and CLI integration covers dry-run non-mutation, create, version, current and historical reads, restart, search, and wrong-family rejection.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, MCP behavior, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Finish issue #10 validation, publish the controlled commit through the GitHub connector, and retain fresh CI evidence on the draft pull request.
+- Continue issue #13 by routing runs, run events, edges, and bounded graph traversal through the same application service and CLI.
+- Add representative golden CLI JSON contracts and adversarial conflict coverage before closing issue #13.
 - Keep the local Lean launch limitation visible without misclassifying it as a project-wide blocker.
-- Prepare the next shared application-service and CLI slice after issue #10 is remotely green.
 
 ## Next highest-priority criteria
 
-1. Expose canonical records, runs, and bounded graph traversal through one shared application service and CLI.
+1. Finish runs and graph operations on the shared application and CLI path.
 2. Add the MCP adapter only after it can call that same real application path.
 3. Implement environment manifests and the narrow Lean elaboration boundary now that the pinned toolchain is executable in CI.
 4. Implement evidence records and derived truth rules before any proof-status surface exists.
@@ -93,10 +96,10 @@ Observed Rust evidence before this update:
 - formatting passed;
 - warnings-denied Clippy passed;
 - 44 Rust unit tests passed;
-- 4 Rust CLI integration tests passed;
+- 5 Rust CLI integration tests passed;
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.
-- GitHub Actions run `29696708243` passed all five jobs, including exact pinned Lean availability and both Rust operating-system targets.
+- GitHub Actions runs `29696708243` and `29697132394` passed all five jobs, including exact pinned Lean availability and both Rust operating-system targets.
 
 ## Release readiness
 
