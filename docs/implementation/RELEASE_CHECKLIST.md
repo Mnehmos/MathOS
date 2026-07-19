@@ -1,0 +1,97 @@
+# MathOS 1.0.0 Release Checklist
+
+Last updated: 2026-07-19
+
+This checklist mirrors section 30 of [SPEC.md](../../SPEC.md). A checked item requires linked mechanical and manual evidence. Partial Phase 1 work is recorded below but does not check a release item whose complete wording is not yet satisfied.
+
+## Installation and operation
+
+- [ ] A clean checkout builds using documented commands on supported Windows and Linux CI environments.
+- [ ] `mcl init` creates a working local instance.
+- [ ] `mcl doctor` reports a healthy installation.
+- [ ] MCP and CLI operate over the same canonical service layer.
+- [ ] Process restart preserves committed state and resumes or safely requeues durable jobs.
+
+Phase 1 evidence: `mcl init` and storage health work in the local Linux environment. Windows, CI, Lean health, MCP, and durable job recovery remain open.
+
+## Core lifecycle
+
+- [ ] Sources, concepts, claims, formalizations, artifacts, evidence, edges, runs, learning units, environments, and releases are fully implemented.
+- [ ] Multiple formalizations per claim work end to end.
+- [ ] Fidelity review works end to end.
+- [ ] Counterexample, repair, proof, disproof, and open outcomes work end to end.
+- [ ] Truth status is derived and cannot be directly mutated.
+- [ ] Verified intermediate results can be promoted and searched.
+
+## Verification
+
+- [ ] Lean verification uses pinned environments.
+- [ ] Authoritative proof and refutation evidence is recorded against exact formalization versions.
+- [ ] Hole, unsafe, and axiom policies are enforced.
+- [ ] Replay works and reports its exact trust boundary.
+- [ ] Publication CI produces retained evidence.
+
+Phase 1 evidence: `lean-toolchain` pins Lean 4.32.0. No proof-authority item is complete.
+
+## Search and context
+
+- [ ] Exact, FTS, graph, declaration, and failure searches work.
+- [ ] Context compilation is deterministic and provenance-bearing.
+- [ ] Agents outside the originating campaign can locate and reuse verified results.
+
+Phase 1 evidence: the physical FTS5 table and a health probe exist. Product search is not implemented.
+
+## Pedagogy
+
+- [ ] Hard and soft prerequisites are distinct.
+- [ ] Learning units support explanations, examples, counterexamples, misconceptions, exercises, mastery checks, and frontier notes.
+- [ ] Curriculum paths can be queried.
+- [ ] External taxonomy crosswalks preserve source and license.
+
+## Releases and exports
+
+- [ ] Release bundles are complete, hashed, licensed, and policy-checked.
+- [ ] Releases verify without the operational database.
+- [ ] MathCorpus and MCIP export works.
+- [ ] RL and evaluation exports work with leakage-aware splits.
+- [ ] Public exports fail closed on restricted or incomplete provenance.
+
+## Migration
+
+- [ ] Legacy proof-search evidence imports without silent trust promotion.
+- [ ] Original IDs, hashes, histories, and negative attempts are preserved.
+- [ ] The four pilot fixtures are represented in the new architecture.
+
+Phase 1 evidence: the old Python implementation is explicitly classified as legacy input. No importer or pilot fixture is complete.
+
+## Quality and operations
+
+- [ ] All CI checks pass.
+- [ ] All adversarial tests pass.
+- [ ] Backup and restore is tested.
+- [ ] Migrations are documented and tested.
+- [ ] Structured errors and logs are implemented.
+- [ ] No placeholder handlers exist on required paths.
+- [ ] No critical-path TODO, FIXME, panic-only behavior, or undocumented manual database edit remains.
+- [ ] User, operator, trust, data-format, and contributor documentation is complete.
+- [ ] A release candidate is built, replayed, and tagged `1.0.0`.
+
+Phase 1 evidence: migration 1 has idempotency and FTS5 tests; public CLI errors are structured; required unimplemented handlers have not been added as placeholders. The full quality and operations criteria remain open.
+
+## Mandatory pilots
+
+- [ ] Pilot A: elementary false statement.
+- [ ] Pilot B: textbook theorem.
+- [ ] Pilot C: BH research formalization.
+- [ ] Pilot D: Erdős problem 647 open frontier campaign.
+
+## Product acceptance command
+
+- [ ] One clean command initializes a fresh instance, runs all checks and four pilots, builds database-independent releases, replays them, produces all exports, emits a hashed report, and exits nonzero on any unmet requirement.
+
+## Release authorization
+
+- [ ] Every item above is mechanically and manually reviewed.
+- [ ] The release candidate was produced from a clean checkout.
+- [ ] The verified commit is merged to protected `main`.
+- [ ] The `v1.0.0` tag points to that exact verified commit.

@@ -1,5 +1,7 @@
 # 04: The Name of Done
 
+> Correction, July 19, 2026: This entry recorded a false completion judgment based on an earlier, narrower document. The binding root `SPEC.md` supersedes that boundary. MathOS 1.0 is not complete. This entry remains visible because a trustworthy trace must remember mistaken claims as well as successful work.
+
 July 19, 2026
 
 I made a naming mistake after making a technical success.

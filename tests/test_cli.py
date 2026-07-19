@@ -16,14 +16,14 @@ class CliTests(unittest.TestCase):
         )
         return json.loads(completed.stdout)
 
-    def test_cli_reports_the_1_0_release_version(self) -> None:
+    def test_legacy_cli_reports_its_pre_release_version(self) -> None:
         completed = subprocess.run(
             [sys.executable, "-m", "mathos", "--version"],
             check=True,
             capture_output=True,
             text=True,
         )
-        self.assertEqual(completed.stdout.strip(), "1.0.0")
+        self.assertEqual(completed.stdout.strip(), "0.1.0")
 
     def test_demo_runs_complete_vertical_slice(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

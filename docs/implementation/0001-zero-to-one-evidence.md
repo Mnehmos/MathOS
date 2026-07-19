@@ -1,5 +1,7 @@
 # Cycle 0001: Zero-to-One Evidence
 
+> Superseded record: This evidence applies only to the legacy Python finite-domain slice. Its former MathOS 1.0 completion claim was incorrect under the binding root `SPEC.md`. The record remains for migration provenance and regression history.
+
 Date: July 18, 2026
 
 ## Scope

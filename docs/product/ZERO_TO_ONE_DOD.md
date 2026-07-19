@@ -1,5 +1,7 @@
 # MathOS 0-to-1 Definition of Done
 
+> Superseded: Release completion is governed only by section 30 of the repository-root `SPEC.md`. This historical checklist cannot authorize a MathOS 1.0 release.
+
 This is the implementation ledger for v1.0.0. An item is complete only when its evidence exists on the release commit. The 0-to-1 milestone terminates at the 1.0 release.
 
 | Requirement | Status | Evidence |
