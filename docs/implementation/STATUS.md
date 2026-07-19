@@ -160,6 +160,10 @@ These items establish only part of the product foundation and Phase 2 trace mode
 - Implement issue #21 publication-profile proof authority without allowing local diagnostic workers or caller-authored reports to self-promote.
 - Keep proof authority and mathematical status impossible while fidelity and publication-profile controls remain incomplete.
 - Issue #20 is complete with exact-tree CI evidence. Issue #21 must now bind clean-checkout verification, dependency closure, retained artifacts, policy identity, and non-forgeable report provenance before authoritative proof or refutation evidence can exist.
+- The first issue #21 slice defines closed publication policy, request, and candidate-report contracts. The policy pins repository, protected workflow, main ref, GitHub-hosted runner, Lean toolchain, allowed axioms, required isolation controls, SLSA predicate, and action commit identities.
+- Publication requests separately name proof and refutation outcomes and bind exact diagnostic, proof-closure, axiom-audit, environment, module, declaration, policy, Git commit, and Git tree identities.
+- Candidate reports must remain non-authoritative. A passed candidate fails validation if clean checkout, dependency closure, network isolation, memory enforcement, allowed axioms, retained artifacts, workflow identity, source identity, or policy identity is missing or inconsistent.
+- ADR-0006 requires GitHub OIDC and Sigstore attestation of the exact report bytes, followed by repository, workflow, ref, commit, predicate, runner, and subject-digest verification before authority promotion. Candidate generation and attestation ingestion remain active work.
 
 ## Next highest-priority criteria
 

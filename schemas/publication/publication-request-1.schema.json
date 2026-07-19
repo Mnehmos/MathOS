@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/publication/request/1",
+  "title": "MathOS Publication Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "subject", "outcome", "diagnostic_evidence_id", "diagnostic_evidence_hash", "proof_closure_evidence_id", "proof_closure_evidence_hash", "axiom_audit_evidence_id", "axiom_audit_evidence_hash", "environment_hash", "module_artifact_hash", "declaration_name", "policy_hash", "source_commit_sha", "source_tree_sha"],
+  "properties": {
+    "schema_version": {"const": "publication_request/1"},
+    "subject": {"type": "object", "additionalProperties": false, "required": ["object_id", "version_hash"], "properties": {"object_id": {"type": "string", "format": "uuid"}, "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+    "outcome": {"enum": ["proof", "refutation"]},
+    "diagnostic_evidence_id": {"type": "string", "format": "uuid"},
+    "diagnostic_evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "proof_closure_evidence_id": {"type": "string", "format": "uuid"},
+    "proof_closure_evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "axiom_audit_evidence_id": {"type": "string", "format": "uuid"},
+    "axiom_audit_evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "module_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256},
+    "policy_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "source_tree_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+  }
+}

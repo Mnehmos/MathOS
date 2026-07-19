@@ -36,3 +36,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 26. [The Proof Brings Its Ancestors](0026-the-proof-brings-its-ancestors.md)
 27. [A Correct Theorem Can Mean the Wrong Thing](0027-a-correct-theorem-can-mean-the-wrong-thing.md)
 28. [Disagreement Needs an Address](0028-disagreement-needs-an-address.md)
+29. [Authority Needs a Witness Outside Itself](0029-authority-needs-a-witness-outside-itself.md)

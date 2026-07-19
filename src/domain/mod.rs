@@ -11,6 +11,7 @@ pub mod audit;
 pub mod environment;
 pub mod evidence;
 pub mod fidelity;
+pub mod publication;
 pub mod schemas;
 pub mod verifier;
 
@@ -34,6 +35,10 @@ pub use fidelity::{
     AmbiguityDisposition, DefinitionMapping, FidelityReviewHistoryEntry, FidelityReviewLevel,
     FidelityReviewReport, FidelityReviewRequest, FidelityStatus, FidelityStatusSnapshot,
     FidelityVerdict,
+};
+pub use publication::{
+    PublicationClassification, PublicationOutcome, PublicationPolicy, PublicationReport,
+    PublicationRequest, PublicationRunnerEnvironment,
 };
 pub use verifier::{
     VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,

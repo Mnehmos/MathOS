@@ -1,0 +1,21 @@
+{
+  "schema_version": "publication_policy/1",
+  "policy_name": "lean_publication_authority",
+  "repository": "Mnehmos/MathOS",
+  "workflow_path": ".github/workflows/publication.yml",
+  "required_source_ref": "refs/heads/main",
+  "required_runner_environment": "github_hosted",
+  "required_lean_toolchain": "leanprover/lean4:v4.32.0",
+  "allowed_axioms": [
+    "Classical.choice",
+    "Quot.sound",
+    "propext"
+  ],
+  "requires_clean_checkout": true,
+  "requires_dependency_closure": true,
+  "requires_network_isolation": true,
+  "requires_memory_limit": true,
+  "attestation_predicate_type": "https://slsa.dev/provenance/v1",
+  "attestation_action_sha": "59d89421af93a897026c735860bf21b6eb4f7b26",
+  "artifact_upload_action_sha": "ea165f8d65b6e75b540449e92b4886f43607fa02"
+}
