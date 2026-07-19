@@ -652,6 +652,39 @@ impl Store {
         Ok(snapshot)
     }
 
+    pub fn validate_edge_create(&self, draft: &EdgeDraft) -> Result<(), AppError> {
+        validate_hash(&draft.source_version_hash, "source version")?;
+        validate_hash(&draft.target_version_hash, "target version")?;
+        canonical_json(&draft.payload)?;
+        validate_edge_endpoint(
+            &self.connection,
+            "source",
+            &draft.source_object_id,
+            &draft.source_version_hash,
+        )?;
+        validate_edge_endpoint(
+            &self.connection,
+            "target",
+            &draft.target_object_id,
+            &draft.target_version_hash,
+        )?;
+        if draft.kind == EdgeKind::PedagogyHardPrerequisite
+            && hard_prerequisite_would_cycle(
+                &self.connection,
+                &draft.source_object_id,
+                &draft.target_object_id,
+            )?
+        {
+            return Err(AppError::new(
+                "MCL_PEDAGOGY_CYCLE",
+                "hard pedagogical prerequisite edge would create a cycle",
+                false,
+                "Use a soft prerequisite or revise the curriculum dependency direction.",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn get_edge(&self, edge_id: &str) -> Result<EdgeSnapshot, AppError> {
         read_edge(&self.connection, edge_id)
     }

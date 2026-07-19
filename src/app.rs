@@ -6,7 +6,10 @@ use serde_json::{Value, json};
 
 use crate::artifacts::ArtifactStore;
 use crate::config::ResolvedConfig;
-use crate::domain::{RecordDraft, RecordSnapshot};
+use crate::domain::{
+    EdgeDraft, EdgeSnapshot, GraphTraversalHit, GraphTraversalRequest, RecordDraft, RecordSnapshot,
+    RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
+};
 use crate::error::AppError;
 use crate::store::Store;
 
@@ -32,6 +35,24 @@ pub struct RecordMutationOutcome {
     pub dry_run: bool,
     pub proposed_version_hash: String,
     pub record: Option<RecordSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EdgeMutationOutcome {
+    pub dry_run: bool,
+    pub edge: Option<EdgeSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunMutationOutcome {
+    pub dry_run: bool,
+    pub run: Option<RunSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunEventMutationOutcome {
+    pub dry_run: bool,
+    pub event: Option<RunEventSnapshot>,
 }
 
 pub struct Application {
@@ -235,11 +256,11 @@ impl Application {
         dry_run: bool,
     ) -> Result<RecordMutationOutcome, AppError> {
         validate_attribution(actor, idempotency_key)?;
-        let proposed_version_hash = self.store.validate_record_create(draft)?;
-        let record = if dry_run {
-            None
+        let (proposed_version_hash, record) = if dry_run {
+            (self.store.validate_record_create(draft)?, None)
         } else {
-            Some(self.store.create_record(draft, actor, idempotency_key)?)
+            let record = self.store.create_record(draft, actor, idempotency_key)?;
+            (record.version_hash.clone(), Some(record))
         };
         Ok(RecordMutationOutcome {
             dry_run,
@@ -258,19 +279,21 @@ impl Application {
         dry_run: bool,
     ) -> Result<RecordMutationOutcome, AppError> {
         validate_attribution(actor, idempotency_key)?;
-        let proposed_version_hash =
-            self.store
-                .validate_record_version(object_id, expected_head, draft)?;
-        let record = if dry_run {
-            None
+        let (proposed_version_hash, record) = if dry_run {
+            (
+                self.store
+                    .validate_record_version(object_id, expected_head, draft)?,
+                None,
+            )
         } else {
-            Some(self.store.version_record(
+            let record = self.store.version_record(
                 object_id,
                 expected_head,
                 draft,
                 actor,
                 idempotency_key,
-            )?)
+            )?;
+            (record.version_hash.clone(), Some(record))
         };
         Ok(RecordMutationOutcome {
             dry_run,
@@ -307,6 +330,93 @@ impl Application {
         limit: usize,
     ) -> Result<Vec<RecordSnapshot>, AppError> {
         self.store.search_records(query, limit)
+    }
+
+    pub fn create_edge(
+        &mut self,
+        draft: &EdgeDraft,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<EdgeMutationOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let edge = if dry_run {
+            self.store.validate_edge_create(draft)?;
+            None
+        } else {
+            Some(self.store.create_edge(draft, actor, idempotency_key)?)
+        };
+        Ok(EdgeMutationOutcome { dry_run, edge })
+    }
+
+    pub fn get_edge(&self, edge_id: &str) -> Result<EdgeSnapshot, AppError> {
+        self.store.get_edge(edge_id)
+    }
+
+    pub fn traverse_graph(
+        &self,
+        request: &GraphTraversalRequest,
+    ) -> Result<Vec<GraphTraversalHit>, AppError> {
+        self.store.traverse_graph(request)
+    }
+
+    pub fn create_run(
+        &mut self,
+        kind: RunKind,
+        budget: &Value,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<RunMutationOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let run = if dry_run {
+            self.store.validate_run_create(budget)?;
+            None
+        } else {
+            Some(
+                self.store
+                    .create_run(kind, budget, actor, idempotency_key)?,
+            )
+        };
+        Ok(RunMutationOutcome { dry_run, run })
+    }
+
+    pub fn get_run(&self, run_id: &str) -> Result<RunSnapshot, AppError> {
+        self.store.get_run(run_id)
+    }
+
+    pub fn list_run_events(&self, run_id: &str) -> Result<Vec<RunEventSnapshot>, AppError> {
+        self.store.list_run_events(run_id)
+    }
+
+    pub fn append_run_event(
+        &mut self,
+        run_id: &str,
+        expected_head_hash: &str,
+        draft: &RunEventDraft,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<RunEventMutationOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let event = if dry_run {
+            self.store
+                .validate_run_event_append(run_id, expected_head_hash, draft)?;
+            None
+        } else {
+            Some(self.store.append_run_event(
+                run_id,
+                expected_head_hash,
+                draft,
+                actor,
+                idempotency_key,
+            )?)
+        };
+        Ok(RunEventMutationOutcome { dry_run, event })
+    }
+
+    pub fn verify_run_chain(&self, run_id: &str) -> Result<RunChainReport, AppError> {
+        self.store.verify_run_chain(run_id)
     }
 }
 

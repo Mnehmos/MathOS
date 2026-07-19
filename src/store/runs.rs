@@ -39,6 +39,11 @@ type RawRunEventRow = (
 );
 
 impl Store {
+    pub fn validate_run_create(&self, budget: &Value) -> Result<(), AppError> {
+        canonical_json(budget)?;
+        Ok(())
+    }
+
     pub fn create_run(
         &mut self,
         kind: RunKind,
@@ -168,6 +173,38 @@ impl Store {
             .commit()
             .map_err(|error| AppError::database("commit run event append", error))?;
         Ok(event)
+    }
+
+    pub fn validate_run_event_append(
+        &self,
+        run_id: &str,
+        expected_head_hash: &str,
+        draft: &RunEventDraft,
+    ) -> Result<(), AppError> {
+        validate_hash(expected_head_hash, "expected run event head")?;
+        validate_append_event_kind(draft.kind)?;
+        canonical_json(&draft.payload)?;
+        let run = self.get_run(run_id)?;
+        if run.state != RunState::Active {
+            return Err(AppError::new(
+                "MCL_RUN_NOT_ACTIVE",
+                format!("run {run_id} is {}", run.state.as_str()),
+                false,
+                "Start a new run or use the explicit lifecycle operation allowed for this state.",
+            ));
+        }
+        let actual_head = run.event_head_hash.as_deref().ok_or_else(|| {
+            AppError::new(
+                "MCL_RUN_CHAIN_EMPTY",
+                format!("run {run_id} has no origin event"),
+                false,
+                "Run integrity verification and restore a verified backup.",
+            )
+        })?;
+        if actual_head != expected_head_hash {
+            return Err(run_event_conflict(run_id, expected_head_hash, actual_head));
+        }
+        Ok(())
     }
 
     pub fn get_run(&self, run_id: &str) -> Result<RunSnapshot, AppError> {

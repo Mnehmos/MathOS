@@ -62,18 +62,22 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Sources, concepts, claims, and formalizations now use one typed application service for CLI create, version, exact retrieval, and dry-run validation.
 - CLI entity mutations bind the committed schema version, require actor and idempotency attribution, and preserve compare-and-swap versioning.
 - Canonical FTS search is available through that same application service, and CLI integration covers dry-run non-mutation, create, version, current and historical reads, restart, search, and wrong-family rejection.
+- Version-bound edge creation, exact edge retrieval, and bounded typed graph traversal now use the same application service and CLI path.
+- Research run creation, retrieval, event listing, event append, and hash-chain verification now use that shared path while remaining explicitly non-authoritative.
+- Edge, run, and run-event dry runs validate without mutation. Real mutations preserve store-level idempotency before evaluating changed current state.
+- CLI adversarial coverage caught and fixed an application-layer retry-order defect, then verified identical event retries, stale-head conflicts, graph bounds, restart persistence, and chain validity.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, MCP behavior, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Continue issue #13 by routing runs, run events, edges, and bounded graph traversal through the same application service and CLI.
-- Add representative golden CLI JSON contracts and adversarial conflict coverage before closing issue #13.
+- Add representative golden CLI JSON contracts and remaining conflict coverage before closing issue #13.
+- Review the complete CLI surface against the no-status-mutation and no-raw-capability trust checks.
 - Keep the local Lean launch limitation visible without misclassifying it as a project-wide blocker.
 
 ## Next highest-priority criteria
 
-1. Finish runs and graph operations on the shared application and CLI path.
+1. Finish stable CLI JSON contracts and close issue #13 with remote CI evidence.
 2. Add the MCP adapter only after it can call that same real application path.
 3. Implement environment manifests and the narrow Lean elaboration boundary now that the pinned toolchain is executable in CI.
 4. Implement evidence records and derived truth rules before any proof-status surface exists.
@@ -96,7 +100,7 @@ Observed Rust evidence before this update:
 - formatting passed;
 - warnings-denied Clippy passed;
 - 44 Rust unit tests passed;
-- 5 Rust CLI integration tests passed;
+- 6 Rust CLI integration tests passed;
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.
 - GitHub Actions runs `29696708243` and `29697132394` passed all five jobs, including exact pinned Lean availability and both Rust operating-system targets.

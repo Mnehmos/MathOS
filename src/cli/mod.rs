@@ -1,11 +1,15 @@
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Value, to_value};
 
 use crate::app::{Application, root_exists};
 use crate::config::ResolvedConfig;
-use crate::domain::{RecordDraft, RecordKind, RecordSnapshot};
+use crate::domain::{
+    EdgeDraft, EdgeKind, GraphTraversalRequest, RecordDraft, RecordKind, RecordSnapshot,
+    RunEventDraft, RunEventKind, RunKind, TraversalDirection,
+};
 use crate::error::AppError;
 
 #[derive(Debug)]
@@ -48,6 +52,12 @@ enum Command {
     Formalization(EntityOptions),
     /// Search the current canonical record heads through SQLite FTS5.
     Search(SearchOptions),
+    /// Create or retrieve exact version-bound graph edges.
+    Edge(EdgeOptions),
+    /// Traverse the version-bound graph with explicit typed bounds.
+    Graph(GraphOptions),
+    /// Start, inspect, append to, and verify non-authoritative research runs.
+    Research(ResearchOptions),
 }
 
 #[derive(Debug, Args)]
@@ -126,6 +136,120 @@ struct SearchOptions {
     limit: usize,
 }
 
+#[derive(Debug, Args)]
+struct EdgeOptions {
+    #[command(subcommand)]
+    action: EdgeAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum EdgeAction {
+    Create(EdgeCreateOptions),
+    Get(EdgeGetOptions),
+}
+
+#[derive(Debug, Args)]
+struct EdgeCreateOptions {
+    #[arg(long)]
+    kind: String,
+
+    #[arg(long)]
+    source_object_id: String,
+
+    #[arg(long)]
+    source_version_hash: String,
+
+    #[arg(long)]
+    target_object_id: String,
+
+    #[arg(long)]
+    target_version_hash: String,
+
+    #[arg(long, default_value = "{}")]
+    payload_json: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct EdgeGetOptions {
+    #[arg(long)]
+    edge_id: String,
+}
+
+#[derive(Debug, Args)]
+struct GraphOptions {
+    #[arg(long)]
+    root_object_id: String,
+
+    #[arg(long)]
+    root_version_hash: String,
+
+    #[arg(long, default_value = "both")]
+    direction: String,
+
+    #[arg(long = "edge-kind")]
+    edge_kinds: Vec<String>,
+
+    #[arg(long, default_value_t = 1)]
+    max_depth: u32,
+
+    #[arg(long, default_value_t = 100)]
+    limit: usize,
+}
+
+#[derive(Debug, Args)]
+struct ResearchOptions {
+    #[command(subcommand)]
+    action: ResearchAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum ResearchAction {
+    Start(RunStartOptions),
+    Get(RunGetOptions),
+    Events(RunGetOptions),
+    Submit(RunSubmitOptions),
+    Verify(RunGetOptions),
+}
+
+#[derive(Debug, Args)]
+struct RunStartOptions {
+    #[arg(long)]
+    kind: String,
+
+    #[arg(long, default_value = "{}")]
+    budget_json: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct RunGetOptions {
+    #[arg(long)]
+    run_id: String,
+}
+
+#[derive(Debug, Args)]
+struct RunSubmitOptions {
+    #[arg(long)]
+    run_id: String,
+
+    #[arg(long)]
+    expected_head: String,
+
+    #[arg(long)]
+    kind: String,
+
+    #[arg(long, default_value = "{}")]
+    payload_json: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
 impl Cli {
     pub fn execute(self) -> Result<CliOutcome, AppError> {
         if !root_exists(&self.root)
@@ -190,6 +314,9 @@ impl Cli {
                     success: true,
                 })
             }
+            Command::Edge(options) => execute_edge(&config, options),
+            Command::Graph(options) => execute_graph(&config, options),
+            Command::Research(options) => execute_research(&config, options),
         }
     }
 }
@@ -277,4 +404,126 @@ fn require_record_kind(record: &RecordSnapshot, expected: RecordKind) -> Result<
         ));
     }
     Ok(())
+}
+
+fn execute_edge(config: &ResolvedConfig, options: EdgeOptions) -> Result<CliOutcome, AppError> {
+    let mut application = Application::open(config)?;
+    let value = match options.action {
+        EdgeAction::Create(options) => {
+            let draft = EdgeDraft {
+                kind: EdgeKind::from_str(&options.kind)?,
+                source_object_id: options.source_object_id,
+                source_version_hash: options.source_version_hash,
+                target_object_id: options.target_object_id,
+                target_version_hash: options.target_version_hash,
+                payload: parse_json(&options.payload_json, "edge payload")?,
+            };
+            to_value(application.create_edge(
+                &draft,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("edge mutation outcome is serializable")
+        }
+        EdgeAction::Get(options) => to_value(application.get_edge(&options.edge_id)?)
+            .expect("edge snapshot is serializable"),
+    };
+    Ok(CliOutcome {
+        value,
+        success: true,
+    })
+}
+
+fn execute_graph(config: &ResolvedConfig, options: GraphOptions) -> Result<CliOutcome, AppError> {
+    let application = Application::open(config)?;
+    let direction = match options.direction.as_str() {
+        "outgoing" => TraversalDirection::Outgoing,
+        "incoming" => TraversalDirection::Incoming,
+        "both" => TraversalDirection::Both,
+        value => {
+            return Err(AppError::new(
+                "MCL_GRAPH_DIRECTION_UNKNOWN",
+                format!("unknown graph direction `{value}`"),
+                false,
+                "Use `outgoing`, `incoming`, or `both`.",
+            ));
+        }
+    };
+    let edge_kinds = options
+        .edge_kinds
+        .iter()
+        .map(|kind| EdgeKind::from_str(kind))
+        .collect::<Result<Vec<_>, _>>()?;
+    let request = GraphTraversalRequest {
+        root_object_id: options.root_object_id,
+        root_version_hash: options.root_version_hash,
+        direction,
+        edge_kinds,
+        max_depth: options.max_depth,
+        limit: options.limit,
+    };
+    Ok(CliOutcome {
+        value: to_value(application.traverse_graph(&request)?)
+            .expect("graph traversal is serializable"),
+        success: true,
+    })
+}
+
+fn execute_research(
+    config: &ResolvedConfig,
+    options: ResearchOptions,
+) -> Result<CliOutcome, AppError> {
+    let mut application = Application::open(config)?;
+    let value = match options.action {
+        ResearchAction::Start(options) => {
+            let kind = RunKind::from_str(&options.kind)?;
+            let budget = parse_json(&options.budget_json, "run budget")?;
+            to_value(application.create_run(
+                kind,
+                &budget,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("run mutation outcome is serializable")
+        }
+        ResearchAction::Get(options) => {
+            to_value(application.get_run(&options.run_id)?).expect("run snapshot is serializable")
+        }
+        ResearchAction::Events(options) => to_value(application.list_run_events(&options.run_id)?)
+            .expect("run events are serializable"),
+        ResearchAction::Submit(options) => {
+            let draft = RunEventDraft {
+                kind: RunEventKind::from_str(&options.kind)?,
+                payload: parse_json(&options.payload_json, "run event payload")?,
+            };
+            to_value(application.append_run_event(
+                &options.run_id,
+                &options.expected_head,
+                &draft,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("run event mutation outcome is serializable")
+        }
+        ResearchAction::Verify(options) => to_value(application.verify_run_chain(&options.run_id)?)
+            .expect("run chain report is serializable"),
+    };
+    Ok(CliOutcome {
+        value,
+        success: true,
+    })
+}
+
+fn parse_json(input: &str, label: &str) -> Result<Value, AppError> {
+    serde_json::from_str(input).map_err(|error| {
+        AppError::new(
+            "MCL_CLI_JSON_INVALID",
+            format!("{label} JSON is invalid: {error}"),
+            false,
+            "Supply one complete JSON value through the corresponding JSON option.",
+        )
+    })
 }
