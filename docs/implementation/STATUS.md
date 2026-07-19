@@ -12,7 +12,7 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 Phase 2: Canonical records and trace.
 
-Active issue: [#6, enforce typed version-bound graph edges](https://github.com/Mnehmos/MathOS/issues/6).
+Active issue: [#7, implement append-only hash-chained run events](https://github.com/Mnehmos/MathOS/issues/7).
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
