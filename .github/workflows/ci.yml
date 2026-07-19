@@ -83,6 +83,9 @@ jobs:
         env:
           MCL_RUN_LEAN_INTEGRATION: "1"
         run: cargo test --test lean_worker -- --nocapture
+      - name: Exercise publication isolation boundary without authority
+        shell: bash
+        run: scripts/publication-smoke.sh "${RUNNER_TEMP}/publication-smoke"
 
   legacy-python-regression:
     name: Legacy Python regression evidence

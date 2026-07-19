@@ -164,6 +164,8 @@ These items establish only part of the product foundation and Phase 2 trace mode
 - Publication requests separately name proof and refutation outcomes and bind exact diagnostic, proof-closure, axiom-audit, environment, module, declaration, policy, Git commit, and Git tree identities.
 - Candidate reports must remain non-authoritative. A passed candidate fails validation if clean checkout, dependency closure, network isolation, memory enforcement, allowed axioms, retained artifacts, workflow identity, source identity, or policy identity is missing or inconsistent.
 - ADR-0006 requires GitHub OIDC and Sigstore attestation of the exact report bytes, followed by repository, workflow, ref, commit, predicate, runner, and subject-digest verification before authority promotion. Candidate generation and attestation ingestion remain active work.
+- The publication boundary smoke uses a clean checkout, pinned Lean, read-only root mount, separate mount, PID, and network namespaces, a private temporary filesystem, and a one-gibibyte address-space limit. Its report remains explicitly non-authoritative.
+- Pull-request CI exercises the isolation boundary. The protected `main` workflow additionally attests the exact smoke report with the SHA-pinned official GitHub action and retains report bytes, diagnostics, and the Sigstore bundle for 90 days.
 
 ## Next highest-priority criteria
 
