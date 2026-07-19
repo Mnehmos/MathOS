@@ -12,13 +12,15 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 Transition from Phase 2 canonical interfaces to Phase 3 formalization and Lean authority.
 
-Active implementation issue: [#17, implement the contained Lean execution boundary](https://github.com/Mnehmos/MathOS/issues/17).
+Active implementation issue: [#18, bind immutable diagnostic evidence to exact verifier attempts](https://github.com/Mnehmos/MathOS/issues/18).
 
 Issues [#14](https://github.com/Mnehmos/MathOS/issues/14) and [#15](https://github.com/Mnehmos/MathOS/issues/15) closed after GitHub Actions run `29699563931` passed all jobs on fresh Linux and Windows runners.
 
 Issue [#16](https://github.com/Mnehmos/MathOS/issues/16) closed after GitHub Actions run `29700398370` passed all jobs on the exact canonical artifact tree.
 
-The first issue #17 durable verifier-job slice passed all jobs in GitHub Actions run `29700933580` on its exact remote tree. Issue #17 remains open while proof authority is incomplete.
+The first issue #17 durable verifier-job slice passed all jobs in GitHub Actions run `29700933580` on its exact remote tree. It remained non-authoritative while contained execution was completed in later slices.
+
+Issue [#17](https://github.com/Mnehmos/MathOS/issues/17) closed after GitHub Actions run `29701916437` passed all jobs, including real accepted and rejected Lean modules, wrong-version rejection, and fresh Linux and Windows suites on exact tree `724cbd2332c988c874462ea6d825fd93b2c4d809`. This closes contained diagnostic execution only, not proof authority.
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -120,20 +122,24 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Execution classifications distinguish elaboration, Lean rejection, unsafe source, timeout, output exhaustion, toolchain mismatch, and launch failure from operational job state.
 - Every local execution report is permanently non-authoritative and records that memory and network isolation are not enforced. The worker refuses publication-profile environments.
 - ADR-0005 documents the contained local process boundary and its limitations. Dependency closure, proof evidence, proof-closure scans, axiom audits, fidelity review, and publication isolation remain separate gates.
+- Evidence now has a closed `evidence/1` Rust contract and committed JSON Schema with exhaustive evidence kinds, explicit result and authority classes, exact subject version, producing run or job, artifact set, environment, identity, supersession, and staleness fields.
+- Evidence payload identity is deterministic and rejects unsorted or malformed artifact sets, missing provenance, malformed references, and inconsistent staleness metadata.
+- Migration 0009 adds content identity and provenance projections to the evidence table. Database triggers reject subject/version mismatch, update, and deletion.
+- This evidence foundation does not yet create records from verifier attempts. No authoritative evidence or mathematical status exists.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, complete MCP mutation surface, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Publish the contained Lean execution slice and require real pinned Lean plus fresh Linux and Windows CI.
-- Inspect remote accepted and rejected Lean attempts and retain exact CI evidence.
-- Begin exact verifier evidence and proof-closure policy only after this non-authoritative boundary is green.
+- Persist and retrieve immutable diagnostic evidence through an application-controlled promotion path.
+- Require exact agreement among formalization, job, environment, module, report, and CAS artifacts.
+- Keep authority and mathematical status impossible while proof-closure policy is absent.
 
 ## Next highest-priority criteria
 
-1. Obtain remote real-Lean and cross-platform CI evidence for the contained execution boundary.
-2. Implement immutable evidence records tied to exact formalization, execution report, environment, and artifact versions.
-3. Implement proof-closure, hole, unsafe, and axiom audits before deriving any proof status.
+1. Complete issue #18 diagnostic evidence persistence and verifier-attempt binding.
+2. Implement proof-closure, hole, unsafe, and axiom audits before deriving any proof status.
+3. Add fidelity review as an independent evidence axis.
 4. Complete Pilot A through the real interfaces only after those authority controls exist.
 
 ## Exact last validation commands
@@ -152,14 +158,15 @@ Observed validation evidence for this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 65 Rust unit tests passed;
+- 67 Rust unit tests passed;
 - 9 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.
 - GitHub Actions run `29699563931` passed all five jobs for the completed MCP invalid-action and environment-persistence state, including exact pinned Lean availability and both Rust operating-system targets.
 - GitHub Actions run `29700398370` passed all five jobs for the canonical artifact slice, including both Rust operating-system targets.
 - GitHub Actions run `29700933580` passed all jobs for the durable verifier input, leasing, recovery, CLI, and migration slice on its exact remote tree.
-- The contained worker test passes locally through the unsafe-source path. The managed workspace lacks Lean, so its accepted and rejected real-Lean paths await the next GitHub Actions run.
+- GitHub Actions run `29701916437` passed all jobs for exact contained execution, including real Lean 4.32.0 acceptance and rejection plus wrong-version refusal.
+- The managed workspace still lacks Lean; local `mcl doctor` correctly reports that one unhealthy check while database, CAS, leases, environments, and artifact inventory remain healthy.
 
 ## Release readiness
 

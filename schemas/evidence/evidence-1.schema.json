@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/evidence/1",
+  "title": "MathOS Evidence Payload v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "subject",
+    "evidence_kind",
+    "result",
+    "authority_class",
+    "producing_run_id",
+    "producing_job_id",
+    "artifact_hashes",
+    "verifier_or_reviewer_identity",
+    "environment_hash",
+    "supersedes_evidence_id",
+    "stale",
+    "stale_reason"
+  ],
+  "properties": {
+    "schema_version": {"const": "evidence/1"},
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "format": "uuid"},
+        "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "evidence_kind": {
+      "enum": [
+        "lean_elaboration",
+        "lean_kernel_proof",
+        "lean_kernel_refutation",
+        "certificate_replay",
+        "bounded_computation",
+        "empirical_search",
+        "statement_fidelity_review",
+        "literature_review",
+        "novelty_review",
+        "axiom_audit",
+        "proof_closure_scan",
+        "clean_rebuild",
+        "comparator_run",
+        "human_review"
+      ]
+    },
+    "result": {"enum": ["accepted", "rejected", "inconclusive", "failed"]},
+    "authority_class": {"enum": ["diagnostic", "empirical", "reviewed", "authoritative"]},
+    "producing_run_id": {"type": ["string", "null"], "format": "uuid"},
+    "producing_job_id": {"type": ["string", "null"], "format": "uuid"},
+    "artifact_hashes": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "verifier_or_reviewer_identity": {"type": "string", "minLength": 1, "maxLength": 256},
+    "environment_hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "supersedes_evidence_id": {"type": ["string", "null"], "format": "uuid"},
+    "stale": {"type": "boolean"},
+    "stale_reason": {"type": ["string", "null"], "minLength": 1, "maxLength": 4096}
+  }
+}

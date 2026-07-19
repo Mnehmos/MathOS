@@ -28,6 +28,7 @@ const MIGRATION_0005: &str = include_str!("../../migrations/0005_run_event_invar
 const MIGRATION_0006: &str = include_str!("../../migrations/0006_environment_invariants.sql");
 const MIGRATION_0007: &str = include_str!("../../migrations/0007_artifact_invariants.sql");
 const MIGRATION_0008: &str = include_str!("../../migrations/0008_verifier_jobs.sql");
+const MIGRATION_0009: &str = include_str!("../../migrations/0009_evidence_invariants.sql");
 const REQUIRED_TABLES: &[&str] = &[
     "artifacts",
     "edges",
@@ -237,6 +238,24 @@ impl Store {
                     params![8_i64, "durable verifier jobs"],
                 )
                 .map_err(|error| AppError::database("record migration 0008", error))?;
+        }
+        let migration_0009_applied: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 9)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::database("inspect migration 0009", error))?;
+        if !migration_0009_applied {
+            transaction
+                .execute_batch(MIGRATION_0009)
+                .map_err(|error| AppError::database("apply migration 0009", error))?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, unixepoch())",
+                    params![9_i64, "evidence invariants"],
+                )
+                .map_err(|error| AppError::database("record migration 0009", error))?;
         }
         transaction
             .commit()
@@ -2118,7 +2137,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("migration succeeds");
 
-        assert_eq!(store.migration_version().expect("migration version"), 8);
+        assert_eq!(store.migration_version().expect("migration version"), 9);
         assert_eq!(store.journal_mode().expect("journal mode"), "wal");
         assert_eq!(store.integrity_check().expect("integrity"), "ok");
         store.schema_check().expect("required schema exists");
@@ -2132,7 +2151,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("first migration succeeds");
         store.migrate().expect("second migration succeeds");
-        assert_eq!(store.migration_version().expect("migration version"), 8);
+        assert_eq!(store.migration_version().expect("migration version"), 9);
     }
 
     #[test]
@@ -2164,7 +2183,7 @@ mod tests {
         assert_eq!(store.migration_version().expect("legacy version"), 7);
 
         store.migrate().expect("forward migration succeeds");
-        assert_eq!(store.migration_version().expect("current version"), 8);
+        assert_eq!(store.migration_version().expect("current version"), 9);
         assert!(
             store
                 .connection
@@ -2798,6 +2817,55 @@ mod tests {
                 .expect_err("different input conflicts")
                 .code,
             "MCL_IDEMPOTENCY_CONFLICT"
+        );
+    }
+
+    #[test]
+    fn database_rejects_evidence_rewrite_deletion_and_subject_mismatch() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let first = store
+            .create_record(&claim("evidence subject"), "author", "evidence-subject")
+            .expect("first subject");
+        let second = store
+            .create_record(&claim("other subject"), "author", "evidence-other")
+            .expect("second subject");
+        let evidence_id = Uuid::now_v7().to_string();
+        store
+            .connection
+            .execute(
+                "INSERT INTO evidence(evidence_id, subject_object_id, subject_version_hash, evidence_kind, result, authority_class, run_id, environment_hash, artifact_hash, metadata_json, created_at, superseded_by, evidence_hash, job_id, artifact_hashes_json, verifier_identity, created_by, stale_reason) VALUES (?1, ?2, ?3, 'lean_elaboration', 'accepted', 'diagnostic', NULL, NULL, NULL, '{}', unixepoch(), NULL, ?4, NULL, '[]', 'test-worker', 'test-author', NULL)",
+                params![evidence_id, first.object_id, first.version_hash, "d".repeat(64)],
+            )
+            .expect("evidence fixture inserts");
+        assert!(
+            store
+                .connection
+                .execute(
+                    "UPDATE evidence SET result = 'failed' WHERE evidence_id = ?1",
+                    [&evidence_id],
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "DELETE FROM evidence WHERE evidence_id = ?1",
+                    [&evidence_id]
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "INSERT INTO evidence(evidence_id, subject_object_id, subject_version_hash, evidence_kind, result, authority_class, run_id, environment_hash, artifact_hash, metadata_json, created_at, superseded_by, evidence_hash, job_id, artifact_hashes_json, verifier_identity, created_by, stale_reason) VALUES (?1, ?2, ?3, 'lean_elaboration', 'accepted', 'diagnostic', NULL, NULL, NULL, '{}', unixepoch(), NULL, ?4, NULL, '[]', 'test-worker', 'test-author', NULL)",
+                    params![Uuid::now_v7().to_string(), first.object_id, second.version_hash, "e".repeat(64)],
+                )
+                .is_err()
         );
     }
 

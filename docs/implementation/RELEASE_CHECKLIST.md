@@ -41,6 +41,8 @@ Phase 3 job evidence: exact verifier requests can be validated, durably queued, 
 
 Phase 3 execution evidence: a leased job can invoke only the allowlisted Lean executable with typed arguments in a fresh contained workspace. Source policy, toolchain matching, timeout, combined output bounds, private diagnostic artifacts, and canonical execution reports are enforced. Every report remains explicitly non-authoritative, the local profile reports absent memory and network isolation, and publication-profile execution is refused. Exact dependency closure, proof evidence, audits, and publication isolation remain open, so every verification item remains unchecked.
 
+Phase 3 evidence foundation: the closed `evidence/1` contract names exact subject versions, all required evidence kinds, explicit authority, provenance, artifacts, environment, supersession, and staleness. Migration 0009 makes evidence rows immutable and rejects subject/version mismatch. Application-controlled creation from an exact verifier attempt is still incomplete, so every verification item remains unchecked.
+
 ## Search and context
 
 - [ ] Exact, FTS, graph, declaration, and failure searches work.

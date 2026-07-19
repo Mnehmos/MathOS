@@ -8,6 +8,7 @@ use crate::error::AppError;
 
 pub mod artifact;
 pub mod environment;
+pub mod evidence;
 pub mod schemas;
 pub mod verifier;
 
@@ -20,6 +21,7 @@ pub use environment::{
     ResourceLimits, TrustProfile, VerifierArgument, VerifierCommandTemplate, VerifierExecutable,
     WorkingDirectoryPolicy,
 };
+pub use evidence::{EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult};
 pub use verifier::{
     VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
     VerifierJobSnapshot, VerifierJobState,
