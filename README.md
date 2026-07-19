@@ -23,6 +23,7 @@ Development is governed by:
 - [Dynamic Gitflow Policy](docs/administrative-controls/GITFLOW.md)
 - [Verifier-Gated TDD Policy](docs/administrative-controls/TDD.md)
 - [Contribution Guide](CONTRIBUTING.md)
+- [Security Policy](SECURITY.md)
 
 ## License
 
