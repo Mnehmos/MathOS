@@ -2,7 +2,8 @@ from copy import deepcopy
 from typing import Any
 
 from .canonical import hash_json
-from .models import TrajectoryVerification
+from .finite import FiniteDomainVerifier
+from .models import CandidateKind, SearchCandidate, TrajectoryVerification
 
 
 def verify_trajectory(value: Any) -> TrajectoryVerification:
@@ -90,6 +91,7 @@ def verify_trajectory(value: Any) -> TrajectoryVerification:
         "rejected": "unresolved",
     }
     for offset in range(1, len(steps), 4):
+        search_event = steps[offset]
         verification_event = steps[offset + 1]
         status_event = steps[offset + 2]
         pedagogy_event = steps[offset + 3]
@@ -102,6 +104,24 @@ def verify_trajectory(value: Any) -> TrajectoryVerification:
             return TrajectoryVerification(
                 False, offset, supplied_hash, "invalid_lifecycle_payload"
             )
+        candidate_payload = search_event["payload"]
+        try:
+            if (
+                not isinstance(candidate_payload, dict)
+                or set(candidate_payload) != {"kind", "payload", "search_engine"}
+                or not isinstance(candidate_payload["payload"], dict)
+                or candidate_payload["search_engine"] != "finite-search-v1"
+            ):
+                raise ValueError("invalid candidate")
+            candidate = SearchCandidate(
+                kind=CandidateKind(candidate_payload["kind"]),
+                payload=candidate_payload["payload"],
+                search_engine=candidate_payload["search_engine"],
+            )
+        except (KeyError, TypeError, ValueError):
+            return TrajectoryVerification(
+                False, offset, supplied_hash, "invalid_search_candidate"
+            )
         evidence_body = {
             "outcome": verification.get("outcome"),
             "verifier": verification.get("verifier"),
@@ -111,6 +131,14 @@ def verify_trajectory(value: Any) -> TrajectoryVerification:
         if hash_json(evidence_body) != verification.get("evidence_hash"):
             return TrajectoryVerification(
                 False, offset + 1, supplied_hash, "verification_evidence_mismatch"
+            )
+        formal_spec = claim.get("formal_spec")
+        replayed = FiniteDomainVerifier().verify(
+            formal_spec if isinstance(formal_spec, dict) else {}, candidate
+        )
+        if replayed.to_dict() != verification:
+            return TrajectoryVerification(
+                False, offset + 1, supplied_hash, "candidate_verification_mismatch"
             )
         expected_status = outcome_to_status.get(verification.get("outcome"))
         if (

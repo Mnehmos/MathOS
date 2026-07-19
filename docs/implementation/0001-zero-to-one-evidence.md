@@ -28,8 +28,8 @@ git diff --check
 
 Observed evidence:
 
-- 31 total tests pass with `ResourceWarning` promoted to an error.
-- Eleven dedicated adversarial scenarios pass.
+- 33 total tests pass with `ResourceWarning` promoted to an error.
+- Twelve dedicated adversarial scenarios pass.
 - A deterministic property test compares 200 Boolean expressions with an independent reference oracle.
 - The canonical demo produces one `verified_proved`, one `verified_disproved`, and one `unresolved` claim.
 - All three exported RL trajectories validate.
@@ -61,6 +61,8 @@ Observed evidence:
 - Excessive integer growth
 - Oversized claim statement
 - Invalid CLI export validation process status
+- Self-consistent RL outcome relabeling
+- Excessive assignment budget
 
 ## Release evidence still required
 

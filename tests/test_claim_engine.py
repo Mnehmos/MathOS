@@ -144,6 +144,63 @@ class ClaimEngineTests(unittest.TestCase):
         self.assertFalse(result.valid)
         self.assertEqual(result.reason, "lifecycle_order_invalid")
 
+    def test_rl_export_replays_candidate_before_accepting_outcome(self) -> None:
+        fixture = load_fixture("disproved")
+        claim = self.engine.submit(
+            fixture["informal_statement"], fixture["formal_spec"]
+        )
+        self.engine.process(claim.claim_id, max_assignments=16)
+        trajectory = self.engine.export_trajectory(claim.claim_id)
+
+        verification = next(
+            event
+            for event in trajectory["steps"]
+            if event["event_type"] == "verification.completed"
+        )
+        evidence = {
+            "outcome": "proved",
+            "verifier": "finite-domain-v1",
+            "verifier_version": "1.0.0",
+            "details": {
+                "assignments_checked": 4,
+                "truth_table_hash": "0" * 64,
+            },
+        }
+        forged_evidence_hash = hash_json(evidence)
+        verification["payload"] = {
+            **evidence,
+            "evidence_hash": forged_evidence_hash,
+        }
+        status = next(
+            event
+            for event in trajectory["steps"]
+            if event["event_type"] == "claim.status_changed"
+        )
+        status["payload"] = {
+            "from": "formalized",
+            "to": "verified_proved",
+            "reason": "proved",
+        }
+        pedagogy = next(
+            event
+            for event in trajectory["steps"]
+            if event["event_type"] == "pedagogy.generated"
+        )
+        pedagogy["payload"]["verification_evidence_hash"] = forged_evidence_hash
+        trajectory["claim"]["status"] = "verified_proved"
+        trajectory["outcome"] = "verified_proved"
+        for event in trajectory["steps"]:
+            event_body = {
+                key: value for key, value in event.items() if key != "event_hash"
+            }
+            event["event_hash"] = hash_json(event_body)
+        body = {key: value for key, value in trajectory.items() if key != "trajectory_hash"}
+        trajectory["trajectory_hash"] = hash_json(body)
+
+        result = verify_trajectory(trajectory)
+        self.assertFalse(result.valid)
+        self.assertEqual(result.reason, "candidate_verification_mismatch")
+
     def test_provenance_tampering_is_detected(self) -> None:
         fixture = load_fixture("proved")
         claim = self.engine.submit(

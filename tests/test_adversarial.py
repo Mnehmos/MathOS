@@ -167,6 +167,25 @@ class AdversarialTests(unittest.TestCase):
             finally:
                 engine.close()
 
+    def test_excessive_assignment_budget_is_rejected_before_search(self) -> None:
+        fixture = load_fixture("proved")
+        with tempfile.TemporaryDirectory() as directory:
+            engine = ClaimEngine.open(Path(directory) / "mathos.db")
+            try:
+                claim = engine.submit(
+                    fixture["informal_statement"], fixture["formal_spec"]
+                )
+                with self.assertRaisesRegex(ValueError, "max_assignments"):
+                    engine.process(claim.claim_id, max_assignments=100_001)
+                self.assertEqual(
+                    [event["event_type"] for event in engine.ledger.events_for_claim(
+                        claim.claim_id
+                    )],
+                    ["claim.submitted"],
+                )
+            finally:
+                engine.close()
+
     def test_sql_metacharacters_are_stored_as_data(self) -> None:
         fixture = load_fixture("proved")
         hostile = "'); DROP TABLE claims; --"

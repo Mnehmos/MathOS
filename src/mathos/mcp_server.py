@@ -35,7 +35,11 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "claim_id": {"type": "string"},
-                "max_assignments": {"type": "integer", "minimum": 1},
+                "max_assignments": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100000,
+                },
             },
             "required": ["claim_id"],
             "additionalProperties": False,

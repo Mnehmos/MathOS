@@ -17,6 +17,7 @@ from .pedagogy import generate_pedagogy
 class ClaimEngine:
     MAX_STATEMENT_LENGTH = 100_000
     MAX_FORMAL_SPEC_BYTES = 1_000_000
+    MAX_ASSIGNMENTS = 100_000
 
     def __init__(self, ledger: ProvenanceLedger) -> None:
         self.ledger = ledger
@@ -60,6 +61,10 @@ class ClaimEngine:
         return self.ledger.list_claims()
 
     def process(self, claim_id: str, *, max_assignments: int = 10_000) -> RunReport:
+        if type(max_assignments) is not int or not 1 <= max_assignments <= self.MAX_ASSIGNMENTS:
+            raise ValueError(
+                f"max_assignments must be between 1 and {self.MAX_ASSIGNMENTS}"
+            )
         claim = self.get_claim(claim_id)
         if claim.status in {
             ClaimStatus.VERIFIED_PROVED,
