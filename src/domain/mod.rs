@@ -37,8 +37,8 @@ pub use fidelity::{
     FidelityVerdict,
 };
 pub use publication::{
-    PublicationClassification, PublicationOutcome, PublicationPolicy, PublicationReport,
-    PublicationRequest, PublicationRunnerEnvironment,
+    PublicationAttestationVerification, PublicationClassification, PublicationOutcome,
+    PublicationPolicy, PublicationReport, PublicationRequest, PublicationRunnerEnvironment,
 };
 pub use verifier::{
     VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,

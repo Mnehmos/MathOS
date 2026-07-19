@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/publication/attestation-verification/1",
+  "title": "MathOS Publication Attestation Verification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "report_content_hash", "report_artifact_hash", "attestation_bundle_hash", "raw_verification_hash", "verifier_name", "verifier_version", "verifier_binary_sha256", "repository", "signer_workflow", "certificate_identity", "source_ref", "source_commit_sha", "predicate_type", "self_hosted_runners_denied", "verified_attestation_count", "verified_timestamp_count", "authoritative"],
+  "properties": {
+    "schema_version": {"const": "publication_attestation_verification/1"},
+    "report_content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "report_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "attestation_bundle_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "raw_verification_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "verifier_name": {"const": "gh"},
+    "verifier_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "verifier_binary_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "repository": {"const": "Mnehmos/MathOS"},
+    "signer_workflow": {"const": "Mnehmos/MathOS/.github/workflows/publication.yml"},
+    "certificate_identity": {"const": "https://github.com/Mnehmos/MathOS/.github/workflows/publication.yml@refs/heads/main"},
+    "source_ref": {"const": "refs/heads/main"},
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "predicate_type": {"const": "https://slsa.dev/provenance/v1"},
+    "self_hosted_runners_denied": {"const": true},
+    "verified_attestation_count": {"type": "integer", "minimum": 1},
+    "verified_timestamp_count": {"type": "integer", "minimum": 1},
+    "authoritative": {"const": false}
+  }
+}

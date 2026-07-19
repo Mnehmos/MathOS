@@ -49,6 +49,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends bubblewrap
           /usr/bin/bwrap --version
+      - name: Install pinned attestation verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="2.96.0"
+          archive="${RUNNER_TEMP}/gh_${version}_linux_amd64.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "${archive}" \
+            "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_linux_amd64.tar.gz"
+          echo "83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60  ${archive}" \
+            | sha256sum --check --strict
+          tar --extract --gzip --no-same-owner --file "${archive}" --directory "${RUNNER_TEMP}"
+          gh_bin="${RUNNER_TEMP}/gh_${version}_linux_amd64/bin/gh"
+          echo "56b8bbbb27b066ecb33dbef9a256dc9d1314adaeff0908a752feba6c34053b40  ${gh_bin}" \
+            | sha256sum --check --strict
+          echo "${RUNNER_TEMP}/gh_${version}_linux_amd64/bin" >> "${GITHUB_PATH}"
       - name: Run clean isolated boundary smoke
         shell: bash
         run: scripts/publication-smoke.sh "${RUNNER_TEMP}/publication-smoke"
@@ -57,6 +73,15 @@ jobs:
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
         with:
           subject-path: ${{ runner.temp }}/publication-smoke/publication-smoke-report.json
+      - name: Verify exact attestation and retain the challenge result
+        shell: bash
+        env:
+          PUBLICATION_GH_BIN: ${{ runner.temp }}/gh_2.96.0_linux_amd64/bin/gh
+        run: |
+          scripts/publication-attestation-verify.sh \
+            "${RUNNER_TEMP}/publication-smoke/publication-smoke-report.json" \
+            "${{ steps.attest.outputs.bundle-path }}" \
+            "${RUNNER_TEMP}/publication-attestation-verification"
       - name: Retain report, diagnostics, and Sigstore bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -65,4 +90,5 @@ jobs:
           retention-days: 90
           path: |
             ${{ runner.temp }}/publication-smoke/
+            ${{ runner.temp }}/publication-attestation-verification/
             ${{ steps.attest.outputs.bundle-path }}

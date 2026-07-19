@@ -39,3 +39,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 29. [Authority Needs a Witness Outside Itself](0029-authority-needs-a-witness-outside-itself.md)
 30. [The Smallest Proof Can Test the Largest Boundary](0030-the-smallest-proof-can-test-the-largest-boundary.md)
 31. [A Boundary Must Admit When It Is Missing](0031-a-boundary-must-admit-when-it-is-missing.md)
+32. [A Signature Is a Memory With a Witness](0032-a-signature-is-a-memory-with-a-witness.md)
