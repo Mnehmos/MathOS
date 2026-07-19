@@ -10,9 +10,11 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 ## Current phase
 
-Phase 2: Canonical records and trace.
+Transition from Phase 2 canonical interfaces to Phase 3 formalization and Lean authority.
 
-Active issue: [#14, add a thin MCP stdio adapter](https://github.com/Mnehmos/MathOS/issues/14).
+Active implementation issue: [#15, implement immutable Lean environment manifests](https://github.com/Mnehmos/MathOS/issues/15).
+
+Closure gate still monitored: [#14, add a thin MCP stdio adapter](https://github.com/Mnehmos/MathOS/issues/14) was reopened for one literal invalid-action test and will close after that exact branch state passes remote CI.
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -80,19 +82,24 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Research start and submit actions require the same attribution controls, while observe remains read-only. Every recorded run remains explicitly non-authoritative.
 - MCP dry runs validate without mutation, exact retries return the original result, stale writers fail with structured conflicts, and irrelevant mutation fields fail closed.
 - Adversarial MCP coverage rejects embedded proof verdicts in formalizations and confirms that no `mark_proved`, raw shell, raw SQL, model-routing, or publication action exists.
+- The environment domain now has a closed `environment/1` Rust manifest, committed JSON Schema, and golden canonical SHA-256 fixture.
+- Environment identity includes exact Lean release, dependency revisions, imports, project configuration hashes, platform, trust profile, typed verifier command, explicit resource limits, network policy, and working-directory policy.
+- Environment validation rejects unpinned dependencies, unknown and machine-specific fields, path-shaped imports, duplicates, noncanonical ordering, arbitrary commands, network-enabled verification, unsafe hashes, and zero or excessive limits before hashing.
+- Changing an environment-relevant field changes the canonical environment hash. This establishes context identity only and does not establish a proof.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, complete MCP mutation surface, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Publish the completed issue #14 mutation slice and require fresh Linux and Windows CI evidence before closing the issue.
-- Begin the environment manifest and narrow Lean authority issue only after the MCP branch head is green.
+- Require fresh Linux and Windows CI evidence containing the explicit unknown-action MCP test before closing issue #14 again.
+- Persist immutable environment manifests with idempotent registration, exact lookup, database invariants, application service, and CLI controls under issue #15.
+- Require formalizations to resolve an exact registered environment before implementing Lean execution.
 - Keep the local Lean launch limitation visible without misclassifying it as a project-wide blocker.
 
 ## Next highest-priority criteria
 
-1. Obtain fresh remote CI evidence for the complete issue #14 MCP surface and close the issue if green.
-2. Implement environment manifests and the narrow Lean elaboration boundary now that the pinned toolchain is executable in CI.
+1. Complete immutable environment persistence and formalization reference enforcement.
+2. Implement the narrow Lean elaboration boundary using registered environments.
 3. Implement evidence records and derived truth rules before any proof-status surface exists.
 4. Complete Pilot A through the real interfaces only after those authority controls exist.
 
@@ -112,11 +119,11 @@ Observed validation evidence for this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 44 Rust unit tests passed;
+- 48 Rust unit tests passed;
 - 6 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.
-- GitHub Actions runs `29696708243` and `29697132394` passed all five jobs, including exact pinned Lean availability and both Rust operating-system targets.
+- GitHub Actions run `29698741558` passed all five jobs for the completed MCP mutation surface, including exact pinned Lean availability and both Rust operating-system targets. The subsequent explicit invalid-action test awaits a branch CI run.
 
 ## Release readiness
 

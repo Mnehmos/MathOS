@@ -6,7 +6,13 @@ use serde_json::Value;
 
 use crate::error::AppError;
 
+pub mod environment;
 pub mod schemas;
+
+pub use environment::{
+    DependencyRevision, EnvironmentManifest, EnvironmentPlatform, ResourceLimits, TrustProfile,
+    VerifierArgument, VerifierCommandTemplate, VerifierExecutable, WorkingDirectoryPolicy,
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

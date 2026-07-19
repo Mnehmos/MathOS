@@ -1,0 +1,33 @@
+{
+  "schema_version": "environment/1",
+  "formal_system": "lean4",
+  "lean_toolchain": "leanprover/lean4:v4.32.0",
+  "dependencies": [
+    {
+      "name": "mathlib",
+      "revision": "1111111111111111111111111111111111111111"
+    }
+  ],
+  "import_manifest": [
+    "Mathlib",
+    "Mathlib.Data.Nat.Prime"
+  ],
+  "project_configuration_hashes": {
+    "lake-manifest.json": "2222222222222222222222222222222222222222222222222222222222222222",
+    "lean-toolchain": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "platform": "linux_x86_64",
+  "trust_profile": "local",
+  "verifier_command": {
+    "executable": "lean",
+    "arguments": ["{module_path}"]
+  },
+  "resource_limits": {
+    "timeout_seconds": 120,
+    "max_output_bytes": 1048576,
+    "max_memory_bytes": null,
+    "concurrency": 1
+  },
+  "network_access": false,
+  "working_directory_policy": "temporary_workspace"
+}
