@@ -12,7 +12,7 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 Transition from Phase 2 canonical interfaces to Phase 3 formalization and Lean authority.
 
-Active implementation issue: [#19, implement proof-closure and axiom audits without authority](https://github.com/Mnehmos/MathOS/issues/19).
+Active implementation issue: [#20, implement role-separated statement fidelity evidence](https://github.com/Mnehmos/MathOS/issues/20).
 
 Issues [#14](https://github.com/Mnehmos/MathOS/issues/14) and [#15](https://github.com/Mnehmos/MathOS/issues/15) closed after GitHub Actions run `29699563931` passed all jobs on fresh Linux and Windows runners.
 
@@ -23,6 +23,8 @@ The first issue #17 durable verifier-job slice passed all jobs in GitHub Actions
 Issue [#17](https://github.com/Mnehmos/MathOS/issues/17) closed after GitHub Actions run `29701916437` passed all jobs, including real accepted and rejected Lean modules, wrong-version rejection, and fresh Linux and Windows suites on exact tree `724cbd2332c988c874462ea6d825fd93b2c4d809`. This closes contained diagnostic execution only, not proof authority.
 
 Issue [#18](https://github.com/Mnehmos/MathOS/issues/18) closed after GitHub Actions run `29703359524` passed all five jobs, including real pinned Lean integration, on exact remote tree `7622bf7c2408061104f2b27fcca0fb451d4653a2`. This closes immutable diagnostic-evidence binding only, not proof authority.
+
+Issue [#19](https://github.com/Mnehmos/MathOS/issues/19) closed after GitHub Actions run `29704542965` passed all five jobs, including the real pinned Lean audit lifecycle and fresh Linux and Windows suites, on exact remote tree `30d55d6e2ce7b0de2d921cff3e1368124fd9f66f`. This closes local proof-closure and axiom-audit evidence only, not proof authority or statement fidelity.
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -146,14 +148,14 @@ These items establish only part of the product foundation and Phase 2 trace mode
 
 ## Active work
 
-- Publish the exact local audit tree and require fresh Linux, Windows, and real pinned Lean CI before closing issue #19.
-- Keep local audit evidence diagnostic and mathematical status impossible until the separate publication authority boundary exists.
+- Implement issue #20 role-separated statement fidelity evidence as an independent axis from Lean verification.
+- Keep proof authority and mathematical status impossible while fidelity and publication-profile controls remain incomplete.
 
 ## Next highest-priority criteria
 
-1. Complete issue #19 proof-closure and axiom audit evidence under the local diagnostic profile.
+1. Complete issue #20 role-separated fidelity evidence and exact derived fidelity status.
 2. Implement the publication-profile verifier and authoritative exact proof/refutation evidence without weakening local isolation claims.
-3. Add fidelity review as an independent evidence axis.
+3. Derive mathematical status only from exact current proof and fidelity evidence.
 4. Complete Pilot A through the real interfaces only after both authority and fidelity controls exist.
 
 ## Exact last validation commands
@@ -181,6 +183,7 @@ Observed validation evidence for this update:
 - GitHub Actions run `29700933580` passed all jobs for the durable verifier input, leasing, recovery, CLI, and migration slice on its exact remote tree.
 - GitHub Actions run `29701916437` passed all jobs for exact contained execution, including real Lean 4.32.0 acceptance and rejection plus wrong-version refusal.
 - GitHub Actions run `29703359524` passed all jobs for exact diagnostic evidence, including the real pinned Lean worker and fresh Linux and Windows suites.
+- GitHub Actions run `29704542965` passed all jobs for local proof-closure and axiom-audit evidence, including the exact real Lean lifecycle and fresh Linux and Windows suites.
 - The managed workspace still lacks Lean; local `mcl doctor` correctly reports that one unhealthy check while database, CAS, leases, environments, and artifact inventory remain healthy.
 
 ## Release readiness
