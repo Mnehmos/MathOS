@@ -158,7 +158,7 @@ These items establish only part of the product foundation and Phase 2 trace mode
 ## Active work
 
 - Implement issue #21 publication-profile proof authority without allowing local diagnostic workers or caller-authored reports to self-promote.
-- Draft PR #22 carries the first hosted publication-boundary smoke. GitHub Actions run `29706858126` correctly failed closed because Bubblewrap was absent from the runner image. The repair installs the isolation control explicitly, records its version, and improves missing-control diagnostics before retrying the hosted boundary.
+- Draft PR #22 carries the first hosted publication-boundary smoke. GitHub Actions run `29706858126` correctly failed closed because Bubblewrap was absent from the runner image. Run `29706988640` reached the installed control but exposed that the isolated process was invoking an Elan shim whose toolchain resolution could change across the privilege boundary. The repair now resolves the exact Lean binary before isolation and surfaces retained stderr on failure.
 - Keep proof authority and mathematical status impossible while fidelity and publication-profile controls remain incomplete.
 - Issue #20 is complete with exact-tree CI evidence. Issue #21 must now bind clean-checkout verification, dependency closure, retained artifacts, policy identity, and non-forgeable report provenance before authoritative proof or refutation evidence can exist.
 - The first issue #21 slice defines closed publication policy, request, and candidate-report contracts. The policy pins repository, protected workflow, main ref, GitHub-hosted runner, Lean toolchain, allowed axioms, required isolation controls, SLSA predicate, and action commit identities.

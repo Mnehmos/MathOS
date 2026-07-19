@@ -30,10 +30,10 @@ mkdir -p "$output_dir"
 commit_sha="$(git rev-parse HEAD)"
 tree_sha="$(git rev-parse HEAD^{tree})"
 toolchain="$(tr -d '\r\n' < lean-toolchain)"
-lean_path="$(command -v lean)"
+lean_path="$(elan which lean)"
 bwrap_version="$(/usr/bin/bwrap --version)"
 
-sudo /usr/bin/bwrap \
+if ! sudo /usr/bin/bwrap \
   --unshare-all \
   --die-with-parent \
   --new-session \
@@ -44,7 +44,11 @@ sudo /usr/bin/bwrap \
   --chdir "$PWD" \
   /usr/bin/prlimit --as=1073741824 -- "$lean_path" "$module" \
   >"${output_dir}/lean.stdout" \
-  2>"${output_dir}/lean.stderr"
+  2>"${output_dir}/lean.stderr"; then
+  printf 'isolated Lean execution failed\n' >&2
+  sed -n '1,120p' "${output_dir}/lean.stderr" >&2
+  exit 70
+fi
 
 stdout_hash="$(sha256sum "${output_dir}/lean.stdout" | cut -d ' ' -f 1)"
 stderr_hash="$(sha256sum "${output_dir}/lean.stderr" | cut -d ' ' -f 1)"
