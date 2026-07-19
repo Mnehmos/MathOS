@@ -65,13 +65,14 @@ Observed Rust evidence before this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 7 Rust unit tests passed;
-- 3 Rust CLI integration tests passed;
+- 9 Rust unit tests passed;
+- 4 Rust CLI integration tests passed;
 - manual initialization exited 0 with migration 1 and WAL mode;
 - manual health exited 0 after an FTS5 probe defect was reproduced and repaired;
 - manual doctor exited 1 only because Lean could not execute in the managed local sandbox.
 
-The Python regression suite and final diff checks must be rerun after all Phase 1 edits.
+- 39 legacy Python regression tests passed;
+- patch whitespace validation passed.
 
 ## Release readiness
 

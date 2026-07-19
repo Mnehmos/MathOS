@@ -71,6 +71,10 @@ lake-packages/
 # Rust
 target/
 **/*.rs.bk
+.toolchains/
+
+# Mathematical Claim Engine local state
+.mcl/
 
 # Jupyter
 .ipynb_checkpoints/

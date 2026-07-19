@@ -1,0 +1,10 @@
+# Paths are relative to the directory containing this file.
+data_dir = ".mcl"
+database = "state.sqlite3"
+artifacts = "artifacts"
+
+[verifier]
+lean_command = "lean"
+timeout_seconds = 120
+max_output_bytes = 1048576
+concurrency = 1
