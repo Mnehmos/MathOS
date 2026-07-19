@@ -66,13 +66,16 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Research run creation, retrieval, event listing, event append, and hash-chain verification now use that shared path while remaining explicitly non-authoritative.
 - Edge, run, and run-event dry runs validate without mutation. Real mutations preserve store-level idempotency before evaluating changed current state.
 - CLI adversarial coverage caught and fixed an application-layer retry-order defect, then verified identical event retries, stale-head conflicts, graph bounds, restart persistence, and chain validity.
+- Golden fixtures pin representative record-mutation, edge-mutation, and run-chain JSON response shapes after normalizing only dynamic identities and timestamps.
+- The issue #13 CLI surface contains no proof, disproof, fidelity, novelty, certification, raw SQL, arbitrary shell, or unrestricted executable action. Its only process launch remains the allowlisted Lean availability check in `doctor`.
+- CLI integration rejects stale canonical version writers without changing the accepted head.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, MCP behavior, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Add representative golden CLI JSON contracts and remaining conflict coverage before closing issue #13.
-- Review the complete CLI surface against the no-status-mutation and no-raw-capability trust checks.
+- Publish the final issue #13 contract slice and close the issue only after fresh Linux and Windows CI pass.
+- Prepare the MCP adapter issue while CI runs, without implementing a second domain path.
 - Keep the local Lean launch limitation visible without misclassifying it as a project-wide blocker.
 
 ## Next highest-priority criteria

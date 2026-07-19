@@ -1,0 +1,27 @@
+{
+  "dry_run": false,
+  "proposed_version_hash": "<sha256>",
+  "record": {
+    "object_id": "<uuidv7>",
+    "kind": "source",
+    "version_hash": "<sha256>",
+    "schema_version": "source/1",
+    "payload": {
+      "source_type": "user_statement",
+      "title_or_label": "Prime parity",
+      "authors_or_origin": ["CLI fixture"],
+      "canonical_locator": "local:prime-parity",
+      "acquisition_date": "2026-07-19",
+      "license_expression": null,
+      "redistribution_status": "unknown",
+      "content_hash": null,
+      "citation_metadata": {},
+      "redaction_class": "private",
+      "provenance_notes": "CLI integration fixture",
+      "original_text": "Every prime number is odd."
+    },
+    "predecessor_hash": null,
+    "created_at": "<timestamp>",
+    "created_by": "cli-test"
+  }
+}

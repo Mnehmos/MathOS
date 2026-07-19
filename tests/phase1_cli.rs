@@ -33,6 +33,18 @@ fn parse_stdout(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("stdout is JSON")
 }
 
+fn normalize_hash(value: &mut Value, pointer: &str) {
+    *value.pointer_mut(pointer).expect("hash field") = json!("<sha256>");
+}
+
+fn normalize_uuid(value: &mut Value, pointer: &str) {
+    *value.pointer_mut(pointer).expect("UUID field") = json!("<uuidv7>");
+}
+
+fn golden(input: &str) -> Value {
+    serde_json::from_str(input).expect("golden JSON")
+}
+
 fn create_source_record(root: &TempDir, label: &str, idempotency_key: &str) -> Value {
     let payload = serde_json::to_string(&json!({
         "source_type": "user_statement",
@@ -235,6 +247,15 @@ fn canonical_source_cli_uses_one_service_for_dry_run_create_version_get_and_sear
         String::from_utf8_lossy(&created.stderr)
     );
     let created = parse_stdout(&created);
+    let mut normalized_record = created.clone();
+    normalize_hash(&mut normalized_record, "/proposed_version_hash");
+    normalize_uuid(&mut normalized_record, "/record/object_id");
+    normalize_hash(&mut normalized_record, "/record/version_hash");
+    normalized_record["record"]["created_at"] = json!("<timestamp>");
+    assert_eq!(
+        normalized_record,
+        golden(include_str!("../fixtures/cli/record-mutation.json"))
+    );
     let object_id = created["record"]["object_id"]
         .as_str()
         .expect("object ID")
@@ -305,6 +326,31 @@ fn canonical_source_cli_uses_one_service_for_dry_run_create_version_get_and_sear
         .expect("second hash")
         .to_owned();
     assert_ne!(first_hash, second_hash);
+
+    let mut stale_revision = revised.clone();
+    stale_revision["provenance_notes"] = json!("stale writer");
+    let stale = mcl_owned(
+        &root,
+        &[
+            "source".to_owned(),
+            "version".to_owned(),
+            "--object-id".to_owned(),
+            object_id.clone(),
+            "--expected-head".to_owned(),
+            first_hash.clone(),
+            "--payload-json".to_owned(),
+            serde_json::to_string(&stale_revision).expect("stale JSON"),
+            "--searchable-text".to_owned(),
+            "stale write".to_owned(),
+            "--actor".to_owned(),
+            "cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "source-stale-version".to_owned(),
+        ],
+    );
+    assert!(!stale.status.success());
+    let stale_error: Value = serde_json::from_slice(&stale.stderr).expect("stale error JSON");
+    assert_eq!(stale_error["code"], "MCL_VERSION_CONFLICT");
 
     let historical = mcl_owned(
         &root,
@@ -416,7 +462,19 @@ fn research_and_graph_cli_share_the_service_and_preserve_conflicts_and_dry_runs(
 
     let edge = mcl_owned(&root, &edge_arguments(false, "edge-create"));
     assert!(edge.status.success());
-    let edge = parse_stdout(&edge)["edge"].clone();
+    let edge_outcome = parse_stdout(&edge);
+    let mut normalized_edge = edge_outcome.clone();
+    normalize_uuid(&mut normalized_edge, "/edge/edge_id");
+    normalize_uuid(&mut normalized_edge, "/edge/source_object_id");
+    normalize_hash(&mut normalized_edge, "/edge/source_version_hash");
+    normalize_uuid(&mut normalized_edge, "/edge/target_object_id");
+    normalize_hash(&mut normalized_edge, "/edge/target_version_hash");
+    normalized_edge["edge"]["created_at"] = json!("<timestamp>");
+    assert_eq!(
+        normalized_edge,
+        golden(include_str!("../fixtures/cli/edge-mutation.json"))
+    );
+    let edge = edge_outcome["edge"].clone();
     let edge_id = edge["edge_id"].as_str().expect("edge ID");
     let loaded_edge = mcl_owned(
         &root,
@@ -560,6 +618,14 @@ fn research_and_graph_cli_share_the_service_and_preserve_conflicts_and_dry_runs(
         ],
     );
     assert!(verified.status.success());
-    assert_eq!(parse_stdout(&verified)["valid"], true);
-    assert_eq!(parse_stdout(&verified)["event_count"], 2);
+    let verified = parse_stdout(&verified);
+    assert_eq!(verified["valid"], true);
+    assert_eq!(verified["event_count"], 2);
+    let mut normalized_report = verified;
+    normalize_uuid(&mut normalized_report, "/run_id");
+    normalize_hash(&mut normalized_report, "/head_hash");
+    assert_eq!(
+        normalized_report,
+        golden(include_str!("../fixtures/cli/run-chain-report.json"))
+    );
 }
