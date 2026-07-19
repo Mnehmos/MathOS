@@ -48,6 +48,15 @@ impl McpProcess {
         input.flush().expect("MCP notification flushes");
     }
 
+    fn call(&mut self, id: i64, name: &str, arguments: Value) -> Value {
+        self.send(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments}
+        }))
+    }
+
     fn read(&mut self) -> Value {
         let mut line = String::new();
         self.output
@@ -182,7 +191,17 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
         .iter()
         .map(|tool| tool["name"].as_str().expect("tool name"))
         .collect::<Vec<_>>();
-    assert_eq!(names, ["query", "system"]);
+    assert_eq!(
+        names,
+        [
+            "claim",
+            "formalization",
+            "query",
+            "research",
+            "source",
+            "system"
+        ]
+    );
     assert!(tools.iter().all(|tool| tool["inputSchema"].is_object()));
     for forbidden in ["shell", "sql", "mark_proved", "sampling", "publish"] {
         assert!(!names.contains(&forbidden));
@@ -352,5 +371,231 @@ fn query_tool_matches_cli_state_and_returns_structured_application_errors() {
         invalid_limit["result"]["structuredContent"]["code"],
         "MCL_QUERY_LIMIT_INVALID"
     );
+    server.close();
+}
+
+#[test]
+fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs() {
+    let root = TempDir::new().expect("temporary root");
+    initialize_instance(root.path());
+    let mut server = McpProcess::spawn(root.path());
+    initialize_protocol(&mut server, "2025-11-25");
+
+    let source_payload = json!({
+        "source_type": "user_statement",
+        "title_or_label": "Controlled MCP mutation",
+        "authors_or_origin": ["MCP integration test"],
+        "canonical_locator": "local:controlled-mcp-mutation",
+        "acquisition_date": "2026-07-19",
+        "license_expression": null,
+        "redistribution_status": "unknown",
+        "content_hash": null,
+        "citation_metadata": {},
+        "redaction_class": "private",
+        "provenance_notes": "Exercises MCP mutation controls",
+        "original_text": "Every prime number is odd."
+    });
+    let source_request = json!({
+        "action": "propose",
+        "payload": source_payload,
+        "searchable_text": "controlled mcp mutation marker",
+        "actor": "mcp-test",
+        "idempotency_key": "mcp-controlled-source",
+        "dry_run": true
+    });
+    let preview = server.call(10, "source", source_request.clone());
+    assert_eq!(preview["result"]["structuredContent"]["dry_run"], true);
+    assert_eq!(
+        preview["result"]["structuredContent"]["record"],
+        Value::Null
+    );
+    let absent = server.call(
+        11,
+        "query",
+        json!({"action": "search", "query": "controlled mcp mutation marker"}),
+    );
+    assert_eq!(absent["result"]["structuredContent"], json!([]));
+
+    let mut committed_request = source_request;
+    committed_request["dry_run"] = json!(false);
+    let created = server.call(12, "source", committed_request.clone());
+    assert_eq!(created["result"]["isError"], false);
+    let retried = server.call(13, "source", committed_request);
+    assert_eq!(
+        retried["result"]["structuredContent"]["record"],
+        created["result"]["structuredContent"]["record"]
+    );
+    let source = &created["result"]["structuredContent"]["record"];
+    let source_id = source["object_id"].as_str().expect("source object ID");
+    let source_hash = source["version_hash"].as_str().expect("source hash");
+
+    let cli_loaded = mcl(root.path(), &["source", "get", "--object-id", source_id]);
+    assert!(cli_loaded.status.success());
+    let cli_loaded: Value = serde_json::from_slice(&cli_loaded.stdout).expect("CLI source JSON");
+    assert_eq!(cli_loaded, *source);
+
+    let claim_payload = json!({
+        "source_reference": {"object_id": source_id, "version_hash": source_hash},
+        "normalized_informal_statement": "Every prime number is odd.",
+        "claim_kind": "universal",
+        "logical_shape": "forall p, prime p implies odd p",
+        "assumptions": [],
+        "variables": [{"symbol": "p", "domain": "natural numbers", "notes": "prime"}],
+        "concept_links": [],
+        "source_citations": [],
+        "ambiguity_notes": []
+    });
+    let claim_created = server.call(
+        14,
+        "claim",
+        json!({
+            "action": "propose",
+            "payload": claim_payload,
+            "searchable_text": "prime parity claim",
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-controlled-claim"
+        }),
+    );
+    assert_eq!(claim_created["result"]["isError"], false);
+    let claim = &claim_created["result"]["structuredContent"]["record"];
+    let claim_id = claim["object_id"].as_str().expect("claim object ID");
+    let claim_hash = claim["version_hash"].as_str().expect("claim hash");
+
+    let formalization_payload = json!({
+        "claim_version": {"object_id": claim_id, "version_hash": claim_hash},
+        "formal_system": "lean4",
+        "environment_hash": "a".repeat(64),
+        "module_artifact_hash": "b".repeat(64),
+        "declaration_name": "MathOS.Pilot.primeParity",
+        "exact_theorem_type": "forall p : Nat, Nat.Prime p -> Odd p",
+        "declaration_hash": "c".repeat(64),
+        "import_manifest": ["Mathlib"],
+        "formalization_notes": "An unreviewed interpretation, not a verdict.",
+        "fidelity_evidence_references": [],
+        "verification_evidence_references": []
+    });
+    let formalization = server.call(
+        15,
+        "formalization",
+        json!({
+            "action": "propose",
+            "payload": formalization_payload,
+            "searchable_text": "unreviewed prime parity formalization",
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-controlled-formalization"
+        }),
+    );
+    assert_eq!(formalization["result"]["isError"], false);
+
+    let prohibited = server.call(
+        16,
+        "formalization",
+        json!({
+            "action": "propose",
+            "payload": {
+                "claim_version": {"object_id": claim_id, "version_hash": claim_hash},
+                "formal_system": "lean4",
+                "environment_hash": "a".repeat(64),
+                "module_artifact_hash": "b".repeat(64),
+                "declaration_name": "MathOS.Pilot.falseAuthority",
+                "exact_theorem_type": "True",
+                "declaration_hash": "d".repeat(64),
+                "import_manifest": ["Mathlib"],
+                "formalization_notes": "must fail",
+                "fidelity_evidence_references": [],
+                "verification_evidence_references": [],
+                "proved": true
+            },
+            "searchable_text": "forbidden authority",
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-forbidden-authority"
+        }),
+    );
+    assert_eq!(prohibited["result"]["isError"], true);
+    assert_eq!(
+        prohibited["result"]["structuredContent"]["code"],
+        "MCL_SCHEMA_VALIDATION_FAILED"
+    );
+
+    let started_request = json!({
+        "action": "start",
+        "run_kind": "prove",
+        "budget": {"max_steps": 4},
+        "actor": "mcp-test",
+        "idempotency_key": "mcp-controlled-run"
+    });
+    let started = server.call(17, "research", started_request.clone());
+    assert_eq!(started["result"]["isError"], false);
+    let run = &started["result"]["structuredContent"]["run"];
+    let run_id = run["run_id"].as_str().expect("run ID");
+    let origin_head = run["event_head_hash"].as_str().expect("origin head");
+    let retried_start = server.call(18, "research", started_request);
+    assert_eq!(retried_start["result"]["structuredContent"]["run"], *run);
+
+    let submit_request = json!({
+        "action": "submit",
+        "run_id": run_id,
+        "expected_head": origin_head,
+        "event_kind": "action_submitted",
+        "payload": {"action": "give_up", "reason": "No unverified proof should be promoted."},
+        "actor": "mcp-test",
+        "idempotency_key": "mcp-controlled-event",
+        "dry_run": true
+    });
+    let event_preview = server.call(19, "research", submit_request.clone());
+    assert_eq!(
+        event_preview["result"]["structuredContent"]["dry_run"],
+        true
+    );
+    assert_eq!(
+        event_preview["result"]["structuredContent"]["event"],
+        Value::Null
+    );
+
+    let mut committed_submit = submit_request;
+    committed_submit["dry_run"] = json!(false);
+    let submitted = server.call(20, "research", committed_submit.clone());
+    assert_eq!(submitted["result"]["isError"], false);
+    let submitted_retry = server.call(21, "research", committed_submit);
+    assert_eq!(
+        submitted_retry["result"]["structuredContent"]["event"],
+        submitted["result"]["structuredContent"]["event"]
+    );
+
+    let observed = server.call(
+        22,
+        "research",
+        json!({"action": "observe", "run_id": run_id}),
+    );
+    assert_eq!(
+        observed["result"]["structuredContent"]["events"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(
+        observed["result"]["structuredContent"]["run"]["event_count"],
+        2
+    );
+
+    let stale = server.call(
+        23,
+        "research",
+        json!({
+            "action": "submit",
+            "run_id": run_id,
+            "expected_head": origin_head,
+            "event_kind": "diagnostic",
+            "payload": {"message": "stale writer"},
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-stale-event"
+        }),
+    );
+    assert_eq!(stale["result"]["isError"], true);
+    assert_eq!(
+        stale["result"]["structuredContent"]["code"],
+        "MCL_RUN_EVENT_CONFLICT"
+    );
+
     server.close();
 }

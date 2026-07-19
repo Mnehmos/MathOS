@@ -12,7 +12,7 @@ This checklist mirrors section 30 of [SPEC.md](../../SPEC.md). A checked item re
 - [ ] MCP and CLI operate over the same canonical service layer.
 - [ ] Process restart preserves committed state and resumes or safely requeues durable jobs.
 
-Phase 2 evidence: `mcl init` and storage health work locally and in Windows and Linux CI. The initial Rust MCP system and query actions call the same application service as CLI and survive process restart. The complete MCP mutation surface and durable job recovery remain open, so the release criteria remain unchecked.
+Phase 2 evidence: `mcl init` and storage health work locally and in Windows and Linux CI. The Rust MCP system, query, source, claim, formalization, and research families call the same application service as CLI and survive process restart. Later verifier, pedagogy, and release capabilities and durable job recovery remain open, so the release criteria remain unchecked.
 
 ## Core lifecycle
 

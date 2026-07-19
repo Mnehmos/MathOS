@@ -17,7 +17,10 @@ use serde_json::{Value, json, to_value};
 
 use crate::app::Application;
 use crate::config::ResolvedConfig;
-use crate::domain::{EdgeKind, GraphTraversalRequest, TraversalDirection};
+use crate::domain::{
+    EdgeKind, GraphTraversalRequest, RecordDraft, RecordKind, RunEventDraft, RunEventKind, RunKind,
+    TraversalDirection,
+};
 use crate::error::AppError;
 
 const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2025_11_25;
@@ -89,6 +92,65 @@ pub enum QueryAction {
     Graph,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordMutationRequest {
+    action: RecordMutationAction,
+    #[serde(default)]
+    object_id: Option<String>,
+    #[serde(default)]
+    expected_head: Option<String>,
+    #[serde(default)]
+    payload: Option<Value>,
+    #[serde(default)]
+    searchable_text: Option<String>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordMutationAction {
+    Propose,
+    Version,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchRequest {
+    action: ResearchAction,
+    #[serde(default)]
+    run_id: Option<String>,
+    #[serde(default)]
+    expected_head: Option<String>,
+    #[serde(default)]
+    run_kind: Option<String>,
+    #[serde(default)]
+    event_kind: Option<String>,
+    #[serde(default)]
+    budget: Option<Value>,
+    #[serde(default)]
+    payload: Option<Value>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchAction {
+    Start,
+    Observe,
+    Submit,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum McpTraversalDirection {
@@ -138,10 +200,14 @@ impl MathOsMcp {
             SystemAction::Health => Ok(to_value(Application::health(&self.config))
                 .expect("diagnostic report is serializable")),
             SystemAction::Capabilities => Ok(json!({
-                "tools": ["system", "query"],
+                "tools": ["system", "query", "source", "claim", "formalization", "research"],
                 "system_actions": ["describe", "health", "capabilities", "policy"],
                 "query_actions": ["get", "search", "graph"],
-                "mutations": false,
+                "source_actions": ["propose", "version"],
+                "claim_actions": ["propose", "version"],
+                "formalization_actions": ["propose", "version"],
+                "research_actions": ["start", "observe", "submit"],
+                "mutations": true,
                 "authoritative_verification": false,
                 "transport": "stdio",
                 "protocol_version": PROTOCOL_VERSION.as_str()
@@ -163,6 +229,37 @@ impl MathOsMcp {
     )]
     fn query(&self, Parameters(request): Parameters<QueryRequest>) -> CallToolResult {
         result_to_tool(self.execute_query(request))
+    }
+
+    #[tool(
+        description = "Propose or version a source through immutable canonical records. Mutations require actor and idempotency_key; version also requires object_id and expected_head."
+    )]
+    fn source(&self, Parameters(request): Parameters<RecordMutationRequest>) -> CallToolResult {
+        result_to_tool(self.execute_record_mutation(RecordKind::Source, request))
+    }
+
+    #[tool(
+        description = "Propose or version a truth-valued claim through immutable canonical records. Mutations require actor and idempotency_key; version also requires object_id and expected_head."
+    )]
+    fn claim(&self, Parameters(request): Parameters<RecordMutationRequest>) -> CallToolResult {
+        result_to_tool(self.execute_record_mutation(RecordKind::Claim, request))
+    }
+
+    #[tool(
+        description = "Propose or version one exact formal interpretation of a claim. This never marks the claim proved, disproved, or faithful."
+    )]
+    fn formalization(
+        &self,
+        Parameters(request): Parameters<RecordMutationRequest>,
+    ) -> CallToolResult {
+        result_to_tool(self.execute_record_mutation(RecordKind::Formalization, request))
+    }
+
+    #[tool(
+        description = "Start, observe, or submit a typed non-authoritative research run. Run events preserve proposals and diagnostics but never decide mathematical truth."
+    )]
+    fn research(&self, Parameters(request): Parameters<ResearchRequest>) -> CallToolResult {
+        result_to_tool(self.execute_research(request))
     }
 
     fn execute_query(&self, request: QueryRequest) -> Result<Value, AppError> {
@@ -208,6 +305,112 @@ impl MathOsMcp {
                     limit,
                 };
                 to_value(application.traverse_graph(&request)?).map_err(serialization_error)
+            }
+        }
+    }
+
+    fn execute_record_mutation(
+        &self,
+        kind: RecordKind,
+        request: RecordMutationRequest,
+    ) -> Result<Value, AppError> {
+        let action_name = record_action_name(request.action);
+        let payload = request
+            .payload
+            .ok_or_else(|| missing_field("payload", action_name, kind.as_str()))?;
+        let searchable_text = required(request.searchable_text, "searchable_text", kind.as_str())?;
+        let actor = required(request.actor, "actor", kind.as_str())?;
+        let idempotency_key = required(request.idempotency_key, "idempotency_key", kind.as_str())?;
+        let draft = RecordDraft {
+            kind,
+            schema_version: record_schema_version(kind).to_owned(),
+            payload,
+            searchable_text,
+        };
+        let mut application = self.application()?;
+        match request.action {
+            RecordMutationAction::Propose => {
+                reject_present(request.object_id, "object_id", "propose")?;
+                reject_present(request.expected_head, "expected_head", "propose")?;
+                to_value(application.create_record(
+                    &draft,
+                    &actor,
+                    &idempotency_key,
+                    request.dry_run,
+                )?)
+                .map_err(serialization_error)
+            }
+            RecordMutationAction::Version => {
+                let object_id = required(request.object_id, "object_id", "version")?;
+                let expected_head = required(request.expected_head, "expected_head", "version")?;
+                to_value(application.version_record(
+                    &object_id,
+                    &expected_head,
+                    &draft,
+                    &actor,
+                    &idempotency_key,
+                    request.dry_run,
+                )?)
+                .map_err(serialization_error)
+            }
+        }
+    }
+
+    fn execute_research(&self, request: ResearchRequest) -> Result<Value, AppError> {
+        let mut application = self.application()?;
+        match request.action {
+            ResearchAction::Start => {
+                let kind = RunKind::from_str(&required(request.run_kind, "run_kind", "start")?)?;
+                let actor = required(request.actor, "actor", "start")?;
+                let idempotency_key =
+                    required(request.idempotency_key, "idempotency_key", "start")?;
+                reject_present(request.run_id, "run_id", "start")?;
+                reject_present(request.expected_head, "expected_head", "start")?;
+                reject_present(request.event_kind, "event_kind", "start")?;
+                to_value(application.create_run(
+                    kind,
+                    &request.budget.unwrap_or_else(|| json!({})),
+                    &actor,
+                    &idempotency_key,
+                    request.dry_run,
+                )?)
+                .map_err(serialization_error)
+            }
+            ResearchAction::Observe => {
+                let run_id = required(request.run_id, "run_id", "observe")?;
+                if request.dry_run {
+                    return Err(AppError::new(
+                        "MCL_MCP_FIELD_FORBIDDEN",
+                        "research action `observe` does not accept `dry_run`",
+                        false,
+                        "Remove `dry_run`; observe is already read-only.",
+                    ));
+                }
+                let run = application.get_run(&run_id)?;
+                let events = application.list_run_events(&run_id)?;
+                Ok(json!({"run": run, "events": events}))
+            }
+            ResearchAction::Submit => {
+                let run_id = required(request.run_id, "run_id", "submit")?;
+                let expected_head = required(request.expected_head, "expected_head", "submit")?;
+                let event_kind =
+                    RunEventKind::from_str(&required(request.event_kind, "event_kind", "submit")?)?;
+                let actor = required(request.actor, "actor", "submit")?;
+                let idempotency_key =
+                    required(request.idempotency_key, "idempotency_key", "submit")?;
+                let draft = RunEventDraft {
+                    kind: event_kind,
+                    payload: request.payload.unwrap_or_else(|| json!({})),
+                };
+                to_value(application.append_run_event(
+                    &run_id,
+                    &expected_head,
+                    &draft,
+                    &actor,
+                    &idempotency_key,
+                    request.dry_run,
+                )?)
+                .map_err(serialization_error)
             }
         }
     }
@@ -293,11 +496,49 @@ fn required(value: Option<String>, field: &str, action: &str) -> Result<String, 
     value.filter(|item| !item.trim().is_empty()).ok_or_else(|| {
         AppError::new(
             "MCL_MCP_FIELD_REQUIRED",
-            format!("query action `{action}` requires a nonempty `{field}`"),
+            format!("action `{action}` requires a nonempty `{field}`"),
             false,
             format!("Supply `{field}` for the `{action}` action."),
         )
     })
+}
+
+fn missing_field(field: &str, action: &str, family: &str) -> AppError {
+    AppError::new(
+        "MCL_MCP_FIELD_REQUIRED",
+        format!("{family} action `{action}` requires `{field}`"),
+        false,
+        format!("Supply `{field}` for the `{action}` action."),
+    )
+}
+
+fn reject_present(value: Option<String>, field: &str, action: &str) -> Result<(), AppError> {
+    if value.is_some() {
+        return Err(AppError::new(
+            "MCL_MCP_FIELD_FORBIDDEN",
+            format!("action `{action}` does not accept `{field}`"),
+            false,
+            format!("Remove `{field}` from the `{action}` action."),
+        ));
+    }
+    Ok(())
+}
+
+fn record_action_name(action: RecordMutationAction) -> &'static str {
+    match action {
+        RecordMutationAction::Propose => "propose",
+        RecordMutationAction::Version => "version",
+    }
+}
+
+fn record_schema_version(kind: RecordKind) -> &'static str {
+    match kind {
+        RecordKind::Source => "source/1",
+        RecordKind::Concept => "concept/1",
+        RecordKind::Claim => "claim/1",
+        RecordKind::Formalization => "formalization/1",
+        RecordKind::LearningUnit => "learning_unit/1",
+    }
 }
 
 fn serialization_error(error: serde_json::Error) -> AppError {

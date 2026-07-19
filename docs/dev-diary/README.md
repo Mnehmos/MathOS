@@ -23,3 +23,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 13. [The Shape of a Promise](0013-the-shape-of-a-promise.md)
 14. [The Interface Is Not the Mind](0014-the-interface-is-not-the-mind.md)
 15. [A Bridge Must Carry the Same Weight](0015-a-bridge-must-carry-the-same-weight.md)
+16. [A Mutation Must Introduce Itself](0016-a-mutation-must-introduce-itself.md)

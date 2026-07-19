@@ -75,22 +75,26 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - MCP tool schemas have an object root, reject unknown fields, bound search and graph work, and return stable application errors as structured tool failures.
 - Real subprocess tests exercise initialization, tool discovery, tool calls, invalid parameters, forbidden tool names, stdout purity, clean EOF shutdown, restart, and persisted-state recovery.
 - CLI-created canonical state produces the same serialized search and exact-record results when read through MCP, establishing parity for the implemented read surface.
+- The MCP surface now includes all six issue #14 families: `system`, `query`, `source`, `claim`, `formalization`, and `research`.
+- Source, claim, and formalization proposals and versions require explicit actor and idempotency attribution; versions additionally require compare-and-swap object and head identities.
+- Research start and submit actions require the same attribution controls, while observe remains read-only. Every recorded run remains explicitly non-authoritative.
+- MCP dry runs validate without mutation, exact retries return the original result, stale writers fail with structured conflicts, and irrelevant mutation fields fail closed.
+- Adversarial MCP coverage rejects embedded proof verdicts in formalizations and confirms that no `mark_proved`, raw shell, raw SQL, model-routing, or publication action exists.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, complete MCP mutation surface, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Extend issue #14 from its proven lifecycle and read-only actions to closed source, claim, formalization, and research mutation actions.
-- Require attribution, idempotency, compare-and-swap, and dry-run controls on every MCP mutation.
+- Publish the completed issue #14 mutation slice and require fresh Linux and Windows CI evidence before closing the issue.
+- Begin the environment manifest and narrow Lean authority issue only after the MCP branch head is green.
 - Keep the local Lean launch limitation visible without misclassifying it as a project-wide blocker.
 
 ## Next highest-priority criteria
 
-1. Complete the remaining typed MCP mutation families over the real application path without direct storage access.
-2. Prove CLI and MCP semantic parity for mutations, conflicts, idempotent retry, and run-chain behavior.
-3. Implement environment manifests and the narrow Lean elaboration boundary now that the pinned toolchain is executable in CI.
-4. Implement evidence records and derived truth rules before any proof-status surface exists.
-5. Complete Pilot A through the real interfaces only after those authority controls exist.
+1. Obtain fresh remote CI evidence for the complete issue #14 MCP surface and close the issue if green.
+2. Implement environment manifests and the narrow Lean elaboration boundary now that the pinned toolchain is executable in CI.
+3. Implement evidence records and derived truth rules before any proof-status surface exists.
+4. Complete Pilot A through the real interfaces only after those authority controls exist.
 
 ## Exact last validation commands
 
@@ -109,11 +113,11 @@ Observed validation evidence for this update:
 - formatting passed;
 - warnings-denied Clippy passed;
 - 44 Rust unit tests passed;
-- 6 Rust CLI integration tests and 2 Rust MCP subprocess integration tests passed;
+- 6 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.
 - GitHub Actions runs `29696708243` and `29697132394` passed all five jobs, including exact pinned Lean availability and both Rust operating-system targets.
 
 ## Release readiness
 
-Not ready. The release checklist is overwhelmingly open, all four mandatory pilots are incomplete in the specified architecture, the Rust MCP mutation surface is incomplete, and no authoritative Lean evidence has been produced.
+Not ready. The release checklist is overwhelmingly open, all four mandatory pilots are incomplete in the specified architecture, later verifier, pedagogy, and release MCP families do not exist because their application capabilities do not yet exist, and no authoritative Lean evidence has been produced.
