@@ -33,15 +33,12 @@ toolchain="$(tr -d '\r\n' < lean-toolchain)"
 lean_path="$(elan which lean)"
 lean_root="$(dirname "$(dirname "$lean_path")")"
 bwrap_version="$(/usr/bin/bwrap --version)"
-runner_uid="$(id -u)"
-runner_gid="$(id -g)"
 
 if ! sudo /usr/bin/bwrap \
   --unshare-all \
   --die-with-parent \
   --new-session \
-  --uid "$runner_uid" \
-  --gid "$runner_gid" \
+  --cap-drop ALL \
   --ro-bind / / \
   --ro-bind "$PWD" /work \
   --ro-bind "$lean_root" /toolchain \
