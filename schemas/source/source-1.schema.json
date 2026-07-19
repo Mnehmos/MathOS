@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/source/1",
+  "title": "MathOS Source Payload v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source_type",
+    "title_or_label",
+    "authors_or_origin",
+    "canonical_locator",
+    "acquisition_date",
+    "license_expression",
+    "redistribution_status",
+    "content_hash",
+    "citation_metadata",
+    "redaction_class",
+    "provenance_notes",
+    "original_text"
+  ],
+  "properties": {
+    "source_type": {"enum": ["paper", "textbook", "benchmark", "repository", "webpage", "dataset", "user_statement", "conversation_excerpt", "historical_archive"]},
+    "title_or_label": {"type": "string", "minLength": 1, "maxLength": 1048576},
+    "authors_or_origin": {"type": "array", "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 1048576}},
+    "canonical_locator": {"type": "string", "minLength": 1, "maxLength": 1048576},
+    "acquisition_date": {"type": "string", "minLength": 1, "maxLength": 64},
+    "license_expression": {"type": ["string", "null"], "maxLength": 1048576},
+    "redistribution_status": {"enum": ["allowed", "restricted", "prohibited", "unknown"]},
+    "content_hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "citation_metadata": {"type": "object", "maxProperties": 1000, "additionalProperties": {"type": "string", "maxLength": 1048576}},
+    "redaction_class": {"enum": ["public", "restricted", "private"]},
+    "provenance_notes": {"type": "string", "maxLength": 1048576},
+    "original_text": {"type": "string", "minLength": 1, "maxLength": 1048576}
+  }
+}

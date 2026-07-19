@@ -1,5 +1,7 @@
 # ADR 0001: Finite Verifier First
 
+> Superseded for the canonical product: This decision applies only to the legacy Python finite-domain slice. The accepted canonical architecture is `docs/decisions/ADR-0001-local-first-modular-monolith.md`, governed by the root `SPEC.md`.
+
 ## Status
 
 Accepted for v1.0.0.

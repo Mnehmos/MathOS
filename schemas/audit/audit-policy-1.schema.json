@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/audit/policy/1",
+  "title": "MathOS Lean Audit Policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "policy_name", "allowed_axioms", "forbidden_source_tokens"],
+  "properties": {
+    "schema_version": {"const": "audit_policy/1"},
+    "policy_name": {"type": "string", "minLength": 1, "maxLength": 128},
+    "allowed_axioms": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"type": "string", "minLength": 1, "maxLength": 256}
+    },
+    "forbidden_source_tokens": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"type": "string", "minLength": 1, "maxLength": 64}
+    }
+  }
+}

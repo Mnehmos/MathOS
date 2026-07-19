@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/environment/1",
+  "title": "MathOS Lean Environment Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "formal_system",
+    "lean_toolchain",
+    "dependencies",
+    "import_manifest",
+    "project_configuration_hashes",
+    "platform",
+    "trust_profile",
+    "verifier_command",
+    "resource_limits",
+    "network_access",
+    "working_directory_policy"
+  ],
+  "properties": {
+    "schema_version": { "const": "environment/1" },
+    "formal_system": { "enum": ["lean4"] },
+    "lean_toolchain": {
+      "type": "string",
+      "pattern": "^leanprover/lean4:v[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "dependencies": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "revision"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "revision": {
+            "type": "string",
+            "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+          }
+        }
+      }
+    },
+    "import_manifest": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "project_configuration_hashes": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
+    },
+    "platform": { "enum": ["linux_x86_64", "windows_x86_64"] },
+    "trust_profile": { "enum": ["local", "publication"] },
+    "verifier_command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable", "arguments"],
+      "properties": {
+        "executable": { "const": "lean" },
+        "arguments": { "const": ["{module_path}"] }
+      }
+    },
+    "resource_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "timeout_seconds",
+        "max_output_bytes",
+        "max_memory_bytes",
+        "concurrency"
+      ],
+      "properties": {
+        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "max_output_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "max_memory_bytes": {
+          "type": ["integer", "null"],
+          "minimum": 67108864,
+          "maximum": 17179869184
+        },
+        "concurrency": { "type": "integer", "minimum": 1, "maximum": 16 }
+      }
+    },
+    "network_access": { "const": false },
+    "working_directory_policy": { "const": "temporary_workspace" }
+  }
+}

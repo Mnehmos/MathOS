@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/concept/1",
+  "title": "MathOS Concept Payload v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "aliases", "description", "subject_domains", "formal_declarations", "external_taxonomy_crosswalks", "pedagogy_metadata_references", "provenance_references"],
+  "properties": {
+    "name": {"type": "string", "minLength": 1, "maxLength": 1048576},
+    "aliases": {"type": "array", "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 1048576}},
+    "description": {"type": "string", "minLength": 1, "maxLength": 1048576},
+    "subject_domains": {"type": "array", "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 1048576}},
+    "formal_declarations": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["environment_hash", "declaration_name"],
+        "properties": {
+          "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "declaration_name": {"type": "string", "minLength": 1, "maxLength": 1048576}
+        }
+      }
+    },
+    "external_taxonomy_crosswalks": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["taxonomy_name", "external_id", "source_reference", "license_expression"],
+        "properties": {
+          "taxonomy_name": {"type": "string", "minLength": 1, "maxLength": 1048576},
+          "external_id": {"type": "string", "minLength": 1, "maxLength": 1048576},
+          "source_reference": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["object_id", "version_hash"],
+            "properties": {
+              "object_id": {"type": "string", "minLength": 1, "maxLength": 128},
+              "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          },
+          "license_expression": {"type": "string", "minLength": 1, "maxLength": 1048576}
+        }
+      }
+    },
+    "pedagogy_metadata_references": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["object_id", "version_hash"],
+        "properties": {
+          "object_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "provenance_references": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["object_id", "version_hash"],
+        "properties": {
+          "object_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

@@ -64,7 +64,7 @@ class McpTests(unittest.TestCase):
                     initialized["result"]["protocolVersion"], "2025-11-25"
                 )
                 self.assertEqual(
-                    initialized["result"]["serverInfo"]["version"], "1.0.0"
+                    initialized["result"]["serverInfo"]["version"], "0.1.0"
                 )
 
                 assert process.stdin is not None

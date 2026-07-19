@@ -1,5 +1,7 @@
 # MathOS 0-to-1 Product Specification
 
+> Superseded: The binding product and implementation contract is now the repository-root `SPEC.md`. This earlier document describes only the legacy Python finite-domain slice and cannot define release completion.
+
 ## Product statement
 
 MnehmosAI builds MathOS, a verifier-gated operating system for mathematical research and learning.

@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/verifier/execution-report/1",
+  "title": "MathOS Lean Verifier Execution Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "job_id",
+    "environment_hash",
+    "module_artifact_hash",
+    "declaration_name",
+    "classification",
+    "exit_code",
+    "stdout_artifact_hash",
+    "stderr_artifact_hash",
+    "duration_milliseconds",
+    "observed_toolchain_version",
+    "forbidden_source_token",
+    "trust_profile",
+    "memory_limit_enforced",
+    "network_isolation_enforced",
+    "authoritative"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "verifier_execution_report/1"
+    },
+    "job_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "environment_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "module_artifact_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "declaration_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "classification": {
+      "enum": [
+        "elaborated",
+        "rejected",
+        "timed_out",
+        "output_limit_exceeded",
+        "toolchain_mismatch",
+        "launch_failed",
+        "unsafe_source"
+      ]
+    },
+    "exit_code": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "stdout_artifact_hash": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "stderr_artifact_hash": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "duration_milliseconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "observed_toolchain_version": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "forbidden_source_token": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "trust_profile": {
+      "enum": [
+        "local",
+        "publication"
+      ]
+    },
+    "memory_limit_enforced": {
+      "type": "boolean"
+    },
+    "network_isolation_enforced": {
+      "type": "boolean"
+    },
+    "authoritative": {
+      "const": false
+    }
+  }
+}

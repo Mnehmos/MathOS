@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mnehmos-mathos"
-version = "1.0.0"
-description = "Verifier-gated mathematical claim lifecycle platform"
+version = "0.1.0"
+description = "Legacy Python claim-kernel retained for migration into MCL"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }

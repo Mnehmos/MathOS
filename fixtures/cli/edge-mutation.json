@@ -1,0 +1,14 @@
+{
+  "dry_run": false,
+  "edge": {
+    "edge_id": "<uuidv7>",
+    "kind": "logic.depends_on",
+    "source_object_id": "<uuidv7>",
+    "source_version_hash": "<sha256>",
+    "target_object_id": "<uuidv7>",
+    "target_version_hash": "<sha256>",
+    "payload": {"reason": "fixture"},
+    "created_at": "<timestamp>",
+    "created_by": "cli-test"
+  }
+}

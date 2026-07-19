@@ -1,88 +1,46 @@
-# MathOS
+# Mathematical Claim Engine
 
-**MnehmosAI builds MathOS, a verifier-gated operating system for mathematical research and learning.**
+The Mathematical Claim Engine is a local-first mathematical knowledge-production and verification system built by MnehmosAI.
 
-MathOS takes a mathematical claim from informal statement through formalization, proof or counterexample, independent verification, pedagogy, provenance, and reinforcement-learning export.
+The binding product and implementation contract is [SPEC.md](SPEC.md). When this README, prior code, or an implementation assumption conflicts with that specification, the specification wins.
 
-## Product identity
+## Release status
 
-| Name | Role |
-| --- | --- |
-| MnehmosAI | Company and umbrella brand |
-| MathOS | Flagship mathematical operating system |
-| MathCorpus | Verified knowledge, provenance, and training layer |
-| Proof Search | Research and verification engine |
-| Mathematical Claim Engine | Core claim-lifecycle subsystem inside MathOS |
+**MathOS 1.0.0 is not complete or released.**
 
-MathOS is the product. MCP is one interface into MathOS alongside future application, API, command-line, and research interfaces.
+The repository currently contains two bodies of work:
 
-## Current vertical slice
+1. A legacy Python finite-domain claim kernel. It preserves useful experiments in claim identity, verifier-gated state, provenance, CLI, MCP, and trajectory validation. It is not the specified product and carries no 1.0 release claim.
+2. The in-progress Rust modular monolith named `mcl`, which is the canonical implementation required by the specification.
 
-MathOS v1.0 establishes the trusted claim lifecycle in a finite formal domain:
+No remote `v1.0.0` tag exists. Release is prohibited until the complete Definition of Done in section 30 of the specification passes and `mcl acceptance --all --clean` produces a verified release candidate.
 
-1. Submit an informal statement and versioned formal specification.
-2. Produce an untrusted enumeration proof, counterexample, or unknown result.
-3. Recompute the proof obligation or witness in an independent verifier.
-4. Apply an explicit verified or unresolved claim state.
-5. Record every step in a hash-chained SQLite provenance ledger.
-6. Generate certainty-preserving pedagogy and a validated RL trajectory.
-7. Access the same Claim Engine through the CLI or MCP stdio interface.
+## Product boundary
 
-The initial verifier handles universal claims over finite Boolean, integer, string, or null domains. Unsupported and unbounded claims remain unresolved. A Lean subprocess adapter is present and fails closed when Lean is unavailable.
+MnehmosAI is the company. The Mathematical Claim Engine, exposed as MathOS, is the product.
 
-## Quick start
+Earlier proof-search episodes, claim records, MathCorpus packets, and MCIP bundles are migration inputs or export formats. They are not parallel applications. Their useful capabilities and histories must be absorbed without silently promoting trust.
 
-MathOS requires Python 3.12 and has no runtime dependencies outside the standard library.
+The product contains one canonical service layer shared by:
 
-```bash
-make install
-make check
-make demo
-```
+- the `mcl` command-line interface;
+- the Model Context Protocol adapter;
+- the local SQLite store;
+- the content-addressed artifact store;
+- the Lean 4 verifier worker;
+- release, pedagogy, migration, and learning-export modules.
 
-The demo produces exactly one proved claim, one disproved claim, and one unresolved claim. It also writes validated RL trajectories under `.mathos-demo/exports/`.
+## Current implementation phase
 
-Individual CLI operations:
+See:
 
-```bash
-mathos init --db .mathos/mathos.db
-mathos submit --db .mathos/mathos.db \
-  --statement "For every Boolean p, p or not p." \
-  --formal-file examples/finite/excluded_middle.json
-mathos replay --db .mathos/mathos.db
-mathos validate-export --input trajectory.json
-```
+- [Implementation status](docs/implementation/STATUS.md)
+- [Real blockers](docs/implementation/BLOCKERS.md)
+- [Release checklist](docs/implementation/RELEASE_CHECKLIST.md)
+- [Architecture decisions](docs/decisions/)
 
-## MCP stdio
-
-```json
-{
-  "mcpServers": {
-    "mathos": {
-      "command": ".venv/bin/mathos-mcp",
-      "args": ["--db", ".mathos/mathos.db"]
-    }
-  }
-}
-```
-
-The server implements initialization, `tools/list`, and `tools/call` over newline-delimited JSON-RPC stdio. Protocol output is isolated on stdout.
-
-## Administrative controls
-
-Development is governed by:
-
-- [Dynamic Gitflow Policy](docs/administrative-controls/GITFLOW.md)
-- [Verifier-Gated TDD Policy](docs/administrative-controls/TDD.md)
-- [Contribution Guide](CONTRIBUTING.md)
-- [Security Policy](SECURITY.md)
-- [0-to-1 Product Specification](docs/product/SPEC.md)
-- [0-to-1 Definition of Done](docs/product/ZERO_TO_ONE_DOD.md)
-- [System Architecture](docs/architecture/SYSTEM_OVERVIEW.md)
-- [Trust Model](docs/architecture/TRUST_MODEL.md)
-- [Implementation Evidence](docs/implementation/0001-zero-to-one-evidence.md)
-- [GPT-5.6 Sol Dev Diary](docs/dev-diary/README.md)
+The implementation agent must continue until the complete specification passes. A pilot, demo, schema, or partially working command is not completion.
 
 ## License
 
-MathOS is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE). Commercial use requires a separate license from MnehmosAI.
+The repository is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE). Commercial use requires a separate license from MnehmosAI.

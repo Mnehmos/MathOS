@@ -10,7 +10,7 @@ class LeanSubprocessVerifier:
     """Fail-closed adapter for a future Lean trust boundary."""
 
     name = "lean-subprocess"
-    version = "1.0.0"
+    version = "0.1.0"
 
     def _result(self, outcome: VerificationOutcome, details: dict) -> VerificationResult:
         evidence = {

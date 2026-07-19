@@ -1,0 +1,7 @@
+{
+  "run_id": "<uuidv7>",
+  "valid": true,
+  "event_count": 2,
+  "head_hash": "<sha256>",
+  "first_invalid_sequence": null
+}

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/artifact/metadata/1",
+  "title": "MathOS Artifact Metadata v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "media_type",
+    "creation_source",
+    "license_expression",
+    "restriction",
+    "semantic_metadata"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "artifact_metadata/1"
+    },
+    "media_type": {
+      "enum": [
+        "text/x-lean",
+        "application/json",
+        "text/plain",
+        "application/x-lrat",
+        "application/octet-stream"
+      ]
+    },
+    "creation_source": {
+      "enum": [
+        "user_ingest",
+        "generated",
+        "verifier",
+        "human_review",
+        "import",
+        "migration"
+      ]
+    },
+    "license_expression": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "restriction": {
+      "enum": [
+        "public",
+        "restricted",
+        "private"
+      ]
+    },
+    "semantic_metadata": {
+      "type": "object",
+      "maxProperties": 64,
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 1024
+      }
+    }
+  }
+}

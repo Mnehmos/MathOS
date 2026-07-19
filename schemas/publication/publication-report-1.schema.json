@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/publication/report/1",
+  "title": "MathOS Publication Candidate Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_hash", "request", "classification", "repository", "workflow_path", "source_ref", "workflow_run_id", "workflow_run_attempt", "runner_environment", "observed_lean_toolchain", "observed_axioms", "retained_artifact_hashes", "clean_checkout", "dependency_closure_complete", "network_isolation_enforced", "memory_limit_enforced", "authoritative"],
+  "properties": {
+    "schema_version": {"const": "publication_report/1"},
+    "request_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "request": {"$ref": "https://mnehmos.ai/mathos/schemas/publication/request/1"},
+    "classification": {"enum": ["passed", "rejected", "failed"]},
+    "repository": {"const": "Mnehmos/MathOS"},
+    "workflow_path": {"const": ".github/workflows/publication.yml"},
+    "source_ref": {"const": "refs/heads/main"},
+    "workflow_run_id": {"type": "integer", "minimum": 1},
+    "workflow_run_attempt": {"type": "integer", "minimum": 1},
+    "runner_environment": {"const": "github_hosted"},
+    "observed_lean_toolchain": {"type": "string", "minLength": 1, "maxLength": 128},
+    "observed_axioms": {"type": "array", "maxItems": 256, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+    "retained_artifact_hashes": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "clean_checkout": {"type": "boolean"},
+    "dependency_closure_complete": {"type": "boolean"},
+    "network_isolation_enforced": {"type": "boolean"},
+    "memory_limit_enforced": {"type": "boolean"},
+    "authoritative": {"const": false}
+  }
+}
