@@ -80,3 +80,7 @@ target/
 *.sqlite-journal
 *.sqlite-shm
 *.sqlite-wal
+
+# MathOS local demonstrations
+.mathos-demo/
+.ci-demo/

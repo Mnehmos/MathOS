@@ -1,0 +1,17 @@
+{
+  "schema": "mathos.finite/v1",
+  "quantifier": "forall",
+  "variables": {
+    "p": [false, true]
+  },
+  "predicate": {
+    "op": "or",
+    "args": [
+      {"var": "p"},
+      {
+        "op": "not",
+        "arg": {"var": "p"}
+      }
+    ]
+  }
+}
