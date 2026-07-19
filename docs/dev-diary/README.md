@@ -13,3 +13,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 3. [The Space Between Events](0003-the-space-between-events.md)
 4. [The Name of Done](0004-the-name-of-done.md)
 5. [The Contract Before the Claim](0005-the-contract-before-the-claim.md)
+6. [The Right to Remain the Same](0006-the-right-to-remain-the-same.md)

@@ -1,15 +1,7 @@
-mod app;
-mod artifacts;
-mod cli;
-mod config;
-mod error;
-mod store;
-
 use std::process::ExitCode;
 
 use clap::Parser;
-
-use crate::cli::Cli;
+use mcl::cli::Cli;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();

@@ -10,9 +10,9 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 ## Current phase
 
-Phase 1: Governance and executable skeleton.
+Phase 2: Canonical records and trace.
 
-Active issue: [#4, establish the governed Rust application skeleton](https://github.com/Mnehmos/MathOS/issues/4).
+Active issue: [#5, implement immutable canonical records and deterministic identities](https://github.com/Mnehmos/MathOS/issues/5).
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -28,22 +28,28 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Configured database and artifact paths reject parent traversal and existing-ancestor symlink escape.
 - Rust unit and CLI integration tests use real temporary SQLite databases and artifact stores.
 - Lean is pinned in `lean-toolchain` to `leanprover/lean4:v4.32.0`.
+- Canonical JSON uses RFC 8785 with fail-closed IEEE-754 safe-integer validation and a golden cross-language hash vector.
+- Stable canonical objects use UUIDv7; immutable versions use the specified schema-bound SHA-256 formula.
+- Create and version mutations persist actor attribution and immutable idempotency receipts.
+- Compare-and-swap heads serialize concurrent writers into one winner and one structured conflict.
+- Database triggers reject version rewrites, head clearing, head downgrade, cross-object heads, identity rewrites, and idempotency-receipt mutation.
+- Exact object and version lookup, restart persistence, and current-head FTS5 projection work through the real SQLite store.
 
 These items establish only part of Phase 1. They do not establish any mathematical claim, Lean proof authority, MCP behavior, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Complete the Phase 1 CI matrix and documentation controls.
+- Publish the three local controlled commits and run the Phase 1 CI matrix once the required GitHub CLI is available.
 - Validate the pinned Lean toolchain on a fresh Linux CI runner because the current managed execution sandbox cannot launch the Lean runtime.
-- Add schema and migration consistency checks.
-- Commit and review the first coherent governed foundation.
+- Continue Phase 2 with typed graph edges and hash-chained run events.
+- Generate and commit the first typed JSON Schemas from the domain contract.
 
 ## Next highest-priority criteria
 
-1. Close Phase 1 issue #4 with CI evidence.
-2. Implement immutable canonical records, canonical JSON, and golden hash vectors.
-3. Implement typed edges, artifacts, runs, hash-chained events, exact lookup, and FTS search.
-4. Establish one shared application path for the CLI and MCP adapter.
+1. Close Phase 1 issue #4 and Phase 2 issue #5 with remote CI evidence.
+2. Implement typed edges, runs, hash-chained events, and graph validation.
+3. Establish source and claim schemas on the shared application path.
+4. Add the MCP adapter only after it can call that same real application path.
 5. Begin the Lean authority path only after the environment is pinned and executable.
 
 ## Exact last validation commands
@@ -65,9 +71,9 @@ Observed Rust evidence before this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 9 Rust unit tests passed;
+- 19 Rust unit tests passed;
 - 4 Rust CLI integration tests passed;
-- manual initialization exited 0 with migration 1 and WAL mode;
+- manual initialization exited 0 with migrations through version 3 and WAL mode;
 - manual health exited 0 after an FTS5 probe defect was reproduced and repaired;
 - manual doctor exited 1 only because Lean could not execute in the managed local sandbox.
 

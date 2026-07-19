@@ -39,7 +39,7 @@ Phase 1 evidence: `lean-toolchain` pins Lean 4.32.0. No proof-authority item is 
 - [ ] Context compilation is deterministic and provenance-bearing.
 - [ ] Agents outside the originating campaign can locate and reuse verified results.
 
-Phase 1 evidence: the physical FTS5 table and a health probe exist. Product search is not implemented.
+Phase 2 evidence: exact stable-ID lookup, exact version-hash lookup, and current-head FTS5 search work. Graph, declaration, and prior-failure search remain unimplemented, so the release criterion is open.
 
 ## Pedagogy
 

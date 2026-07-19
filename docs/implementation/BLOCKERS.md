@@ -30,3 +30,25 @@ This does not block persistence, domain, policy, schema, CLI, MCP, release-struc
 Run the pinned toolchain on a fresh GitHub-hosted Linux runner through CI. If it succeeds there, retain the local limitation as an environment-specific diagnostic. If it also fails there, investigate the pinned distribution or choose another explicitly reviewed pin through an ADR.
 
 No user decision is currently required because unrelated implementation continues and CI is the next safe resolution path.
+
+## GitHub publication workflow lacks the required CLI
+
+### Description
+
+The repository publication workflow requires an authenticated GitHub CLI before it will push the branch and open a draft pull request. The current environment reports `gh: command not found`.
+
+### Impact
+
+Three controlled local commits can be created and tested, but the branch cannot be published through the required workflow. GitHub Actions therefore cannot validate Windows, fresh Linux, or pinned Lean behavior yet.
+
+### Attempts
+
+1. Confirmed the connected GitHub app can create and update issues.
+2. Ran `gh --version` and `gh auth status`; execution stopped at the missing binary.
+3. Preserved the local branch and commit sequence without using a second remote-commit path that could desynchronize the checkout.
+
+### Smallest required resolution
+
+Install and authenticate GitHub CLI in this work environment, then run the existing publish workflow to push `feat/spec-driven-rust-rebuild` and open a draft pull request against `main`.
+
+No user decision is currently required while unrelated implementation work remains available.
