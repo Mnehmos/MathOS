@@ -12,7 +12,8 @@ use crate::canonical::{canonical_json, record_version_hash, value_hash};
 use crate::domain::schemas::{FormalizationPayload, validate_record_payload};
 use crate::domain::{
     ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest,
-    EnvironmentSnapshot, RecordDraft, RecordKind, RecordSnapshot,
+    EnvironmentSnapshot, RecordDraft, RecordKind, RecordSnapshot, VerifierJobRequest,
+    VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
 
@@ -26,6 +27,7 @@ const MIGRATION_0004: &str = include_str!("../../migrations/0004_edge_invariants
 const MIGRATION_0005: &str = include_str!("../../migrations/0005_run_event_invariants.sql");
 const MIGRATION_0006: &str = include_str!("../../migrations/0006_environment_invariants.sql");
 const MIGRATION_0007: &str = include_str!("../../migrations/0007_artifact_invariants.sql");
+const MIGRATION_0008: &str = include_str!("../../migrations/0008_verifier_jobs.sql");
 const REQUIRED_TABLES: &[&str] = &[
     "artifacts",
     "edges",
@@ -217,6 +219,24 @@ impl Store {
                     params![7_i64, "artifact invariants"],
                 )
                 .map_err(|error| AppError::database("record migration 0007", error))?;
+        }
+        let migration_0008_applied: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 8)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::database("inspect migration 0008", error))?;
+        if !migration_0008_applied {
+            transaction
+                .execute_batch(MIGRATION_0008)
+                .map_err(|error| AppError::database("apply migration 0008", error))?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, unixepoch())",
+                    params![8_i64, "durable verifier jobs"],
+                )
+                .map_err(|error| AppError::database("record migration 0008", error))?;
         }
         transaction
             .commit()
@@ -576,6 +596,183 @@ impl Store {
             ));
         }
         Ok(hashes)
+    }
+
+    pub fn enqueue_verifier_job(
+        &mut self,
+        request: &VerifierJobRequest,
+        priority: i32,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<VerifierJobSnapshot, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        validate_job_priority(priority)?;
+        request.validate()?;
+        validate_verifier_job_references(&self.connection, request)?;
+        let request_value = serde_json::to_value(request).map_err(|error| {
+            AppError::new(
+                "MCL_VERIFIER_REQUEST_INVALID",
+                error.to_string(),
+                false,
+                "Report this deterministic verifier request serialization defect.",
+            )
+        })?;
+        let canonical_input_hash = value_hash(&request_value)?;
+        let input_hash = value_hash(&json!({
+            "operation": "verifier.enqueue",
+            "request": request_value,
+            "priority": priority,
+            "actor": actor,
+        }))?;
+        let input_json = String::from_utf8(canonical_json(&request_value)?).map_err(|error| {
+            AppError::new(
+                "MCL_CANONICAL_JSON_INVALID",
+                error.to_string(),
+                false,
+                "Report this canonical JSON encoding defect.",
+            )
+        })?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start verifier job enqueue", error))?;
+        if let Some(existing) = read_idempotent_result(
+            &transaction,
+            "verifier.enqueue",
+            idempotency_key,
+            &input_hash,
+        )? {
+            return Ok(existing);
+        }
+        let job_id = Uuid::now_v7().to_string();
+        transaction
+            .execute(
+                "INSERT INTO jobs(job_id, job_type, canonical_input_hash, idempotency_key, state, priority, lease_owner, lease_expires_at, attempt_count, progress_json, result_artifact_hash, last_error_json, created_at, updated_at, input_json, actor) VALUES (?1, 'lean_elaboration', ?2, ?3, 'queued', ?4, NULL, NULL, 0, '{}', NULL, NULL, unixepoch(), unixepoch(), ?5, ?6)",
+                params![job_id, canonical_input_hash, idempotency_key, priority, input_json, actor],
+            )
+            .map_err(|error| AppError::database("insert verifier job", error))?;
+        let snapshot = read_verifier_job(&transaction, &job_id)?;
+        write_idempotent_result(
+            &transaction,
+            "verifier.enqueue",
+            idempotency_key,
+            &input_hash,
+            &snapshot,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit verifier job enqueue", error))?;
+        Ok(snapshot)
+    }
+
+    pub fn validate_verifier_job_enqueue(
+        &self,
+        request: &VerifierJobRequest,
+        priority: i32,
+    ) -> Result<String, AppError> {
+        validate_job_priority(priority)?;
+        request.validate()?;
+        validate_verifier_job_references(&self.connection, request)?;
+        value_hash(&serde_json::to_value(request).map_err(|error| {
+            AppError::new(
+                "MCL_VERIFIER_REQUEST_INVALID",
+                error.to_string(),
+                false,
+                "Report this deterministic verifier request serialization defect.",
+            )
+        })?)
+    }
+
+    pub fn get_verifier_job(&self, job_id: &str) -> Result<VerifierJobSnapshot, AppError> {
+        validate_uuid(job_id, "verifier job")?;
+        read_verifier_job(&self.connection, job_id)
+    }
+
+    pub fn list_verifier_jobs(&self, limit: usize) -> Result<Vec<VerifierJobSnapshot>, AppError> {
+        if !(1..=100).contains(&limit) {
+            return Err(AppError::new(
+                "MCL_VERIFIER_JOB_LIMIT_INVALID",
+                "verifier job list limit must be between 1 and 100",
+                false,
+                "Use a bounded verifier job list limit.",
+            ));
+        }
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT job_id FROM jobs WHERE job_type = 'lean_elaboration' ORDER BY created_at, job_id LIMIT ?1",
+            )
+            .map_err(|error| AppError::database("prepare verifier job list", error))?;
+        let ids = statement
+            .query_map([limit as i64], |row| row.get::<_, String>(0))
+            .map_err(|error| AppError::database("list verifier jobs", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AppError::database("read verifier job list", error))?;
+        ids.iter()
+            .map(|job_id| read_verifier_job(&self.connection, job_id))
+            .collect()
+    }
+
+    pub fn lease_next_verifier_job(
+        &mut self,
+        worker: &str,
+        lease_seconds: u64,
+    ) -> Result<Option<VerifierJobSnapshot>, AppError> {
+        validate_worker_lease(worker, lease_seconds)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start verifier job lease", error))?;
+        requeue_expired_jobs(&transaction)?;
+        let job_id = transaction
+            .query_row(
+                "SELECT job_id FROM jobs WHERE job_type = 'lean_elaboration' AND state = 'queued' ORDER BY priority DESC, created_at, job_id LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| AppError::database("select verifier job lease", error))?;
+        let Some(job_id) = job_id else {
+            transaction
+                .commit()
+                .map_err(|error| AppError::database("commit empty verifier job lease", error))?;
+            return Ok(None);
+        };
+        transaction
+            .execute(
+                "UPDATE jobs SET state = 'leased', lease_owner = ?2, lease_expires_at = unixepoch() + ?3, attempt_count = attempt_count + 1, progress_json = '{\"phase\":\"leased\"}', updated_at = unixepoch() WHERE job_id = ?1 AND state = 'queued'",
+                params![job_id, worker, lease_seconds as i64],
+            )
+            .map_err(|error| AppError::database("lease verifier job", error))?;
+        let snapshot = read_verifier_job(&transaction, &job_id)?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit verifier job lease", error))?;
+        Ok(Some(snapshot))
+    }
+
+    pub fn mark_verifier_job_running(
+        &mut self,
+        job_id: &str,
+        worker: &str,
+    ) -> Result<VerifierJobSnapshot, AppError> {
+        validate_uuid(job_id, "verifier job")?;
+        validate_worker_lease(worker, 1)?;
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE jobs SET state = 'running', progress_json = '{\"phase\":\"running\"}', updated_at = unixepoch() WHERE job_id = ?1 AND state = 'leased' AND lease_owner = ?2 AND lease_expires_at >= unixepoch()",
+                params![job_id, worker],
+            )
+            .map_err(|error| AppError::database("start verifier job", error))?;
+        if changed != 1 {
+            return Err(verifier_job_conflict(job_id));
+        }
+        read_verifier_job(&self.connection, job_id)
+    }
+
+    pub fn requeue_expired_verifier_jobs(&mut self) -> Result<usize, AppError> {
+        requeue_expired_jobs(&self.connection)
     }
 
     pub fn create_record(
@@ -1150,6 +1347,118 @@ fn validate_hash(hash: &str, label: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn validate_uuid(value: &str, label: &str) -> Result<(), AppError> {
+    let parsed = Uuid::parse_str(value).map_err(|_| {
+        AppError::new(
+            "MCL_ID_INVALID",
+            format!("{label} identity is not a UUID"),
+            false,
+            "Use the exact stable ID returned by the engine.",
+        )
+    })?;
+    if parsed.get_version_num() != 7 {
+        return Err(AppError::new(
+            "MCL_ID_INVALID",
+            format!("{label} identity is not UUIDv7"),
+            false,
+            "Use the exact stable ID returned by the engine.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_job_priority(priority: i32) -> Result<(), AppError> {
+    if !(-1_000..=1_000).contains(&priority) {
+        return Err(AppError::new(
+            "MCL_VERIFIER_JOB_PRIORITY_INVALID",
+            "verifier job priority must be between -1000 and 1000",
+            false,
+            "Use a bounded scheduling priority.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_worker_lease(worker: &str, lease_seconds: u64) -> Result<(), AppError> {
+    if worker.trim().is_empty()
+        || worker.len() > 128
+        || !worker
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        || !(1..=3_600).contains(&lease_seconds)
+    {
+        return Err(AppError::new(
+            "MCL_VERIFIER_LEASE_INVALID",
+            "verifier worker identity or lease duration is outside policy",
+            false,
+            "Use a short stable worker name and a lease between 1 and 3600 seconds.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_verifier_job_references(
+    connection: &Connection,
+    request: &VerifierJobRequest,
+) -> Result<(), AppError> {
+    let environment_exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM environments WHERE environment_hash = ?1)",
+            [&request.environment_hash],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| AppError::database("validate verifier job environment", error))?;
+    if !environment_exists {
+        return Err(AppError::new(
+            "MCL_VERIFIER_ENVIRONMENT_INVALID",
+            format!(
+                "verifier environment {} is not registered",
+                request.environment_hash
+            ),
+            false,
+            "Register and select an exact pinned environment before verification.",
+        ));
+    }
+    let media_type = connection
+        .query_row(
+            "SELECT media_type FROM artifacts WHERE artifact_hash = ?1",
+            [&request.module_artifact_hash],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| AppError::database("validate verifier job module artifact", error))?;
+    if media_type.as_deref() != Some("text/x-lean") {
+        return Err(AppError::new(
+            "MCL_VERIFIER_ARTIFACT_INVALID",
+            format!(
+                "verifier module artifact {} is missing or is not Lean source",
+                request.module_artifact_hash
+            ),
+            false,
+            "Ingest and select an exact registered Lean source artifact before verification.",
+        ));
+    }
+    Ok(())
+}
+
+fn requeue_expired_jobs(connection: &Connection) -> Result<usize, AppError> {
+    connection
+        .execute(
+            "UPDATE jobs SET state = 'queued', lease_owner = NULL, lease_expires_at = NULL, progress_json = '{\"phase\":\"requeued_after_expired_lease\"}', updated_at = unixepoch() WHERE job_type = 'lean_elaboration' AND state IN ('leased', 'running') AND lease_expires_at < unixepoch()",
+            [],
+        )
+        .map_err(|error| AppError::database("requeue expired verifier jobs", error))
+}
+
+fn verifier_job_conflict(job_id: &str) -> AppError {
+    AppError::new(
+        "MCL_VERIFIER_JOB_CONFLICT",
+        format!("verifier job {job_id} is not leased by this worker with a live lease"),
+        true,
+        "Reload job status and lease the next eligible job before starting work.",
+    )
+}
+
 fn mutation_input_hash(
     operation: &str,
     object_id: Option<&str>,
@@ -1307,6 +1616,147 @@ fn read_environment(
         manifest,
         created_at,
         created_by,
+    })
+}
+
+fn read_verifier_job(
+    connection: &Connection,
+    job_id: &str,
+) -> Result<VerifierJobSnapshot, AppError> {
+    type RawJob = (
+        String,
+        String,
+        String,
+        i32,
+        Option<String>,
+        Option<i64>,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        i64,
+        i64,
+    );
+    let row: Option<RawJob> = connection
+        .query_row(
+            "SELECT input_json, canonical_input_hash, state, priority, lease_owner, lease_expires_at, attempt_count, progress_json, result_artifact_hash, last_error_json, actor, created_at, updated_at FROM jobs WHERE job_id = ?1 AND job_type = 'lean_elaboration'",
+            [job_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| AppError::database("read verifier job", error))?;
+    let Some((
+        input_json,
+        canonical_input_hash,
+        state,
+        priority,
+        lease_owner,
+        lease_expires_at,
+        attempt_count,
+        progress_json,
+        result_artifact_hash,
+        last_error_json,
+        actor,
+        created_at,
+        updated_at,
+    )) = row
+    else {
+        return Err(AppError::new(
+            "MCL_VERIFIER_JOB_NOT_FOUND",
+            format!("verifier job {job_id} does not exist"),
+            false,
+            "Use an exact verifier job ID returned by enqueue or listing.",
+        ));
+    };
+    let request: VerifierJobRequest = serde_json::from_str(&input_json).map_err(|error| {
+        AppError::new(
+            "MCL_VERIFIER_JOB_INTEGRITY_FAILED",
+            format!("stored verifier request is invalid: {error}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    request.validate().map_err(|error| {
+        AppError::new(
+            "MCL_VERIFIER_JOB_INTEGRITY_FAILED",
+            format!("stored verifier request fails validation: {error}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    let computed_hash = value_hash(&serde_json::to_value(&request).map_err(|error| {
+        AppError::new(
+            "MCL_VERIFIER_JOB_INTEGRITY_FAILED",
+            error.to_string(),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?)?;
+    if computed_hash != canonical_input_hash {
+        return Err(AppError::new(
+            "MCL_VERIFIER_JOB_INTEGRITY_FAILED",
+            format!("stored verifier job input hash disagrees for {job_id}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        ));
+    }
+    let attempt_count = u32::try_from(attempt_count).map_err(|_| {
+        AppError::new(
+            "MCL_VERIFIER_JOB_INTEGRITY_FAILED",
+            "stored verifier attempt count is outside range",
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    Ok(VerifierJobSnapshot {
+        job_id: job_id.to_owned(),
+        request,
+        canonical_input_hash,
+        state: VerifierJobState::from_str(&state)?,
+        priority,
+        lease_owner,
+        lease_expires_at,
+        attempt_count,
+        progress: serde_json::from_str(&progress_json).map_err(|error| {
+            AppError::new(
+                "MCL_VERIFIER_JOB_INTEGRITY_FAILED",
+                format!("stored verifier progress is invalid: {error}"),
+                false,
+                "Quarantine the database and restore a verified backup.",
+            )
+        })?,
+        result_artifact_hash,
+        last_error: last_error_json
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map_err(|error| {
+                AppError::new(
+                    "MCL_VERIFIER_JOB_INTEGRITY_FAILED",
+                    format!("stored verifier error is invalid: {error}"),
+                    false,
+                    "Quarantine the database and restore a verified backup.",
+                )
+            })?,
+        actor,
+        created_at,
+        updated_at,
     })
 }
 
@@ -1602,7 +2052,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("migration succeeds");
 
-        assert_eq!(store.migration_version().expect("migration version"), 7);
+        assert_eq!(store.migration_version().expect("migration version"), 8);
         assert_eq!(store.journal_mode().expect("journal mode"), "wal");
         assert_eq!(store.integrity_check().expect("integrity"), "ok");
         store.schema_check().expect("required schema exists");
@@ -1616,11 +2066,11 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("first migration succeeds");
         store.migrate().expect("second migration succeeds");
-        assert_eq!(store.migration_version().expect("migration version"), 7);
+        assert_eq!(store.migration_version().expect("migration version"), 8);
     }
 
     #[test]
-    fn migration_advances_v6_database() {
+    fn migration_advances_v7_database() {
         let temporary = TempDir::new().expect("temporary directory");
         let database = temporary.path().join("state.sqlite3");
         let mut store = Store::open(&database).expect("database opens");
@@ -1632,6 +2082,7 @@ mod tests {
             (4_i64, "edge invariants", MIGRATION_0004),
             (5_i64, "run event invariants", MIGRATION_0005),
             (6_i64, "environment invariants", MIGRATION_0006),
+            (7_i64, "artifact invariants", MIGRATION_0007),
         ] {
             transaction
                 .execute_batch(sql)
@@ -1644,10 +2095,10 @@ mod tests {
                 .expect("legacy migration recorded");
         }
         transaction.commit().expect("legacy migrations commit");
-        assert_eq!(store.migration_version().expect("legacy version"), 6);
+        assert_eq!(store.migration_version().expect("legacy version"), 7);
 
         store.migrate().expect("forward migration succeeds");
-        assert_eq!(store.migration_version().expect("current version"), 7);
+        assert_eq!(store.migration_version().expect("current version"), 8);
         assert!(
             store
                 .connection
@@ -1667,6 +2118,16 @@ mod tests {
                     |row| row.get::<_, bool>(0),
                 )
                 .expect("artifact attribution column")
+        );
+        assert!(
+            store
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('jobs') WHERE name = 'input_json')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .expect("verifier job input column")
         );
     }
 
@@ -1793,6 +2254,204 @@ mod tests {
                 .expect_err("corruption detected")
                 .code,
             "MCL_ARTIFACT_INTEGRITY_FAILED"
+        );
+    }
+
+    fn verifier_request(environment_hash: &str, artifact_hash: &str) -> VerifierJobRequest {
+        VerifierJobRequest {
+            schema_version: "verifier_request/1".to_owned(),
+            environment_hash: environment_hash.to_owned(),
+            module_artifact_hash: artifact_hash.to_owned(),
+            declaration_name: "MathOS.Verifier.fixture".to_owned(),
+        }
+    }
+
+    #[test]
+    fn verifier_jobs_are_idempotent_leased_and_recovered_after_expiry() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let environment = store
+            .register_environment(
+                &environment_manifest(),
+                "environment-author",
+                "job-environment",
+            )
+            .expect("environment registers");
+        let artifact = register_lean_artifact(
+            &mut store,
+            b"theorem fixture : True := by trivial\n",
+            "job-artifact",
+        );
+        let request = verifier_request(&environment.environment_hash, &artifact.artifact_hash);
+        let queued = store
+            .enqueue_verifier_job(&request, 10, "job-author", "job-enqueue")
+            .expect("job enqueues");
+        assert_eq!(queued.state, VerifierJobState::Queued);
+        assert_eq!(queued.attempt_count, 0);
+        assert_eq!(
+            store
+                .enqueue_verifier_job(&request, 10, "job-author", "job-enqueue")
+                .expect("exact retry"),
+            queued
+        );
+        let mut changed_request = request.clone();
+        changed_request.declaration_name = "MathOS.Verifier.changed".to_owned();
+        assert_eq!(
+            store
+                .enqueue_verifier_job(&changed_request, 10, "job-author", "job-enqueue")
+                .expect_err("changed idempotent retry rejected")
+                .code,
+            "MCL_IDEMPOTENCY_CONFLICT"
+        );
+        assert_eq!(store.list_verifier_jobs(10).expect("job list").len(), 1);
+
+        let leased = store
+            .lease_next_verifier_job("worker-1", 60)
+            .expect("lease succeeds")
+            .expect("queued job exists");
+        assert_eq!(leased.job_id, queued.job_id);
+        assert_eq!(leased.state, VerifierJobState::Leased);
+        assert_eq!(leased.attempt_count, 1);
+        assert!(
+            store
+                .lease_next_verifier_job("worker-2", 60)
+                .expect("empty lease succeeds")
+                .is_none()
+        );
+        let running = store
+            .mark_verifier_job_running(&queued.job_id, "worker-1")
+            .expect("leased job starts");
+        assert_eq!(running.state, VerifierJobState::Running);
+        assert_eq!(
+            store
+                .mark_verifier_job_running(&queued.job_id, "worker-2")
+                .expect_err("wrong worker rejected")
+                .code,
+            "MCL_VERIFIER_JOB_CONFLICT"
+        );
+
+        store
+            .connection
+            .execute(
+                "UPDATE jobs SET lease_expires_at = unixepoch() - 1 WHERE job_id = ?1",
+                [&queued.job_id],
+            )
+            .expect("test expires lease");
+        assert_eq!(store.requeue_expired_verifier_jobs().expect("requeue"), 1);
+        let requeued = store
+            .get_verifier_job(&queued.job_id)
+            .expect("requeued job");
+        assert_eq!(requeued.state, VerifierJobState::Queued);
+        assert_eq!(requeued.lease_owner, None);
+        assert_eq!(requeued.attempt_count, 1);
+
+        drop(store);
+        let restarted = Store::open(&database).expect("database reopens");
+        assert_eq!(
+            restarted
+                .get_verifier_job(&queued.job_id)
+                .expect("job survives restart"),
+            requeued
+        );
+    }
+
+    #[test]
+    fn verifier_job_references_state_and_stored_input_fail_closed() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let environment = store
+            .register_environment(
+                &environment_manifest(),
+                "environment-author",
+                "job-guard-environment",
+            )
+            .expect("environment registers");
+        let artifact = register_lean_artifact(
+            &mut store,
+            b"theorem guarded : True := by trivial\n",
+            "job-guard-artifact",
+        );
+        assert_eq!(
+            store
+                .enqueue_verifier_job(
+                    &verifier_request(&"f".repeat(64), &artifact.artifact_hash),
+                    0,
+                    "job-author",
+                    "job-missing-environment",
+                )
+                .expect_err("missing environment")
+                .code,
+            "MCL_VERIFIER_ENVIRONMENT_INVALID"
+        );
+        let request = verifier_request(&environment.environment_hash, &artifact.artifact_hash);
+        let job = store
+            .enqueue_verifier_job(&request, 0, "job-author", "job-guard")
+            .expect("job enqueues");
+        assert!(
+            store
+                .connection
+                .execute(
+                    "UPDATE jobs SET state = 'succeeded' WHERE job_id = ?1",
+                    [&job.job_id],
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .connection
+                .execute("DELETE FROM jobs WHERE job_id = ?1", [&job.job_id])
+                .is_err()
+        );
+        let terminal = store
+            .enqueue_verifier_job(&request, 10, "job-author", "job-terminal")
+            .expect("terminal test job enqueues");
+        let terminal_id = terminal.job_id;
+        let leased_terminal = store
+            .lease_next_verifier_job("terminal-worker", 60)
+            .expect("terminal test lease")
+            .expect("terminal job selected");
+        assert_eq!(leased_terminal.job_id, terminal_id);
+        store
+            .mark_verifier_job_running(&terminal_id, "terminal-worker")
+            .expect("terminal job starts");
+        store
+            .connection
+            .execute(
+                "UPDATE jobs SET state = 'succeeded', lease_owner = NULL, lease_expires_at = NULL, result_artifact_hash = ?2 WHERE job_id = ?1",
+                params![terminal_id, artifact.artifact_hash],
+            )
+            .expect("valid terminal transition");
+        assert!(
+            store
+                .connection
+                .execute(
+                    "UPDATE jobs SET progress_json = '{\"forged\":true}' WHERE job_id = ?1",
+                    [&terminal_id],
+                )
+                .is_err()
+        );
+
+        store
+            .connection
+            .execute("DROP TRIGGER jobs_reject_identity_rewrite", [])
+            .expect("test removes identity trigger");
+        store
+            .connection
+            .execute(
+                "UPDATE jobs SET input_json = '{}' WHERE job_id = ?1",
+                [&job.job_id],
+            )
+            .expect("test corrupts input");
+        assert_eq!(
+            store
+                .get_verifier_job(&job.job_id)
+                .expect_err("corrupt job rejected")
+                .code,
+            "MCL_VERIFIER_JOB_INTEGRITY_FAILED"
         );
     }
 

@@ -37,6 +37,8 @@ Phase 3 environment evidence: a closed canonical manifest, exact hash, immutable
 
 Phase 3 artifact evidence: Lean source bytes can be validated, atomically content-addressed, registered with immutable metadata, verified after restart, and materialized into a fresh contained workspace. Formalizations require the exact registered Lean source hash. This establishes artifact integrity only, so every verification item remains unchecked.
 
+Phase 3 job evidence: exact verifier requests can be validated, durably queued, idempotently retried, transactionally leased, recovered after lease expiry, and inspected after restart. No Lean process or evidence authority exists yet, so every verification item remains unchecked.
+
 ## Search and context
 
 - [ ] Exact, FTS, graph, declaration, and failure searches work.

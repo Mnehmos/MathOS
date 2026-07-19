@@ -105,7 +105,7 @@ fn init_creates_real_storage_and_health_passes() {
         String::from_utf8_lossy(&initialized.stderr)
     );
     let value = parse_stdout(&initialized);
-    assert_eq!(value["migration_version"], 7);
+    assert_eq!(value["migration_version"], 8);
     assert_eq!(value["journal_mode"], "wal");
     assert!(root.path().join("mcl.toml").is_file());
     assert!(root.path().join(".mcl/state.sqlite3").is_file());
@@ -364,6 +364,137 @@ fn artifact_cli_ingests_dry_runs_retries_verifies_and_detects_corruption() {
     assert!(!corrupted.status.success());
     let error: Value = serde_json::from_slice(&corrupted.stderr).expect("artifact error JSON");
     assert_eq!(error["code"], "MCL_ARTIFACT_INTEGRITY_FAILED");
+}
+
+#[test]
+fn verifier_job_cli_dry_runs_enqueues_retries_and_survives_restart() {
+    let root = TempDir::new().expect("temporary root");
+    assert!(
+        mcl(
+            &root,
+            &[
+                "init",
+                "--actor",
+                "verifier-cli-test",
+                "--idempotency-key",
+                "verifier-cli-init",
+            ],
+        )
+        .status
+        .success()
+    );
+    let environment = mcl(
+        &root,
+        &[
+            "environment",
+            "register",
+            "--manifest-json",
+            include_str!("../fixtures/environment/lean-4.32-local.json"),
+            "--actor",
+            "verifier-cli-test",
+            "--idempotency-key",
+            "verifier-cli-environment",
+        ],
+    );
+    assert!(environment.status.success());
+    let environment_hash = include_str!("../fixtures/environment/lean-4.32-local.sha256").trim();
+    let module = root.path().join("VerifierJob.lean");
+    fs::write(&module, b"theorem jobFixture : True := by trivial\n").expect("module writes");
+    let metadata = json!({
+        "schema_version": "artifact_metadata/1",
+        "media_type": "text/x-lean",
+        "creation_source": "user_ingest",
+        "license_expression": "PolyForm-Noncommercial-1.0.0",
+        "restriction": "restricted",
+        "semantic_metadata": {"declaration_name": "MathOS.Verifier.jobFixture"}
+    });
+    let ingested = mcl_owned(
+        &root,
+        &[
+            "artifact".to_owned(),
+            "ingest".to_owned(),
+            "--input-file".to_owned(),
+            module.to_string_lossy().into_owned(),
+            "--metadata-json".to_owned(),
+            metadata.to_string(),
+            "--actor".to_owned(),
+            "verifier-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "verifier-cli-artifact".to_owned(),
+        ],
+    );
+    assert!(ingested.status.success());
+    let ingested = parse_stdout(&ingested);
+    let artifact_hash = ingested["proposed_artifact_hash"]
+        .as_str()
+        .expect("artifact hash");
+    let check = |dry_run: bool, idempotency_key: &str| {
+        let mut arguments = vec![
+            "verify".to_owned(),
+            "check".to_owned(),
+            "--environment-hash".to_owned(),
+            environment_hash.to_owned(),
+            "--module-artifact-hash".to_owned(),
+            artifact_hash.to_owned(),
+            "--declaration-name".to_owned(),
+            "MathOS.Verifier.jobFixture".to_owned(),
+            "--priority".to_owned(),
+            "7".to_owned(),
+            "--actor".to_owned(),
+            "verifier-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            idempotency_key.to_owned(),
+        ];
+        if dry_run {
+            arguments.push("--dry-run".to_owned());
+        }
+        mcl_owned(&root, &arguments)
+    };
+
+    let preview = parse_stdout(&check(true, "verifier-cli-preview"));
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["job"], Value::Null);
+    assert_eq!(parse_stdout(&mcl(&root, &["verify", "list"])), json!([]));
+
+    let created = parse_stdout(&check(false, "verifier-cli-check"));
+    assert_eq!(created["job"]["state"], "queued");
+    assert_eq!(created["job"]["attempt_count"], 0);
+    assert_eq!(
+        parse_stdout(&check(false, "verifier-cli-check"))["job"],
+        created["job"]
+    );
+    let job_id = created["job"]["job_id"].as_str().expect("job ID");
+    assert_eq!(
+        parse_stdout(&mcl(&root, &["verify", "status", "--job-id", job_id])),
+        created["job"]
+    );
+    assert_eq!(
+        parse_stdout(&mcl(&root, &["verify", "list", "--limit", "10"]))
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+
+    let injection = mcl(
+        &root,
+        &[
+            "verify",
+            "check",
+            "--environment-hash",
+            environment_hash,
+            "--module-artifact-hash",
+            artifact_hash,
+            "--declaration-name",
+            "Truth;rm",
+            "--actor",
+            "verifier-cli-test",
+            "--idempotency-key",
+            "verifier-cli-injection",
+        ],
+    );
+    assert!(!injection.status.success());
+    let error: Value = serde_json::from_slice(&injection.stderr).expect("verifier error JSON");
+    assert_eq!(error["code"], "MCL_VERIFIER_REQUEST_INVALID");
 }
 
 #[test]

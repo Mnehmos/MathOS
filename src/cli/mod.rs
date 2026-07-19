@@ -10,6 +10,7 @@ use crate::config::ResolvedConfig;
 use crate::domain::{
     ArtifactMetadata, EdgeDraft, EdgeKind, EnvironmentManifest, GraphTraversalRequest, RecordDraft,
     RecordKind, RecordSnapshot, RunEventDraft, RunEventKind, RunKind, TraversalDirection,
+    VerifierJobRequest,
 };
 use crate::error::AppError;
 
@@ -47,6 +48,8 @@ enum Command {
     Environment(EnvironmentOptions),
     /// Ingest, retrieve, or verify a canonical content-addressed artifact.
     Artifact(ArtifactOptions),
+    /// Enqueue or inspect verifier work without directly mutating mathematical status.
+    Verify(VerifyOptions),
     /// Serve the Model Context Protocol over newline-delimited stdio.
     Serve,
     /// Create, version, or retrieve a source through the canonical application path.
@@ -147,6 +150,49 @@ struct ArtifactGetOptions {
 
 #[derive(Debug, Args)]
 struct ArtifactListOptions {
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+}
+
+#[derive(Debug, Args)]
+struct VerifyOptions {
+    #[command(subcommand)]
+    action: VerifyAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum VerifyAction {
+    Check(VerifyCheckOptions),
+    Status(VerifyStatusOptions),
+    List(VerifyListOptions),
+}
+
+#[derive(Debug, Args)]
+struct VerifyCheckOptions {
+    #[arg(long)]
+    environment_hash: String,
+
+    #[arg(long)]
+    module_artifact_hash: String,
+
+    #[arg(long)]
+    declaration_name: String,
+
+    #[arg(long, default_value_t = 0)]
+    priority: i32,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct VerifyStatusOptions {
+    #[arg(long)]
+    job_id: String,
+}
+
+#[derive(Debug, Args)]
+struct VerifyListOptions {
     #[arg(long, default_value_t = 20)]
     limit: usize,
 }
@@ -381,6 +427,7 @@ impl Cli {
             }
             Command::Environment(options) => execute_environment(&config, options),
             Command::Artifact(options) => execute_artifact(&config, options),
+            Command::Verify(options) => execute_verify(&config, options),
             Command::Serve => {
                 crate::mcp::serve_stdio(config)?;
                 Ok(CliOutcome {
@@ -407,6 +454,36 @@ impl Cli {
             Command::Research(options) => execute_research(&config, options),
         }
     }
+}
+
+fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<CliOutcome, AppError> {
+    let mut application = Application::open(config)?;
+    let value = match options.action {
+        VerifyAction::Check(options) => {
+            let request = VerifierJobRequest {
+                schema_version: "verifier_request/1".to_owned(),
+                environment_hash: options.environment_hash,
+                module_artifact_hash: options.module_artifact_hash,
+                declaration_name: options.declaration_name,
+            };
+            to_value(application.enqueue_verifier_job(
+                &request,
+                options.priority,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("verifier enqueue outcome is serializable")
+        }
+        VerifyAction::Status(options) => to_value(application.get_verifier_job(&options.job_id)?)
+            .expect("verifier job is serializable"),
+        VerifyAction::List(options) => to_value(application.list_verifier_jobs(options.limit)?)
+            .expect("verifier job list is serializable"),
+    };
+    Ok(CliOutcome {
+        value,
+        success: true,
+    })
 }
 
 fn execute_artifact(

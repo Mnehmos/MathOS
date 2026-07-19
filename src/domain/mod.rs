@@ -9,6 +9,7 @@ use crate::error::AppError;
 pub mod artifact;
 pub mod environment;
 pub mod schemas;
+pub mod verifier;
 
 pub use artifact::{
     ArtifactCreationSource, ArtifactMediaType, ArtifactMetadata, ArtifactRestriction,
@@ -19,6 +20,7 @@ pub use environment::{
     ResourceLimits, TrustProfile, VerifierArgument, VerifierCommandTemplate, VerifierExecutable,
     WorkingDirectoryPolicy,
 };
+pub use verifier::{VerifierJobRequest, VerifierJobSnapshot, VerifierJobState};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

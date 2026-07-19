@@ -12,9 +12,11 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 Transition from Phase 2 canonical interfaces to Phase 3 formalization and Lean authority.
 
-Active implementation issue: [#16, implement canonical verifier artifacts](https://github.com/Mnehmos/MathOS/issues/16).
+Active implementation issue: [#17, implement the contained Lean execution boundary](https://github.com/Mnehmos/MathOS/issues/17).
 
 Issues [#14](https://github.com/Mnehmos/MathOS/issues/14) and [#15](https://github.com/Mnehmos/MathOS/issues/15) closed after GitHub Actions run `29699563931` passed all jobs on fresh Linux and Windows runners.
+
+Issue [#16](https://github.com/Mnehmos/MathOS/issues/16) closed after GitHub Actions run `29700398370` passed all jobs on the exact canonical artifact tree.
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -101,19 +103,27 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - CLI input paths must resolve to regular files inside the instance root. Symbolic links and outside-root paths fail closed.
 - Verified artifact materialization accepts only a fresh temporary workspace and one verifier-selected plain file name. Traversal and overwrite attempts fail.
 - Formalizations now require their exact module artifact to be registered as `text/x-lean`. Missing and wrong-media artifacts fail before persistence.
+- Verifier intent has a closed `verifier_request/1` Rust type and committed JSON Schema containing only exact environment and Lean source hashes plus a bounded declaration name.
+- Verifier requests expose no executable, shell, working directory, environment-variable, model, provider, or mathematical-status field.
+- Migration 0008 persists canonical request JSON, SHA-256 input identity, actor, priority, UUIDv7 job identity, state, lease, attempts, progress, result reference, and structured last error.
+- Database triggers reject verifier job identity rewrites, deletion, and illegal state transitions.
+- Enqueue is actor-attributed and idempotent. Exact retries return the original job, changed retries fail closed, and missing environments or non-Lean artifacts never enter the queue.
+- Worker leases are bounded and transactional. Only one worker can select a queued job, wrong-worker starts fail, and expired leased or running jobs return safely to the queue without losing attempt history.
+- `mcl verify check/status/list` uses the shared application service. Dry runs validate exact references and predict input identity without mutation.
+- Verifier jobs remain explicitly non-authoritative. No Lean process execution, evidence record, or derived mathematical status exists in this slice.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, complete MCP mutation surface, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Complete and publish issue #16 canonical artifact storage and require fresh Linux and Windows CI.
-- Design the narrow Lean subprocess boundary only after the exact environment and module artifact both resolve from canonical state.
+- Publish the first issue #17 durable verifier-job slice and require fresh Linux and Windows CI.
+- Implement the narrow Lean subprocess boundary only from leased canonical jobs whose exact environment and module artifact both resolve.
 - Keep the local Lean launch limitation visible without misclassifying it as a project-wide blocker.
 
 ## Next highest-priority criteria
 
-1. Obtain remote CI evidence for artifact persistence, forward migration, CLI, corruption detection, and formalization binding.
-2. Implement the narrow Lean elaboration boundary using registered environments and canonical module artifacts.
+1. Obtain remote CI evidence for durable verifier input, leasing, recovery, CLI, and migration behavior.
+2. Implement the narrow Lean elaboration boundary using leased jobs, registered environments, and canonical module artifacts.
 3. Implement evidence records and derived truth rules before any proof-status surface exists.
 4. Complete Pilot A through the real interfaces only after those authority controls exist.
 
@@ -133,12 +143,13 @@ Observed validation evidence for this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 59 Rust unit tests passed;
-- 8 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
+- 63 Rust unit tests passed;
+- 9 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.
 - GitHub Actions run `29699563931` passed all five jobs for the completed MCP invalid-action and environment-persistence state, including exact pinned Lean availability and both Rust operating-system targets.
-- The canonical artifact slice awaits publication and a fresh branch CI run before issue #16 can close.
+- GitHub Actions run `29700398370` passed all five jobs for the canonical artifact slice, including both Rust operating-system targets.
+- The first durable verifier-job slice awaits publication and a fresh branch CI run. Issue #17 remains open after that slice because Lean execution is not implemented.
 
 ## Release readiness
 

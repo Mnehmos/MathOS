@@ -11,7 +11,8 @@ use crate::config::ResolvedConfig;
 use crate::domain::{
     ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeSnapshot, EnvironmentManifest,
     EnvironmentSnapshot, GraphTraversalHit, GraphTraversalRequest, RecordDraft, RecordSnapshot,
-    RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
+    RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot, VerifierJobRequest,
+    VerifierJobSnapshot,
 };
 use crate::error::AppError;
 use crate::store::Store;
@@ -77,6 +78,13 @@ pub struct ArtifactVerificationReport {
     pub artifact: ArtifactSnapshot,
     pub content_hash_verified: bool,
     pub metadata_verified: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VerifierEnqueueOutcome {
+    pub dry_run: bool,
+    pub proposed_input_hash: String,
+    pub job: Option<VerifierJobSnapshot>,
 }
 
 pub struct Application {
@@ -451,6 +459,41 @@ impl Application {
             content_hash_verified: true,
             metadata_verified: true,
         })
+    }
+
+    pub fn enqueue_verifier_job(
+        &mut self,
+        request: &VerifierJobRequest,
+        priority: i32,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<VerifierEnqueueOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let proposed_input_hash = self
+            .store
+            .validate_verifier_job_enqueue(request, priority)?;
+        let job = if dry_run {
+            None
+        } else {
+            Some(
+                self.store
+                    .enqueue_verifier_job(request, priority, actor, idempotency_key)?,
+            )
+        };
+        Ok(VerifierEnqueueOutcome {
+            dry_run,
+            proposed_input_hash,
+            job,
+        })
+    }
+
+    pub fn get_verifier_job(&self, job_id: &str) -> Result<VerifierJobSnapshot, AppError> {
+        self.store.get_verifier_job(job_id)
+    }
+
+    pub fn list_verifier_jobs(&self, limit: usize) -> Result<Vec<VerifierJobSnapshot>, AppError> {
+        self.store.list_verifier_jobs(limit)
     }
 
     pub fn create_record(
