@@ -13,7 +13,7 @@ This policy is an administrative control. It applies to maintainers, contributor
 3. Every pull request declares its change class before review.
 4. Tests, verifier evidence, provenance, and review requirements scale with risk.
 5. Research and experiment branches may move quickly, but their output is not trusted until it passes the normal merge gates.
-6. Force pushes, branch deletion, and direct commits to main are prohibited after repository bootstrap.
+6. Force pushes to main, deletion of main, and direct commits to main are prohibited after repository bootstrap. Merged short-lived branches should be deleted.
 7. A passing generator, model, or proof search process is not its own verifier.
 
 ## Branch naming
@@ -120,9 +120,9 @@ Before production behavior moves from research or experiment work into main:
 
 1. Restate the behavior as a specification.
 2. Add a failing test or formal obligation.
-3. implement the smallest passing change in a normal feature or fix branch.
+3. Implement the smallest passing change in a normal feature or fix branch.
 4. Run independent verification.
-5. attach provenance for imported data, generated artifacts, and external results.
+5. Attach provenance for imported data, generated artifacts, and external results.
 
 Exploratory success is evidence for a hypothesis, not proof of correctness.
 
@@ -162,4 +162,4 @@ No pull request may convert an unverified output into a trusted result solely be
 
 ## Repository settings
 
-Main should require pull requests, resolved conversations, required status checks, and code-owner review. Force pushes and deletion should remain disabled. Administrator bypass is reserved for repository recovery and documented emergencies.
+Main should require pull requests, resolved conversations, required status checks, and code-owner review. Force pushes to main and deletion of main should remain disabled. Private vulnerability reporting should remain enabled. Administrator bypass is reserved for repository recovery and documented emergencies.
