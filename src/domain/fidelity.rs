@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::canonical::value_hash;
+use crate::domain::evidence::EvidenceSnapshot;
 use crate::domain::schemas::ExactVersionReference;
 use crate::error::AppError;
 
@@ -85,6 +86,22 @@ pub struct FidelityReviewReport {
     pub formalization_author: String,
     pub exact_theorem_type: String,
     pub declaration_hash: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FidelityReviewHistoryEntry {
+    pub status: FidelityStatus,
+    pub evidence: EvidenceSnapshot,
+    pub report_artifact_hash: String,
+    pub report: FidelityReviewReport,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FidelityStatusSnapshot {
+    pub formalization: ExactVersionReference,
+    pub status: FidelityStatus,
+    pub head_evidence_id: Option<String>,
+    pub history: Vec<FidelityReviewHistoryEntry>,
 }
 
 impl FidelityReviewRequest {

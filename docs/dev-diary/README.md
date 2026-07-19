@@ -35,3 +35,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 25. [A Report Cannot Promote Itself](0025-a-report-cannot-promote-itself.md)
 26. [The Proof Brings Its Ancestors](0026-the-proof-brings-its-ancestors.md)
 27. [A Correct Theorem Can Mean the Wrong Thing](0027-a-correct-theorem-can-mean-the-wrong-thing.md)
+28. [Disagreement Needs an Address](0028-disagreement-needs-an-address.md)

@@ -31,8 +31,9 @@ pub use evidence::{
     EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult, EvidenceSnapshot,
 };
 pub use fidelity::{
-    AmbiguityDisposition, DefinitionMapping, FidelityReviewLevel, FidelityReviewReport,
-    FidelityReviewRequest, FidelityStatus, FidelityVerdict,
+    AmbiguityDisposition, DefinitionMapping, FidelityReviewHistoryEntry, FidelityReviewLevel,
+    FidelityReviewReport, FidelityReviewRequest, FidelityStatus, FidelityStatusSnapshot,
+    FidelityVerdict,
 };
 pub use verifier::{
     VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,

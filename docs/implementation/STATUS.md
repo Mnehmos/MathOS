@@ -143,14 +143,21 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Audit reports are schema-closed, hash-bound to their request and artifacts, and permanently non-authoritative. Local reports state honestly that memory and network isolation are not enforced.
 - `mcl verify promote-audit` revalidates the exact terminal report and atomically creates one diagnostic proof-closure scan plus one diagnostic axiom audit. Exact retries return the same pair, while partial or cross-object promotion fails closed.
 - Unit coverage exercises policy identity, closed schemas, report shape, output ambiguity, duplicate axioms, job retry, policy mismatch, restart recovery, evidence-pair atomicity, immutable retrieval, and corruption detection. The real pinned Lean integration is delegated to the protected Linux CI job because this managed workspace has no Lean executable.
+- Statement fidelity now has closed request and report contracts covering all six specified review levels, compatible verdicts, explicit findings, definition mappings, ambiguity disposition, exact lineage, supporting artifacts, producing runs, and supersession.
+- Fidelity review uses the shared application service through both CLI and MCP. The attributed actor must be the named reviewer, and verified review requires role separation from the formalization author.
+- The application, rather than the caller, creates a private canonical JSON report with controlled `human_review` provenance. Public artifact ingestion cannot forge that creation source.
+- Fidelity evidence is immutable, reviewed rather than authoritative, bound to one exact formalization and run, deterministic under retry, and durable across process restart.
+- Fidelity status is derived from exactly one unsuperseded evidence head. Earlier reviews remain visible as `superseded`; stale reviewers receive a compare-and-swap conflict.
+- Status reads revalidate the complete evidence chain and controlled CAS reports. Integration coverage rejects self-verification, missing artifacts, substituted source lineage, erased ambiguity, stale heads, forged report reuse, and corrupted report bytes.
+- Fidelity evidence does not alter proof, disproof, novelty, or publication status. Mathematical truth derivation remains unavailable.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, complete MCP mutation surface, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Implement issue #20 role-separated statement fidelity evidence as an independent axis from Lean verification.
+- Verify issue #20 role-separated statement fidelity evidence on the exact GitHub tree and close the issue only after fresh Linux, Windows, storage, Python, and pinned Lean jobs pass.
 - Keep proof authority and mathematical status impossible while fidelity and publication-profile controls remain incomplete.
-- The first issue #20 slice defines closed, versioned request and report contracts, all six specified review levels, explicit findings and definition mappings, ambiguity disposition, compatible verdict rules, and report-level reviewer role separation. Committed JSON Schemas and adversarial unit tests exist. Persistence, derived status, shared application and CLI paths, supersession, and restart evidence remain active work.
+- The issue #20 implementation is complete locally: contracts, persistence, controlled reports, exact lineage, role separation, supersession, derived status, shared CLI and MCP paths, restart behavior, and adversarial integrity checks pass. Remote exact-tree CI evidence remains active work.
 
 ## Next highest-priority criteria
 
@@ -175,7 +182,7 @@ Observed validation evidence for this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 73 Rust unit tests passed;
+- 76 Rust unit tests passed;
 - 9 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.

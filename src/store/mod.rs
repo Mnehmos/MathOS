@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
@@ -9,7 +10,9 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::canonical::{canonical_json, record_version_hash, value_hash};
-use crate::domain::schemas::{FormalizationPayload, validate_record_payload};
+use crate::domain::schemas::{
+    ExactVersionReference, FormalizationPayload, validate_record_payload,
+};
 use crate::domain::{
     ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest,
     EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult,
@@ -1196,6 +1199,123 @@ impl Store {
         Ok(snapshot)
     }
 
+    pub fn create_fidelity_evidence(
+        &mut self,
+        payload: &EvidencePayload,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<EvidenceSnapshot, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        payload.validate()?;
+        if payload.evidence_kind != EvidenceKind::StatementFidelityReview
+            || payload.authority_class != EvidenceAuthorityClass::Reviewed
+            || payload.verifier_or_reviewer_identity != actor
+        {
+            return Err(AppError::new(
+                "MCL_FIDELITY_EVIDENCE_FORBIDDEN",
+                "this path can create only actor-bound reviewed statement-fidelity evidence",
+                false,
+                "Submit the closed fidelity review through the shared application service.",
+            ));
+        }
+        validate_fidelity_evidence_references(&self.connection, payload)?;
+        let evidence_hash = payload.evidence_hash()?;
+        let input_hash = value_hash(&json!({
+            "operation": "evidence.create_fidelity",
+            "payload": payload,
+            "actor": actor,
+        }))?;
+        let payload_json = String::from_utf8(canonical_json(
+            &serde_json::to_value(payload).map_err(|error| {
+                AppError::new(
+                    "MCL_EVIDENCE_INVALID",
+                    error.to_string(),
+                    false,
+                    "Report this deterministic fidelity evidence serialization defect.",
+                )
+            })?,
+        )?)
+        .map_err(|error| {
+            AppError::new(
+                "MCL_CANONICAL_JSON_INVALID",
+                error.to_string(),
+                false,
+                "Report this canonical JSON encoding defect.",
+            )
+        })?;
+        let artifact_hashes_json =
+            serde_json::to_string(&payload.artifact_hashes).map_err(|error| {
+                AppError::new(
+                    "MCL_EVIDENCE_INVALID",
+                    error.to_string(),
+                    false,
+                    "Report this fidelity evidence artifact serialization defect.",
+                )
+            })?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start fidelity evidence creation", error))?;
+        if let Some(existing) = read_idempotent_result(
+            &transaction,
+            "evidence.create_fidelity",
+            idempotency_key,
+            &input_hash,
+        )? {
+            return Ok(existing);
+        }
+        validate_fidelity_evidence_head(&transaction, payload)?;
+        if transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM evidence WHERE evidence_hash = ?1)",
+                [&evidence_hash],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::database("search fidelity evidence", error))?
+        {
+            return Err(AppError::new(
+                "MCL_EVIDENCE_EXISTS",
+                format!("evidence {evidence_hash} already exists"),
+                false,
+                "Retrieve the existing review or retry with the original idempotency key.",
+            ));
+        }
+        let evidence_id = Uuid::now_v7().to_string();
+        transaction
+            .execute(
+                "INSERT INTO evidence(evidence_id, subject_object_id, subject_version_hash, evidence_kind, result, authority_class, run_id, environment_hash, artifact_hash, metadata_json, created_at, superseded_by, evidence_hash, job_id, artifact_hashes_json, verifier_identity, created_by, stale_reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, unixepoch(), NULL, ?10, NULL, ?11, ?12, ?13, ?14)",
+                params![
+                    evidence_id,
+                    payload.subject.object_id,
+                    payload.subject.version_hash,
+                    payload.evidence_kind.as_str(),
+                    payload.result.as_str(),
+                    payload.authority_class.as_str(),
+                    payload.producing_run_id,
+                    payload.artifact_hashes.first(),
+                    payload_json,
+                    evidence_hash,
+                    artifact_hashes_json,
+                    payload.verifier_or_reviewer_identity,
+                    actor,
+                    payload.stale_reason,
+                ],
+            )
+            .map_err(|error| AppError::database("insert fidelity evidence", error))?;
+        let snapshot = read_evidence(&transaction, &evidence_id)?;
+        write_idempotent_result(
+            &transaction,
+            "evidence.create_fidelity",
+            idempotency_key,
+            &input_hash,
+            &snapshot,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit fidelity evidence", error))?;
+        Ok(snapshot)
+    }
+
     pub fn create_audit_evidence_pair(
         &mut self,
         payloads: &[EvidencePayload; 2],
@@ -1358,6 +1478,26 @@ impl Store {
             .map_err(|error| AppError::database("list evidence", error))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| AppError::database("read evidence list", error))?;
+        ids.iter()
+            .map(|evidence_id| read_evidence(&self.connection, evidence_id))
+            .collect()
+    }
+
+    pub fn list_fidelity_evidence(
+        &self,
+        subject: &ExactVersionReference,
+    ) -> Result<Vec<EvidenceSnapshot>, AppError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT evidence_id FROM evidence WHERE subject_object_id = ?1 AND subject_version_hash = ?2 AND evidence_kind = 'statement_fidelity_review' ORDER BY created_at, evidence_id")
+            .map_err(|error| AppError::database("prepare fidelity evidence list", error))?;
+        let ids = statement
+            .query_map(params![subject.object_id, subject.version_hash], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|error| AppError::database("list fidelity evidence", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AppError::database("read fidelity evidence list", error))?;
         ids.iter()
             .map(|evidence_id| read_evidence(&self.connection, evidence_id))
             .collect()
@@ -2231,6 +2371,130 @@ fn validate_audit_evidence_references(
                 "Register and verify every exact audit artifact before promotion.",
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_fidelity_evidence_references(
+    connection: &Connection,
+    payload: &EvidencePayload,
+) -> Result<(), AppError> {
+    let kind = connection
+        .query_row(
+            "SELECT r.record_type FROM records r JOIN record_versions v ON v.object_id = r.object_id WHERE r.object_id = ?1 AND v.version_hash = ?2",
+            params![payload.subject.object_id, payload.subject.version_hash],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| AppError::database("validate fidelity subject", error))?;
+    if kind.as_deref() != Some("formalization") {
+        return Err(AppError::new(
+            "MCL_FIDELITY_SUBJECT_INVALID",
+            "fidelity evidence subject is not an exact formalization version",
+            false,
+            "Review one exact canonical formalization version.",
+        ));
+    }
+    let run_id = payload
+        .producing_run_id
+        .as_deref()
+        .expect("validated fidelity run ID");
+    if !connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM runs WHERE run_id = ?1)",
+            [run_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| AppError::database("validate fidelity run", error))?
+    {
+        return Err(AppError::new(
+            "MCL_FIDELITY_RUN_INVALID",
+            "fidelity evidence producing run does not exist",
+            false,
+            "Start and reference an exact canonical review run.",
+        ));
+    }
+    let mut controlled_report = false;
+    for hash in &payload.artifact_hashes {
+        let artifact = read_artifact(connection, hash)?;
+        if artifact.media_type == crate::domain::ArtifactMediaType::Json
+            && artifact.creation_source == crate::domain::ArtifactCreationSource::HumanReview
+            && artifact.restriction == crate::domain::ArtifactRestriction::Private
+            && artifact
+                .semantic_metadata
+                .get("artifact_role")
+                .is_some_and(|role| role == "fidelity_review_report")
+        {
+            controlled_report = true;
+        }
+    }
+    if !controlled_report {
+        return Err(AppError::new(
+            "MCL_FIDELITY_REPORT_INVALID",
+            "fidelity evidence lacks a controlled private review report",
+            false,
+            "Create the report through the shared fidelity review application path.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_fidelity_evidence_head(
+    connection: &Connection,
+    payload: &EvidencePayload,
+) -> Result<(), AppError> {
+    let mut statement = connection
+        .prepare("SELECT evidence_id FROM evidence WHERE subject_object_id = ?1 AND subject_version_hash = ?2 AND evidence_kind = 'statement_fidelity_review' ORDER BY created_at, evidence_id")
+        .map_err(|error| AppError::database("prepare fidelity evidence head", error))?;
+    let rows = statement
+        .query_map(
+            params![payload.subject.object_id, payload.subject.version_hash],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| AppError::database("query fidelity evidence head", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| AppError::database("read fidelity evidence head", error))?;
+    let ids = rows.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let mut superseded = BTreeSet::new();
+    for id in &rows {
+        let existing = read_evidence(connection, id).map_err(|error| {
+            AppError::new(
+                "MCL_FIDELITY_EVIDENCE_INTEGRITY_FAILED",
+                format!(
+                    "stored fidelity evidence failed integrity validation: {}",
+                    error.message
+                ),
+                false,
+                "Quarantine the database and restore a verified backup.",
+            )
+        })?;
+        if let Some(id) = existing.payload.supersedes_evidence_id {
+            superseded.insert(id);
+        }
+    }
+    let heads = ids
+        .into_iter()
+        .filter(|id| !superseded.contains(*id))
+        .collect::<Vec<_>>();
+    let expected = match heads.as_slice() {
+        [] => None,
+        [head] => Some(*head),
+        _ => {
+            return Err(AppError::new(
+                "MCL_FIDELITY_EVIDENCE_INTEGRITY_FAILED",
+                "fidelity evidence has multiple unsuperseded heads",
+                false,
+                "Quarantine the conflicting review history for explicit resolution.",
+            ));
+        }
+    };
+    if payload.supersedes_evidence_id.as_deref() != expected {
+        return Err(AppError::new(
+            "MCL_FIDELITY_REVIEW_CONFLICT",
+            "fidelity review does not supersede the current exact evidence head",
+            true,
+            "Reload fidelity status and retry against the current evidence head.",
+        ));
     }
     Ok(())
 }

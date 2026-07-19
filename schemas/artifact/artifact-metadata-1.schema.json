@@ -30,6 +30,7 @@
         "user_ingest",
         "generated",
         "verifier",
+        "human_review",
         "import",
         "migration"
       ]

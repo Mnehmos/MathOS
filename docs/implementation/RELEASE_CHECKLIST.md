@@ -23,7 +23,7 @@ Phase 2 evidence: `mcl init` and storage health work locally and in Windows and 
 - [ ] Truth status is derived and cannot be directly mutated.
 - [ ] Verified intermediate results can be promoted and searched.
 
-Phase 3 fidelity contract evidence: closed request and report types now distinguish all specified review levels, attestation, benchmark alignment, verified review, rejection, ambiguity disposition, definition mappings, and exact source, claim, formalization, run, artifact, and supersession references. The report contract rejects same-author verified review. No review persistence or derived fidelity status exists yet, so all core lifecycle criteria remain unchecked.
+Phase 3 fidelity evidence: closed request and report types distinguish all specified review levels, attestation, benchmark alignment, verified review, rejection, ambiguity disposition, definition mappings, and exact source, claim, formalization, run, artifact, and supersession references. Reviews persist through one shared CLI and MCP application path. Controlled private reports bind human-review provenance, derived status follows one compare-and-swap evidence head, and superseded reviews remain visible. Self-verification, stale heads, missing artifacts, substituted lineage, erased ambiguity, report corruption, restart, and retry paths are tested. Fidelity is only one part of the full claim lifecycle, so the complete core lifecycle criteria remain unchecked.
 
 ## Verification
 

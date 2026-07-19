@@ -210,7 +210,8 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
             "query",
             "research",
             "source",
-            "system"
+            "system",
+            "verify"
         ]
     );
     assert!(tools.iter().all(|tool| tool["inputSchema"].is_object()));
@@ -557,6 +558,13 @@ fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs(
         }),
     );
     assert_eq!(formalization["result"]["isError"], false);
+    let formalization_record = &formalization["result"]["structuredContent"]["record"];
+    let formalization_id = formalization_record["object_id"]
+        .as_str()
+        .expect("formalization object ID");
+    let formalization_hash = formalization_record["version_hash"]
+        .as_str()
+        .expect("formalization version hash");
 
     let prohibited = server.call(
         16,
@@ -666,6 +674,379 @@ fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs(
     assert_eq!(
         stale["result"]["structuredContent"]["code"],
         "MCL_RUN_EVENT_CONFLICT"
+    );
+
+    let unreviewed = server.call(
+        24,
+        "verify",
+        json!({
+            "action": "fidelity_status",
+            "formalization_object_id": formalization_id,
+            "formalization_version_hash": formalization_hash
+        }),
+    );
+    assert_eq!(unreviewed["result"]["isError"], false);
+    assert_eq!(
+        unreviewed["result"]["structuredContent"]["status"],
+        "unreviewed"
+    );
+
+    let review_request = json!({
+        "schema_version": "fidelity_review_request/1",
+        "source": {"object_id": source_id, "version_hash": source_hash},
+        "claim": {"object_id": claim_id, "version_hash": claim_hash},
+        "formalization": {
+            "object_id": formalization_id,
+            "version_hash": formalization_hash
+        },
+        "review_level": "mathematical_statement",
+        "verdict": "verified",
+        "reviewer_identity": "independent-reviewer",
+        "findings": ["The quantifier, domain, predicate, and conclusion match the recorded source claim."],
+        "ambiguity_disposition": "no_ambiguity",
+        "definition_mappings": [],
+        "supporting_artifact_hashes": [],
+        "producing_run_id": run_id,
+        "supersedes_evidence_id": null
+    });
+    let mut same_author_request = review_request.clone();
+    same_author_request["reviewer_identity"] = json!("mcp-test");
+    let same_author = server.call(
+        25,
+        "verify",
+        json!({
+            "action": "review_fidelity",
+            "request": same_author_request,
+            "actor": "mcp-test",
+            "idempotency_key": "fidelity-same-author"
+        }),
+    );
+    assert_eq!(same_author["result"]["isError"], true);
+    assert_eq!(
+        same_author["result"]["structuredContent"]["code"],
+        "MCL_FIDELITY_REPORT_INVALID"
+    );
+    let mut missing_artifact_request = review_request.clone();
+    missing_artifact_request["supporting_artifact_hashes"] = json!(["f".repeat(64)]);
+    let missing_artifact = server.call(
+        31,
+        "verify",
+        json!({
+            "action": "review_fidelity",
+            "request": missing_artifact_request,
+            "actor": "independent-reviewer",
+            "idempotency_key": "fidelity-missing-artifact"
+        }),
+    );
+    assert_eq!(missing_artifact["result"]["isError"], true);
+    assert_eq!(
+        missing_artifact["result"]["structuredContent"]["code"],
+        "MCL_ARTIFACT_NOT_FOUND"
+    );
+
+    let other_source = server.call(
+        32,
+        "source",
+        json!({
+            "action": "propose",
+            "payload": {
+                "source_type": "user_statement",
+                "title_or_label": "Unrelated source",
+                "authors_or_origin": ["Adversarial fixture"],
+                "canonical_locator": "local:unrelated-source",
+                "acquisition_date": "2026-07-19",
+                "license_expression": null,
+                "redistribution_status": "unknown",
+                "content_hash": null,
+                "citation_metadata": {},
+                "redaction_class": "private",
+                "provenance_notes": "Must not be substituted into another claim lineage",
+                "original_text": "There are infinitely many primes."
+            },
+            "searchable_text": "unrelated fidelity source",
+            "actor": "mcp-test",
+            "idempotency_key": "fidelity-unrelated-source"
+        }),
+    );
+    let other_source_record = &other_source["result"]["structuredContent"]["record"];
+    let mut wrong_lineage_request = review_request.clone();
+    wrong_lineage_request["source"] = json!({
+        "object_id": other_source_record["object_id"],
+        "version_hash": other_source_record["version_hash"]
+    });
+    let wrong_lineage = server.call(
+        33,
+        "verify",
+        json!({
+            "action": "review_fidelity",
+            "request": wrong_lineage_request,
+            "actor": "independent-reviewer",
+            "idempotency_key": "fidelity-wrong-lineage"
+        }),
+    );
+    assert_eq!(wrong_lineage["result"]["isError"], true);
+    assert_eq!(
+        wrong_lineage["result"]["structuredContent"]["code"],
+        "MCL_FIDELITY_LINEAGE_MISMATCH"
+    );
+
+    let ambiguous_claim = server.call(
+        34,
+        "claim",
+        json!({
+            "action": "propose",
+            "payload": {
+                "source_reference": {"object_id": source_id, "version_hash": source_hash},
+                "normalized_informal_statement": "Every prime number is odd.",
+                "claim_kind": "universal",
+                "logical_shape": "forall p, prime p implies odd p",
+                "assumptions": [],
+                "variables": [{"symbol": "p", "domain": "unspecified integer or natural domain", "notes": "ambiguous source domain"}],
+                "concept_links": [],
+                "source_citations": [],
+                "ambiguity_notes": ["The source does not explicitly fix the ambient number domain."]
+            },
+            "searchable_text": "ambiguous prime parity claim",
+            "actor": "mcp-test",
+            "idempotency_key": "fidelity-ambiguous-claim"
+        }),
+    );
+    let ambiguous_claim_record = &ambiguous_claim["result"]["structuredContent"]["record"];
+    let ambiguous_formalization = server.call(
+        35,
+        "formalization",
+        json!({
+            "action": "propose",
+            "payload": {
+                "claim_version": {
+                    "object_id": ambiguous_claim_record["object_id"],
+                    "version_hash": ambiguous_claim_record["version_hash"]
+                },
+                "formal_system": "lean4",
+                "environment_hash": environment_hash,
+                "module_artifact_hash": module_artifact_hash,
+                "declaration_name": "MathOS.Pilot.ambiguousPrimeParity",
+                "exact_theorem_type": "forall p : Nat, Nat.Prime p -> Odd p",
+                "declaration_hash": "e".repeat(64),
+                "import_manifest": ["Mathlib"],
+                "formalization_notes": "This variant cannot erase the recorded ambiguity.",
+                "fidelity_evidence_references": [],
+                "verification_evidence_references": []
+            },
+            "searchable_text": "ambiguous prime parity formalization",
+            "actor": "mcp-test",
+            "idempotency_key": "fidelity-ambiguous-formalization"
+        }),
+    );
+    let ambiguous_formalization_record =
+        &ambiguous_formalization["result"]["structuredContent"]["record"];
+    let mut erased_ambiguity_request = review_request.clone();
+    erased_ambiguity_request["claim"] = json!({
+        "object_id": ambiguous_claim_record["object_id"],
+        "version_hash": ambiguous_claim_record["version_hash"]
+    });
+    erased_ambiguity_request["formalization"] = json!({
+        "object_id": ambiguous_formalization_record["object_id"],
+        "version_hash": ambiguous_formalization_record["version_hash"]
+    });
+    let erased_ambiguity = server.call(
+        36,
+        "verify",
+        json!({
+            "action": "review_fidelity",
+            "request": erased_ambiguity_request,
+            "actor": "independent-reviewer",
+            "idempotency_key": "fidelity-erased-ambiguity"
+        }),
+    );
+    assert_eq!(erased_ambiguity["result"]["isError"], true);
+    assert_eq!(
+        erased_ambiguity["result"]["structuredContent"]["code"],
+        "MCL_FIDELITY_AMBIGUITY_INVALID"
+    );
+    let review_arguments = |dry_run: bool, key: &str| {
+        let mut arguments = vec![
+            "verify".to_owned(),
+            "review-fidelity".to_owned(),
+            "--request-json".to_owned(),
+            review_request.to_string(),
+            "--actor".to_owned(),
+            "independent-reviewer".to_owned(),
+            "--idempotency-key".to_owned(),
+            key.to_owned(),
+        ];
+        if dry_run {
+            arguments.push("--dry-run".to_owned());
+        }
+        arguments
+    };
+    let review_preview = mcl_owned(root.path(), &review_arguments(true, "fidelity-preview"));
+    assert!(
+        review_preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&review_preview.stderr)
+    );
+    let preview: Value = serde_json::from_slice(&review_preview.stdout).expect("review preview");
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["evidence"], Value::Null);
+
+    let reviewed_output = mcl_owned(root.path(), &review_arguments(false, "fidelity-review"));
+    assert!(
+        reviewed_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reviewed_output.stderr)
+    );
+    let reviewed: Value = serde_json::from_slice(&reviewed_output.stdout).expect("review output");
+    assert_eq!(
+        reviewed["evidence"]["payload"]["authority_class"],
+        "reviewed"
+    );
+    assert_eq!(
+        reviewed["evidence"]["payload"]["evidence_kind"],
+        "statement_fidelity_review"
+    );
+    let first_evidence_id = reviewed["evidence"]["evidence_id"]
+        .as_str()
+        .expect("first fidelity evidence ID");
+    let retried = mcl_owned(root.path(), &review_arguments(false, "fidelity-review"));
+    assert!(retried.status.success());
+    let retried: Value = serde_json::from_slice(&retried.stdout).expect("review retry");
+    assert_eq!(retried["evidence"], reviewed["evidence"]);
+
+    let verified = server.call(
+        26,
+        "verify",
+        json!({
+            "action": "fidelity_status",
+            "formalization_object_id": formalization_id,
+            "formalization_version_hash": formalization_hash
+        }),
+    );
+    assert_eq!(verified["result"]["isError"], false);
+    assert_eq!(
+        verified["result"]["structuredContent"]["status"],
+        "verified"
+    );
+    assert_eq!(
+        verified["result"]["structuredContent"]["head_evidence_id"],
+        first_evidence_id
+    );
+
+    let stale_review = server.call(
+        27,
+        "verify",
+        json!({
+            "action": "review_fidelity",
+            "request": review_request,
+            "actor": "independent-reviewer",
+            "idempotency_key": "fidelity-stale-review"
+        }),
+    );
+    assert_eq!(stale_review["result"]["isError"], true);
+    assert_eq!(
+        stale_review["result"]["structuredContent"]["code"],
+        "MCL_FIDELITY_REVIEW_CONFLICT"
+    );
+
+    let replacement_request = json!({
+        "schema_version": "fidelity_review_request/1",
+        "source": {"object_id": source_id, "version_hash": source_hash},
+        "claim": {"object_id": claim_id, "version_hash": claim_hash},
+        "formalization": {
+            "object_id": formalization_id,
+            "version_hash": formalization_hash
+        },
+        "review_level": "expert_domain_review",
+        "verdict": "rejected",
+        "reviewer_identity": "second-independent-reviewer",
+        "findings": ["Independent re-review rejects the claimed source correspondence."],
+        "ambiguity_disposition": "no_ambiguity",
+        "definition_mappings": [],
+        "supporting_artifact_hashes": [],
+        "producing_run_id": run_id,
+        "supersedes_evidence_id": first_evidence_id
+    });
+    let replaced = server.call(
+        28,
+        "verify",
+        json!({
+            "action": "review_fidelity",
+            "request": replacement_request,
+            "actor": "second-independent-reviewer",
+            "idempotency_key": "fidelity-replacement"
+        }),
+    );
+    assert_eq!(replaced["result"]["isError"], false);
+    let replacement_evidence_id =
+        replaced["result"]["structuredContent"]["evidence"]["evidence_id"]
+            .as_str()
+            .expect("replacement evidence ID");
+
+    let rejected = mcl_owned(
+        root.path(),
+        &[
+            "verify".to_owned(),
+            "fidelity-status".to_owned(),
+            "--formalization-object-id".to_owned(),
+            formalization_id.to_owned(),
+            "--formalization-version-hash".to_owned(),
+            formalization_hash.to_owned(),
+        ],
+    );
+    assert!(
+        rejected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+    let rejected: Value = serde_json::from_slice(&rejected.stdout).expect("rejected status");
+    assert_eq!(rejected["status"], "rejected");
+    assert_eq!(rejected["head_evidence_id"], replacement_evidence_id);
+    assert_eq!(rejected["history"].as_array().map(Vec::len), Some(2));
+    assert_eq!(rejected["history"][0]["status"], "rejected");
+    assert_eq!(rejected["history"][1]["status"], "superseded");
+
+    let report_hash = rejected["history"][0]["report_artifact_hash"]
+        .as_str()
+        .expect("head report artifact hash");
+    let report_path = root
+        .path()
+        .join(".mcl/artifacts/sha256")
+        .join(&report_hash[0..2])
+        .join(&report_hash[2..4])
+        .join(report_hash);
+    fs::write(report_path, b"corrupted review report").expect("corrupt review report fixture");
+    let corrupted = server.call(
+        29,
+        "verify",
+        json!({
+            "action": "fidelity_status",
+            "formalization_object_id": formalization_id,
+            "formalization_version_hash": formalization_hash
+        }),
+    );
+    assert_eq!(corrupted["result"]["isError"], true);
+    assert_eq!(
+        corrupted["result"]["structuredContent"]["code"],
+        "MCL_ARTIFACT_INTEGRITY_FAILED"
+    );
+    let mut post_corruption_request = replacement_request.clone();
+    post_corruption_request["reviewer_identity"] = json!("third-independent-reviewer");
+    post_corruption_request["findings"] =
+        json!(["A corrupted predecessor must block further review mutation."]);
+    let mutation_after_corruption = server.call(
+        30,
+        "verify",
+        json!({
+            "action": "review_fidelity",
+            "request": post_corruption_request,
+            "actor": "third-independent-reviewer",
+            "idempotency_key": "fidelity-after-corruption"
+        }),
+    );
+    assert_eq!(mutation_after_corruption["result"]["isError"], true);
+    assert_eq!(
+        mutation_after_corruption["result"]["structuredContent"]["code"],
+        "MCL_ARTIFACT_INTEGRITY_FAILED"
     );
 
     server.close();

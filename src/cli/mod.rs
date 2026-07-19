@@ -174,6 +174,8 @@ enum VerifyAction {
     AuditStatus(VerifyStatusOptions),
     AuditList(VerifyListOptions),
     PromoteAudit(VerifyPromoteDiagnosticOptions),
+    ReviewFidelity(ReviewFidelityOptions),
+    FidelityStatus(FidelityStatusOptions),
 }
 
 #[derive(Debug, Args)]
@@ -225,6 +227,24 @@ struct VerifyPromoteDiagnosticOptions {
 struct VerifyEvidenceOptions {
     #[arg(long)]
     evidence_id: String,
+}
+
+#[derive(Debug, Args)]
+struct ReviewFidelityOptions {
+    #[arg(long)]
+    request_json: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct FidelityStatusOptions {
+    #[arg(long)]
+    formalization_object_id: String,
+
+    #[arg(long)]
+    formalization_version_hash: String,
 }
 
 #[derive(Debug, Args)]
@@ -620,6 +640,31 @@ fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<Cli
             options.mutation.dry_run,
         )?)
         .expect("audit evidence promotion is serializable"),
+        VerifyAction::ReviewFidelity(options) => {
+            let request: crate::domain::FidelityReviewRequest =
+                serde_json::from_str(&options.request_json).map_err(|error| {
+                    AppError::new(
+                        "MCL_FIDELITY_JSON_INVALID",
+                        error.to_string(),
+                        false,
+                        "Supply one closed fidelity_review_request/1 JSON object.",
+                    )
+                })?;
+            to_value(application.review_fidelity(
+                &request,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("fidelity review outcome is serializable")
+        }
+        VerifyAction::FidelityStatus(options) => to_value(application.fidelity_status(
+            &crate::domain::schemas::ExactVersionReference {
+                object_id: options.formalization_object_id,
+                version_hash: options.formalization_version_hash,
+            },
+        )?)
+        .expect("fidelity status is serializable"),
     };
     Ok(CliOutcome {
         value,

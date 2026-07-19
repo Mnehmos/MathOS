@@ -18,8 +18,8 @@ use serde_json::{Value, json, to_value};
 use crate::app::Application;
 use crate::config::ResolvedConfig;
 use crate::domain::{
-    EdgeKind, GraphTraversalRequest, RecordDraft, RecordKind, RunEventDraft, RunEventKind, RunKind,
-    TraversalDirection,
+    EdgeKind, FidelityReviewRequest, GraphTraversalRequest, RecordDraft, RecordKind, RunEventDraft,
+    RunEventKind, RunKind, TraversalDirection,
 };
 use crate::error::AppError;
 
@@ -151,6 +151,31 @@ pub enum ResearchAction {
     Submit,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyRequest {
+    action: VerifyAction,
+    #[serde(default)]
+    request: Option<Value>,
+    #[serde(default)]
+    formalization_object_id: Option<String>,
+    #[serde(default)]
+    formalization_version_hash: Option<String>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifyAction {
+    ReviewFidelity,
+    FidelityStatus,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum McpTraversalDirection {
@@ -200,13 +225,14 @@ impl MathOsMcp {
             SystemAction::Health => Ok(to_value(Application::health(&self.config))
                 .expect("diagnostic report is serializable")),
             SystemAction::Capabilities => Ok(json!({
-                "tools": ["system", "query", "source", "claim", "formalization", "research"],
+                "tools": ["system", "query", "source", "claim", "formalization", "research", "verify"],
                 "system_actions": ["describe", "health", "capabilities", "policy"],
                 "query_actions": ["get", "search", "graph"],
                 "source_actions": ["propose", "version"],
                 "claim_actions": ["propose", "version"],
                 "formalization_actions": ["propose", "version"],
                 "research_actions": ["start", "observe", "submit"],
+                "verify_actions": ["review_fidelity", "fidelity_status"],
                 "mutations": true,
                 "authoritative_verification": false,
                 "transport": "stdio",
@@ -260,6 +286,13 @@ impl MathOsMcp {
     )]
     fn research(&self, Parameters(request): Parameters<ResearchRequest>) -> CallToolResult {
         result_to_tool(self.execute_research(request))
+    }
+
+    #[tool(
+        description = "Create role-separated statement-fidelity evidence or read its derived status. Closed actions: review_fidelity, fidelity_status. This never proves a theorem."
+    )]
+    fn verify(&self, Parameters(request): Parameters<VerifyRequest>) -> CallToolResult {
+        result_to_tool(self.execute_verify(request))
     }
 
     fn execute_query(&self, request: QueryRequest) -> Result<Value, AppError> {
@@ -414,6 +447,79 @@ impl MathOsMcp {
             }
         }
     }
+
+    fn execute_verify(&self, request: VerifyRequest) -> Result<Value, AppError> {
+        let mut application = self.application()?;
+        match request.action {
+            VerifyAction::ReviewFidelity => {
+                let payload = request
+                    .request
+                    .ok_or_else(|| missing_field("request", "review_fidelity", "verify"))?;
+                let review: FidelityReviewRequest =
+                    serde_json::from_value(payload).map_err(|error| {
+                        AppError::new(
+                            "MCL_FIDELITY_JSON_INVALID",
+                            error.to_string(),
+                            false,
+                            "Supply one closed fidelity_review_request/1 object.",
+                        )
+                    })?;
+                let actor = required(request.actor, "actor", "review_fidelity")?;
+                let idempotency_key = required(
+                    request.idempotency_key,
+                    "idempotency_key",
+                    "review_fidelity",
+                )?;
+                reject_present(
+                    request.formalization_object_id,
+                    "formalization_object_id",
+                    "review_fidelity",
+                )?;
+                reject_present(
+                    request.formalization_version_hash,
+                    "formalization_version_hash",
+                    "review_fidelity",
+                )?;
+                to_value(application.review_fidelity(
+                    &review,
+                    &actor,
+                    &idempotency_key,
+                    request.dry_run,
+                )?)
+                .map_err(serialization_error)
+            }
+            VerifyAction::FidelityStatus => {
+                if request.dry_run {
+                    return Err(AppError::new(
+                        "MCL_MCP_FIELD_FORBIDDEN",
+                        "verify action `fidelity_status` does not accept `dry_run`",
+                        false,
+                        "Remove `dry_run`; fidelity_status is already read-only.",
+                    ));
+                }
+                reject_present(request.request, "request", "fidelity_status")?;
+                reject_present(request.actor, "actor", "fidelity_status")?;
+                reject_present(
+                    request.idempotency_key,
+                    "idempotency_key",
+                    "fidelity_status",
+                )?;
+                let formalization = crate::domain::schemas::ExactVersionReference {
+                    object_id: required(
+                        request.formalization_object_id,
+                        "formalization_object_id",
+                        "fidelity_status",
+                    )?,
+                    version_hash: required(
+                        request.formalization_version_hash,
+                        "formalization_version_hash",
+                        "fidelity_status",
+                    )?,
+                };
+                to_value(application.fidelity_status(&formalization)?).map_err(serialization_error)
+            }
+        }
+    }
 }
 
 #[tool_handler]
@@ -512,7 +618,7 @@ fn missing_field(field: &str, action: &str, family: &str) -> AppError {
     )
 }
 
-fn reject_present(value: Option<String>, field: &str, action: &str) -> Result<(), AppError> {
+fn reject_present<T>(value: Option<T>, field: &str, action: &str) -> Result<(), AppError> {
     if value.is_some() {
         return Err(AppError::new(
             "MCL_MCP_FIELD_FORBIDDEN",

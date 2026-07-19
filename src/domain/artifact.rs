@@ -74,6 +74,7 @@ pub enum ArtifactCreationSource {
     UserIngest,
     Generated,
     Verifier,
+    HumanReview,
     Import,
     Migration,
 }
@@ -84,6 +85,7 @@ impl ArtifactCreationSource {
             Self::UserIngest => "user_ingest",
             Self::Generated => "generated",
             Self::Verifier => "verifier",
+            Self::HumanReview => "human_review",
             Self::Import => "import",
             Self::Migration => "migration",
         }
@@ -98,6 +100,7 @@ impl FromStr for ArtifactCreationSource {
             "user_ingest" => Ok(Self::UserIngest),
             "generated" => Ok(Self::Generated),
             "verifier" => Ok(Self::Verifier),
+            "human_review" => Ok(Self::HumanReview),
             "import" => Ok(Self::Import),
             "migration" => Ok(Self::Migration),
             _ => Err(artifact_error(
@@ -268,7 +271,7 @@ pub fn artifact_metadata_schema() -> Value {
         "properties": {
             "schema_version": {"const": ARTIFACT_METADATA_SCHEMA_VERSION},
             "media_type": {"enum": ["text/x-lean", "application/json", "text/plain", "application/x-lrat", "application/octet-stream"]},
-            "creation_source": {"enum": ["user_ingest", "generated", "verifier", "import", "migration"]},
+            "creation_source": {"enum": ["user_ingest", "generated", "verifier", "human_review", "import", "migration"]},
             "license_expression": {"type": ["string", "null"], "minLength": 1, "maxLength": MAX_LICENSE_BYTES},
             "restriction": {"enum": ["public", "restricted", "private"]},
             "semantic_metadata": {"type": "object", "maxProperties": MAX_METADATA_ENTRIES, "additionalProperties": {"type": "string", "maxLength": MAX_METADATA_VALUE_BYTES}}

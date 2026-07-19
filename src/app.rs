@@ -10,15 +10,18 @@ use sha2::{Digest, Sha256};
 use crate::artifacts::ArtifactStore;
 use crate::canonical::canonical_json;
 use crate::config::ResolvedConfig;
-use crate::domain::schemas::{ExactVersionReference, FormalizationPayload};
+use crate::domain::schemas::{
+    ClaimPayload, ExactVersionReference, FormalizationPayload, SourcePayload, SourceType,
+};
 use crate::domain::{
     ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeSnapshot, EnvironmentManifest,
     EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult,
-    EvidenceSnapshot, GraphTraversalHit, GraphTraversalRequest, LeanAuditClassification,
-    LeanAuditJobSnapshot, LeanAuditReport, LeanAuditRequest, RecordDraft, RecordKind,
-    RecordSnapshot, RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
-    VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
-    VerifierJobSnapshot,
+    EvidenceSnapshot, FidelityReviewHistoryEntry, FidelityReviewReport, FidelityReviewRequest,
+    FidelityStatus, FidelityStatusSnapshot, FidelityVerdict, GraphTraversalHit,
+    GraphTraversalRequest, LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditReport,
+    LeanAuditRequest, RecordDraft, RecordKind, RecordSnapshot, RunChainReport, RunEventDraft,
+    RunEventSnapshot, RunKind, RunSnapshot, VerifierExecutionClassification,
+    VerifierExecutionReport, VerifierJobRequest, VerifierJobSnapshot,
 };
 use crate::error::AppError;
 use crate::store::Store;
@@ -124,6 +127,15 @@ pub struct AuditEvidencePromotionOutcome {
     pub dry_run: bool,
     pub proposed_evidence_hashes: Vec<String>,
     pub evidence: Option<Vec<EvidenceSnapshot>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FidelityReviewOutcome {
+    pub dry_run: bool,
+    pub proposed_report_artifact_hash: String,
+    pub proposed_evidence_hash: String,
+    pub report: FidelityReviewReport,
+    pub evidence: Option<EvidenceSnapshot>,
 }
 
 pub struct Application {
@@ -726,6 +738,327 @@ impl Application {
 
     pub fn list_evidence(&self, limit: usize) -> Result<Vec<EvidenceSnapshot>, AppError> {
         self.store.list_evidence(limit)
+    }
+
+    pub fn review_fidelity(
+        &mut self,
+        request: &FidelityReviewRequest,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<FidelityReviewOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        request.validate()?;
+        if request.reviewer_identity != actor {
+            return Err(AppError::new(
+                "MCL_FIDELITY_REVIEWER_MISMATCH",
+                "reviewer identity must equal the attributed actor",
+                false,
+                "Submit the review under the reviewer's own actor identity.",
+            ));
+        }
+        let source = self
+            .store
+            .get_record_version(&request.source.version_hash)?;
+        let claim = self.store.get_record_version(&request.claim.version_hash)?;
+        let formalization = self
+            .store
+            .get_record_version(&request.formalization.version_hash)?;
+        if source.object_id != request.source.object_id
+            || source.kind != RecordKind::Source
+            || claim.object_id != request.claim.object_id
+            || claim.kind != RecordKind::Claim
+            || formalization.object_id != request.formalization.object_id
+            || formalization.kind != RecordKind::Formalization
+        {
+            return Err(AppError::new(
+                "MCL_FIDELITY_REFERENCE_INVALID",
+                "fidelity review references do not resolve to the requested exact object families",
+                false,
+                "Use exact source, claim, and formalization versions.",
+            ));
+        }
+        let source_payload: SourcePayload = decode_review_payload(source.payload, "source")?;
+        let claim_payload: ClaimPayload = decode_review_payload(claim.payload, "claim")?;
+        let formal_payload: FormalizationPayload =
+            decode_review_payload(formalization.payload, "formalization")?;
+        if claim_payload.source_reference != request.source
+            || formal_payload.claim_version != request.claim
+        {
+            return Err(AppError::new(
+                "MCL_FIDELITY_LINEAGE_MISMATCH",
+                "source, claim, and formalization do not form one exact lineage",
+                false,
+                "Review the exact source referenced by the claim and the exact claim referenced by the formalization.",
+            ));
+        }
+        if !claim_payload.ambiguity_notes.is_empty()
+            && request.ambiguity_disposition == crate::domain::AmbiguityDisposition::NoAmbiguity
+        {
+            return Err(AppError::new(
+                "MCL_FIDELITY_AMBIGUITY_INVALID",
+                "claim ambiguity cannot be silently discarded by the review",
+                false,
+                "Preserve, resolve, or leave the recorded ambiguity explicitly unresolved.",
+            ));
+        }
+        if (request.review_level == crate::domain::FidelityReviewLevel::SourcePaperCorrespondence
+            && source_payload.source_type != SourceType::Paper)
+            || (request.review_level == crate::domain::FidelityReviewLevel::BenchmarkHashAlignment
+                && (source_payload.source_type != SourceType::Benchmark
+                    || source_payload.content_hash.is_none()))
+        {
+            return Err(AppError::new(
+                "MCL_FIDELITY_LEVEL_INVALID",
+                "review level is not supported by the exact source type and identity",
+                false,
+                "Use a paper source for paper correspondence or a content-hashed benchmark source for benchmark alignment.",
+            ));
+        }
+        let current = self.fidelity_status(&request.formalization)?;
+        let may_be_exact_retry = current
+            .history
+            .iter()
+            .any(|entry| entry.report.request == *request);
+        if request.supersedes_evidence_id != current.head_evidence_id && !may_be_exact_retry {
+            return Err(AppError::new(
+                "MCL_FIDELITY_REVIEW_CONFLICT",
+                "fidelity review does not supersede the current exact evidence head",
+                true,
+                "Reload fidelity status and retry against the current evidence head.",
+            ));
+        }
+        self.store.get_run(&request.producing_run_id)?;
+        for hash in &request.supporting_artifact_hashes {
+            let artifact = self.store.get_artifact(hash)?;
+            if artifact.creation_source == crate::domain::ArtifactCreationSource::HumanReview
+                && artifact
+                    .semantic_metadata
+                    .get("artifact_role")
+                    .is_some_and(|role| role == "fidelity_review_report")
+            {
+                return Err(AppError::new(
+                    "MCL_FIDELITY_SUPPORT_INVALID",
+                    "a controlled fidelity report cannot be supplied as supporting evidence",
+                    false,
+                    "Reference primary source artifacts and let MathOS create the review report.",
+                ));
+            }
+            self.artifacts.read(hash)?;
+        }
+        let report = FidelityReviewReport {
+            schema_version: crate::domain::fidelity::FIDELITY_REVIEW_REPORT_SCHEMA_VERSION
+                .to_owned(),
+            request_hash: request.request_hash()?,
+            request: request.clone(),
+            formalization_author: formalization.created_by,
+            exact_theorem_type: formal_payload.exact_theorem_type,
+            declaration_hash: formal_payload.declaration_hash,
+        };
+        report.validate()?;
+        let report_bytes = canonical_json(&serde_json::to_value(&report).map_err(|error| {
+            AppError::new(
+                "MCL_FIDELITY_REPORT_INVALID",
+                error.to_string(),
+                false,
+                "Report this deterministic fidelity report serialization defect.",
+            )
+        })?)?;
+        let proposed_report_artifact_hash = format!("{:x}", Sha256::digest(&report_bytes));
+        let mut artifact_hashes = request.supporting_artifact_hashes.clone();
+        artifact_hashes.push(proposed_report_artifact_hash.clone());
+        artifact_hashes.sort();
+        artifact_hashes.dedup();
+        let payload = EvidencePayload {
+            schema_version: crate::domain::evidence::EVIDENCE_SCHEMA_VERSION.to_owned(),
+            subject: request.formalization.clone(),
+            evidence_kind: EvidenceKind::StatementFidelityReview,
+            result: if request.verdict == FidelityVerdict::Rejected {
+                EvidenceResult::Rejected
+            } else {
+                EvidenceResult::Accepted
+            },
+            authority_class: EvidenceAuthorityClass::Reviewed,
+            producing_run_id: Some(request.producing_run_id.clone()),
+            producing_job_id: None,
+            artifact_hashes,
+            verifier_or_reviewer_identity: actor.to_owned(),
+            environment_hash: None,
+            supersedes_evidence_id: request.supersedes_evidence_id.clone(),
+            stale: false,
+            stale_reason: None,
+        };
+        let proposed_evidence_hash = payload.evidence_hash()?;
+        let evidence = if dry_run {
+            None
+        } else {
+            let metadata = ArtifactMetadata {
+                schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION
+                    .to_owned(),
+                media_type: crate::domain::ArtifactMediaType::Json,
+                creation_source: crate::domain::ArtifactCreationSource::HumanReview,
+                license_expression: None,
+                restriction: crate::domain::ArtifactRestriction::Private,
+                semantic_metadata: BTreeMap::from([
+                    (
+                        "artifact_role".to_owned(),
+                        "fidelity_review_report".to_owned(),
+                    ),
+                    ("reviewer_identity".to_owned(), actor.to_owned()),
+                    ("request_hash".to_owned(), report.request_hash.clone()),
+                ]),
+            };
+            self.ensure_review_artifact(
+                &report_bytes,
+                &metadata,
+                actor,
+                &format!("{idempotency_key}:report"),
+            )?;
+            Some(
+                self.store
+                    .create_fidelity_evidence(&payload, actor, idempotency_key)?,
+            )
+        };
+        Ok(FidelityReviewOutcome {
+            dry_run,
+            proposed_report_artifact_hash,
+            proposed_evidence_hash,
+            report,
+            evidence,
+        })
+    }
+
+    pub fn fidelity_status(
+        &self,
+        formalization: &ExactVersionReference,
+    ) -> Result<FidelityStatusSnapshot, AppError> {
+        let record = self.store.get_record_version(&formalization.version_hash)?;
+        if record.object_id != formalization.object_id || record.kind != RecordKind::Formalization {
+            return Err(AppError::new(
+                "MCL_FIDELITY_SUBJECT_INVALID",
+                "fidelity status subject is not the requested exact formalization version",
+                false,
+                "Use one exact canonical formalization object and version.",
+            ));
+        }
+        let evidence = self.store.list_fidelity_evidence(formalization)?;
+        if evidence.is_empty() {
+            return Ok(FidelityStatusSnapshot {
+                formalization: formalization.clone(),
+                status: FidelityStatus::Unreviewed,
+                head_evidence_id: None,
+                history: Vec::new(),
+            });
+        }
+
+        let ids = evidence
+            .iter()
+            .map(|entry| entry.evidence_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let superseded = evidence
+            .iter()
+            .filter_map(|entry| entry.payload.supersedes_evidence_id.as_deref())
+            .collect::<BTreeSet<_>>();
+        if superseded.iter().any(|id| !ids.contains(id)) {
+            return Err(fidelity_integrity_error(
+                "fidelity review history supersedes evidence outside its exact subject chain",
+            ));
+        }
+        let heads = ids
+            .iter()
+            .copied()
+            .filter(|id| !superseded.contains(id))
+            .collect::<Vec<_>>();
+        let [head_evidence_id] = heads.as_slice() else {
+            return Err(fidelity_integrity_error(
+                "fidelity review history does not have exactly one current head",
+            ));
+        };
+        let head_evidence_id = (*head_evidence_id).to_owned();
+
+        let mut history = Vec::with_capacity(evidence.len());
+        let mut head_status = None;
+        for entry in evidence.into_iter().rev() {
+            let (report_artifact_hash, report) = self.read_fidelity_report(&entry)?;
+            let status = if entry.evidence_id == head_evidence_id {
+                let status = fidelity_status_from_verdict(report.request.verdict);
+                head_status = Some(status);
+                status
+            } else {
+                FidelityStatus::Superseded
+            };
+            history.push(FidelityReviewHistoryEntry {
+                status,
+                evidence: entry,
+                report_artifact_hash,
+                report,
+            });
+        }
+        let status = head_status.ok_or_else(|| {
+            fidelity_integrity_error("fidelity review head did not resolve to its report")
+        })?;
+        Ok(FidelityStatusSnapshot {
+            formalization: formalization.clone(),
+            status,
+            head_evidence_id: Some(head_evidence_id),
+            history,
+        })
+    }
+
+    fn read_fidelity_report(
+        &self,
+        evidence: &EvidenceSnapshot,
+    ) -> Result<(String, FidelityReviewReport), AppError> {
+        let mut reports = Vec::new();
+        for hash in &evidence.payload.artifact_hashes {
+            let artifact = self.store.get_artifact(hash)?;
+            if artifact.media_type == crate::domain::ArtifactMediaType::Json
+                && artifact.creation_source == crate::domain::ArtifactCreationSource::HumanReview
+                && artifact.restriction == crate::domain::ArtifactRestriction::Private
+                && artifact
+                    .semantic_metadata
+                    .get("artifact_role")
+                    .is_some_and(|role| role == "fidelity_review_report")
+            {
+                let bytes = self.artifacts.read(hash)?;
+                let report: FidelityReviewReport =
+                    serde_json::from_slice(&bytes).map_err(|error| {
+                        fidelity_integrity_error(format!(
+                            "stored fidelity report is invalid: {error}"
+                        ))
+                    })?;
+                report.validate().map_err(|error| {
+                    fidelity_integrity_error(format!(
+                        "stored fidelity report failed validation: {}",
+                        error.message
+                    ))
+                })?;
+                reports.push((hash.clone(), artifact, report));
+            }
+        }
+        let [(hash, artifact, report)] = reports.as_slice() else {
+            return Err(fidelity_integrity_error(
+                "fidelity evidence does not resolve to exactly one controlled review report",
+            ));
+        };
+        if report.request.formalization != evidence.payload.subject
+            || report.request.producing_run_id.as_str()
+                != evidence
+                    .payload
+                    .producing_run_id
+                    .as_deref()
+                    .unwrap_or_default()
+            || report.request.supersedes_evidence_id != evidence.payload.supersedes_evidence_id
+            || report.request.reviewer_identity != evidence.payload.verifier_or_reviewer_identity
+            || artifact.semantic_metadata.get("request_hash") != Some(&report.request_hash)
+            || artifact.semantic_metadata.get("reviewer_identity")
+                != Some(&report.request.reviewer_identity)
+        {
+            return Err(fidelity_integrity_error(
+                "fidelity report, evidence, and artifact provenance disagree",
+            ));
+        }
+        Ok((hash.clone(), report.clone()))
     }
 
     pub fn enqueue_audit_job(
@@ -1437,12 +1770,54 @@ impl Application {
         metadata.validate_bytes(bytes)?;
         let hash = self.artifacts.put(bytes)?;
         match self.store.get_artifact(&hash) {
-            Ok(existing) if existing.media_type == metadata.media_type => Ok(existing),
+            Ok(existing) if artifact_matches_metadata(&existing, metadata, bytes.len()) => {
+                Ok(existing)
+            }
             Ok(_) => Err(AppError::new(
                 "MCL_ARTIFACT_METADATA_CONFLICT",
                 format!("existing artifact {hash} has incompatible metadata"),
                 false,
                 "Quarantine the conflicting artifact and inspect its provenance.",
+            )),
+            Err(error) if error.code == "MCL_ARTIFACT_NOT_FOUND" => self.store.register_artifact(
+                &hash,
+                bytes.len() as u64,
+                metadata,
+                actor,
+                idempotency_key,
+            ),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn ensure_review_artifact(
+        &mut self,
+        bytes: &[u8],
+        metadata: &ArtifactMetadata,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<ArtifactSnapshot, AppError> {
+        if metadata.creation_source != crate::domain::ArtifactCreationSource::HumanReview
+            || metadata.restriction != crate::domain::ArtifactRestriction::Private
+        {
+            return Err(AppError::new(
+                "MCL_FIDELITY_REPORT_INVALID",
+                "review artifact must use controlled private human-review provenance",
+                false,
+                "Create fidelity reports only through the review application path.",
+            ));
+        }
+        metadata.validate_bytes(bytes)?;
+        let hash = self.artifacts.put(bytes)?;
+        match self.store.get_artifact(&hash) {
+            Ok(existing) if artifact_matches_metadata(&existing, metadata, bytes.len()) => {
+                Ok(existing)
+            }
+            Ok(_) => Err(AppError::new(
+                "MCL_ARTIFACT_METADATA_CONFLICT",
+                format!("existing artifact {hash} has incompatible metadata"),
+                false,
+                "Quarantine the conflicting review artifact and inspect its provenance.",
             )),
             Err(error) if error.code == "MCL_ARTIFACT_NOT_FOUND" => self.store.register_artifact(
                 &hash,
@@ -1637,6 +2012,51 @@ fn validate_attribution(actor: &str, idempotency_key: &str) -> Result<(), AppErr
         ));
     }
     Ok(())
+}
+
+fn decode_review_payload<T: serde::de::DeserializeOwned>(
+    value: Value,
+    label: &str,
+) -> Result<T, AppError> {
+    serde_json::from_value(value).map_err(|error| {
+        AppError::new(
+            "MCL_FIDELITY_REFERENCE_INVALID",
+            format!("stored {label} payload is invalid: {error}"),
+            false,
+            "Quarantine the invalid canonical record and restore a verified backup.",
+        )
+    })
+}
+
+fn fidelity_status_from_verdict(verdict: FidelityVerdict) -> FidelityStatus {
+    match verdict {
+        FidelityVerdict::Attested => FidelityStatus::Attested,
+        FidelityVerdict::BenchmarkAligned => FidelityStatus::BenchmarkAligned,
+        FidelityVerdict::Verified => FidelityStatus::Verified,
+        FidelityVerdict::Rejected => FidelityStatus::Rejected,
+    }
+}
+
+fn fidelity_integrity_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_FIDELITY_EVIDENCE_INTEGRITY_FAILED",
+        message,
+        false,
+        "Quarantine the fidelity history and restore a verified database and artifact backup.",
+    )
+}
+
+fn artifact_matches_metadata(
+    artifact: &ArtifactSnapshot,
+    metadata: &ArtifactMetadata,
+    byte_size: usize,
+) -> bool {
+    artifact.byte_size == byte_size as u64
+        && artifact.media_type == metadata.media_type
+        && artifact.creation_source == metadata.creation_source
+        && artifact.license_expression == metadata.license_expression
+        && artifact.restriction == metadata.restriction
+        && artifact.semantic_metadata == metadata.semantic_metadata
 }
 
 fn lean_version(command: &str) -> Result<String, String> {

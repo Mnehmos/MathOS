@@ -145,6 +145,11 @@ impl EvidencePayload {
             ) && (self.authority_class != EvidenceAuthorityClass::Diagnostic
                 || self.producing_job_id.is_none()
                 || self.environment_hash.is_none()))
+            || (self.evidence_kind == EvidenceKind::StatementFidelityReview
+                && (self.authority_class != EvidenceAuthorityClass::Reviewed
+                    || self.producing_run_id.is_none()
+                    || self.producing_job_id.is_some()
+                    || self.environment_hash.is_some()))
             || self
                 .producing_run_id
                 .as_deref()
