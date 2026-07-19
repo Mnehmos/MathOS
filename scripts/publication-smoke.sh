@@ -58,7 +58,7 @@ if ! sudo /usr/bin/bwrap \
   --dev /dev \
   --tmpfs /tmp \
   --chdir /mnt \
-  /usr/bin/prlimit --as=4294967296 -- /opt/bin/lean -j=1 "$module" \
+  /usr/bin/prlimit --as=4294967296 -- /opt/bin/lean -j 1 "$module" \
   >"${output_dir}/lean.stdout" \
   2>"${output_dir}/lean.stderr"; then
   printf 'isolated Lean execution failed\n' >&2
