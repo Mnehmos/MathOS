@@ -233,6 +233,12 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
         "{invalid_input:#}"
     );
 
+    let invalid_action = server.call(311, "system", json!({"action": "mark_proved"}));
+    assert_eq!(
+        invalid_action["result"]["isError"], true,
+        "{invalid_action:#}"
+    );
+
     let still_alive = server.send(&json!({
         "jsonrpc": "2.0",
         "id": 32,
