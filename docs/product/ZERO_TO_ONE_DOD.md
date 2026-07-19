@@ -16,8 +16,8 @@ This is the implementation ledger for v0.1.0. An item is complete only when its 
 | MCP stdio interface | Complete | `tests/test_mcp.py` protocol and lifecycle tests |
 | Adversarial playtesting | Complete | Thirteen scenarios plus 200 deterministic randomized claims |
 | Clean environment installation | Complete | Wheel build, isolated install, demo, export validation, and `pip check` |
-| All review threads and checks pass | Pending | Release pull request |
-| Main tagged v0.1.0 | Pending | Release tag |
+| All review threads and checks pass | Complete | PR #2: GitHub Actions and CodeRabbit pass; eight review threads resolved |
+| Main tagged v0.1.0 | Ready on merge | Release tag |
 
 ## Terminal release gate
 
@@ -27,4 +27,4 @@ This is the implementation ledger for v0.1.0. An item is complete only when its 
 - Provenance replay succeeds before tampering and fails after tampering.
 - No test, verifier, or review failure is ignored.
 
-Detailed local evidence is recorded in `docs/implementation/0001-zero-to-one-evidence.md`. Rows that depend on GitHub remain pending until the release pull request supplies remote evidence.
+Detailed local evidence is recorded in `docs/implementation/0001-zero-to-one-evidence.md`. The final row becomes complete only after PR #2 is merged and its exact `main` commit is tagged.
