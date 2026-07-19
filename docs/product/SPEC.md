@@ -56,4 +56,4 @@ These are later layers. The first release establishes the trusted lifecycle they
 
 ## Release condition
 
-Release v0.1.0 only when every item in [ZERO_TO_ONE_DOD.md](ZERO_TO_ONE_DOD.md) has reproducible evidence on the release commit.
+Release v1.0.0 only when every item in [ZERO_TO_ONE_DOD.md](ZERO_TO_ONE_DOD.md) has reproducible evidence on the release commit. In this specification, 0-to-1 means the completed path to MathOS 1.0, not a 0.1 preview release.

@@ -18,7 +18,7 @@ MathOS is the product. MCP is one interface into MathOS alongside future applica
 
 ## Current vertical slice
 
-MathOS v0.1 establishes the trusted claim lifecycle in a finite formal domain:
+MathOS v1.0 establishes the trusted claim lifecycle in a finite formal domain:
 
 1. Submit an informal statement and versioned formal specification.
 2. Produce an untrusted enumeration proof, counterexample, or unknown result.

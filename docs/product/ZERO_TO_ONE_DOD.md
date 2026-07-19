@@ -1,6 +1,6 @@
 # MathOS 0-to-1 Definition of Done
 
-This is the implementation ledger for v0.1.0. An item is complete only when its evidence exists on the release commit.
+This is the implementation ledger for v1.0.0. An item is complete only when its evidence exists on the release commit. The 0-to-1 milestone terminates at the 1.0 release.
 
 | Requirement | Status | Evidence |
 | --- | --- | --- |
@@ -16,8 +16,8 @@ This is the implementation ledger for v0.1.0. An item is complete only when its 
 | MCP stdio interface | Complete | `tests/test_mcp.py` protocol and lifecycle tests |
 | Adversarial playtesting | Complete | Thirteen scenarios plus 200 deterministic randomized claims |
 | Clean environment installation | Complete | Wheel build, isolated install, demo, export validation, and `pip check` |
-| All review threads and checks pass | Complete | PR #2: GitHub Actions and CodeRabbit pass; eight review threads resolved |
-| Main tagged v0.1.0 | Ready on merge | Release tag |
+| All review threads and checks pass | Pending | v1.0 release-correction pull request |
+| Main tagged v1.0.0 | Ready after merge | Release tag |
 
 ## Terminal release gate
 
@@ -27,4 +27,4 @@ This is the implementation ledger for v0.1.0. An item is complete only when its 
 - Provenance replay succeeds before tampering and fails after tampering.
 - No test, verifier, or review failure is ignored.
 
-Detailed local evidence is recorded in `docs/implementation/0001-zero-to-one-evidence.md`. The final row becomes complete only after PR #2 is merged and its exact `main` commit is tagged.
+Detailed local evidence is recorded in `docs/implementation/0001-zero-to-one-evidence.md`. The final row becomes complete only after the v1.0 release-correction pull request is merged and its exact `main` commit is tagged.
