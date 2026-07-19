@@ -95,23 +95,23 @@ class ProvenanceLedger:
         informal_statement: str,
         formal_spec: dict[str, Any] | None,
     ) -> Claim:
-        existing = self._connection.execute(
-            "SELECT * FROM claims WHERE claim_id = ?", (claim_id,)
-        ).fetchone()
-        if existing is not None:
-            claim = self._claim_from_row(existing)
-            if (
-                claim.informal_statement != informal_statement
-                or claim.formal_spec != formal_spec
-            ):
-                raise ValueError("claim identifier collision")
-            return claim
-
         status = ClaimStatus.FORMALIZED if formal_spec is not None else ClaimStatus.INGESTED
         created_at = utc_now()
         formal_json = canonical_json(formal_spec) if formal_spec is not None else None
         try:
             self._connection.execute("BEGIN IMMEDIATE")
+            existing = self._connection.execute(
+                "SELECT * FROM claims WHERE claim_id = ?", (claim_id,)
+            ).fetchone()
+            if existing is not None:
+                claim = self._claim_from_row(existing)
+                if (
+                    claim.informal_statement != informal_statement
+                    or claim.formal_spec != formal_spec
+                ):
+                    raise ValueError("claim identifier collision")
+                self._connection.commit()
+                return claim
             self._connection.execute(
                 """
                 INSERT INTO claims (
@@ -311,6 +311,19 @@ class ProvenanceLedger:
             "SELECT * FROM events WHERE claim_id = ? ORDER BY sequence", (claim_id,)
         ).fetchall()
         return [self._event_from_row(row) for row in rows]
+
+    def chain_links(self) -> list[dict[str, Any]]:
+        rows = self._connection.execute(
+            "SELECT sequence, previous_hash, event_hash FROM events ORDER BY sequence"
+        ).fetchall()
+        return [
+            {
+                "sequence": row["sequence"],
+                "previous_hash": row["previous_hash"],
+                "event_hash": row["event_hash"],
+            }
+            for row in rows
+        ]
 
     def _event_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
         return {

@@ -14,7 +14,7 @@ This is the implementation ledger for v0.1.0. An item is complete only when its 
 | RL trajectory export | Complete | Export validation and tamper tests |
 | CLI interface | Complete | `tests/test_cli.py` subprocess tests |
 | MCP stdio interface | Complete | `tests/test_mcp.py` protocol and lifecycle tests |
-| Adversarial playtesting | Complete | Twelve scenarios plus 200 deterministic randomized claims |
+| Adversarial playtesting | Complete | Thirteen scenarios plus 200 deterministic randomized claims |
 | Clean environment installation | Complete | Wheel build, isolated install, demo, export validation, and `pip check` |
 | All review threads and checks pass | Pending | Release pull request |
 | Main tagged v0.1.0 | Pending | Release tag |

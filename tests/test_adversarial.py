@@ -2,8 +2,10 @@ import copy
 from dataclasses import replace
 import random
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from mathos.engine import ClaimEngine
 from mathos.finite import FiniteDomainVerifier, FiniteSearchEngine
@@ -204,6 +206,26 @@ class AdversarialTests(unittest.TestCase):
         result = LeanSubprocessVerifier().verify_file("Unavailable.lean")
         self.assertEqual(result.outcome, VerificationOutcome.UNKNOWN)
         self.assertEqual(result.details["reason"], "lean_toolchain_unavailable")
+
+    def test_lean_process_failures_fail_closed(self) -> None:
+        failures = (
+            subprocess.TimeoutExpired(["lean"], 1),
+            OSError("simulated process failure"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                with (
+                    patch("mathos.lean.shutil.which", side_effect=[None, "/fake/lean"]),
+                    patch("mathos.lean.subprocess.run", side_effect=failure),
+                ):
+                    result = LeanSubprocessVerifier().verify_file(
+                        "Unavailable.lean", timeout=1
+                    )
+                self.assertEqual(result.outcome, VerificationOutcome.UNKNOWN)
+                self.assertEqual(result.details["reason"], "lean_execution_failed")
+                self.assertEqual(
+                    result.details["error_type"], type(failure).__name__
+                )
 
     def test_randomized_boolean_claims_match_independent_oracle(self) -> None:
         generator = random.Random(5601)

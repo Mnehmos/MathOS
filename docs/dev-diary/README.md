@@ -10,3 +10,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 
 1. [Trust Before Scale](0001-trust-before-scale.md)
 2. [A History That Can Disagree](0002-a-history-that-can-disagree.md)
+3. [The Space Between Events](0003-the-space-between-events.md)

@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+import sqlite3
 import sys
 from typing import Any
 
@@ -125,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "replay" and not result["valid"]:
             return 1
         return 0
-    except (KeyError, OSError, ValueError, json.JSONDecodeError) as error:
+    except (KeyError, OSError, ValueError, json.JSONDecodeError, sqlite3.Error) as error:
         _write({"error": type(error).__name__, "message": str(error)})
         return 1
 

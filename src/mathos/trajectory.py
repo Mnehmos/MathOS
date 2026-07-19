@@ -7,6 +7,14 @@ from .models import CandidateKind, ClaimStatus, SearchCandidate, TrajectoryVerif
 from .pedagogy import generate_pedagogy
 
 
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def verify_trajectory(value: Any) -> TrajectoryVerification:
     if not isinstance(value, dict):
         return TrajectoryVerification(False, 0, None, "trajectory_must_be_an_object")
@@ -165,4 +173,60 @@ def verify_trajectory(value: Any) -> TrajectoryVerification:
         return TrajectoryVerification(
             False, len(steps), supplied_hash, "verification_outcome_mismatch"
         )
+
+    provenance = value.get("provenance")
+    if not isinstance(provenance, dict) or set(provenance) != {
+        "valid",
+        "events_checked",
+        "chain_head",
+        "broken_sequence",
+        "reason",
+        "links",
+    }:
+        return TrajectoryVerification(
+            False, len(steps), supplied_hash, "provenance_chain_invalid"
+        )
+    links = provenance["links"]
+    if (
+        provenance["valid"] is not True
+        or provenance["broken_sequence"] is not None
+        or provenance["reason"] is not None
+        or not isinstance(links, list)
+        or not links
+        or type(provenance["events_checked"]) is not int
+        or provenance["events_checked"] != len(links)
+        or not _is_sha256(provenance["chain_head"])
+    ):
+        return TrajectoryVerification(
+            False, len(steps), supplied_hash, "provenance_chain_invalid"
+        )
+    expected_previous = None
+    links_by_sequence = {}
+    for expected_sequence, link in enumerate(links, start=1):
+        if (
+            not isinstance(link, dict)
+            or set(link) != {"sequence", "previous_hash", "event_hash"}
+            or link["sequence"] != expected_sequence
+            or link["previous_hash"] != expected_previous
+            or not _is_sha256(link["event_hash"])
+        ):
+            return TrajectoryVerification(
+                False, len(steps), supplied_hash, "provenance_chain_invalid"
+            )
+        links_by_sequence[expected_sequence] = link
+        expected_previous = link["event_hash"]
+    if expected_previous != provenance["chain_head"]:
+        return TrajectoryVerification(
+            False, len(steps), supplied_hash, "provenance_chain_invalid"
+        )
+    for event in steps:
+        link = links_by_sequence.get(event["sequence"])
+        if (
+            link is None
+            or link["previous_hash"] != event["previous_hash"]
+            or link["event_hash"] != event["event_hash"]
+        ):
+            return TrajectoryVerification(
+                False, len(steps), supplied_hash, "provenance_event_mismatch"
+            )
     return TrajectoryVerification(True, len(steps), supplied_hash)

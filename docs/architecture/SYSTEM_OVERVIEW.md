@@ -32,7 +32,7 @@ The provenance hash chain detects accidental corruption and incomplete rewriting
 3. Produce an untrusted search candidate.
 4. Independently verify the exact candidate against the exact formal specification.
 5. Atomically persist the candidate, verification, allowed state transition, and pedagogy in that event order.
-6. Export a trajectory containing the event-chain head and verifier evidence.
+6. Export a trajectory containing verifier evidence and a compact link path through the complete global event chain.
 
 ## Dependency policy
 

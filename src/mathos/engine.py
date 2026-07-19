@@ -127,11 +127,12 @@ class ClaimEngine:
         chain = self.verify_provenance()
         if not chain.valid:
             raise ValueError("cannot export from an invalid provenance ledger")
+        provenance = {**chain.to_dict(), "links": self.ledger.chain_links()}
         trajectory = {
             "schema": "mathos.rl-trajectory/v1",
             "claim": claim.to_dict(),
             "outcome": claim.status.value,
             "steps": events,
-            "provenance": chain.to_dict(),
+            "provenance": provenance,
         }
         return {**trajectory, "trajectory_hash": hash_json(trajectory)}

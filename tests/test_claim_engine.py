@@ -59,6 +59,25 @@ class ClaimEngineTests(unittest.TestCase):
         self.assertEqual(first.claim_id, second.claim_id)
         self.assertEqual(len(self.engine.list_claims()), 1)
 
+    def test_submission_locks_before_checking_for_an_existing_claim(self) -> None:
+        fixture = load_fixture("proved")
+        statements = []
+        self.engine.ledger._connection.set_trace_callback(statements.append)
+
+        self.engine.submit(fixture["informal_statement"], fixture["formal_spec"])
+
+        begin = next(
+            index
+            for index, statement in enumerate(statements)
+            if statement == "BEGIN IMMEDIATE"
+        )
+        lookup = next(
+            index
+            for index, statement in enumerate(statements)
+            if statement.startswith("SELECT * FROM claims WHERE claim_id")
+        )
+        self.assertLess(begin, lookup)
+
     def test_missing_formalization_remains_explicitly_unresolved(self) -> None:
         claim = self.engine.submit("Every integer has a surprising property.")
         report = self.engine.process(claim.claim_id, max_assignments=16)
@@ -99,6 +118,27 @@ class ClaimEngineTests(unittest.TestCase):
         serialized = json.dumps(trajectory, sort_keys=True)
         self.assertNotIn("verified_proved", serialized)
         self.assertTrue(verify_trajectory(trajectory).valid)
+
+    def test_rl_export_rejects_an_incomplete_global_chain_path(self) -> None:
+        first_fixture = load_fixture("proved")
+        second_fixture = load_fixture("disproved")
+        first = self.engine.submit(
+            first_fixture["informal_statement"], first_fixture["formal_spec"]
+        )
+        self.engine.submit(
+            second_fixture["informal_statement"], second_fixture["formal_spec"]
+        )
+        self.engine.process(first.claim_id, max_assignments=16)
+        trajectory = self.engine.export_trajectory(first.claim_id)
+
+        self.assertTrue(verify_trajectory(trajectory).valid)
+        del trajectory["provenance"]["links"][1]
+        body = {key: value for key, value in trajectory.items() if key != "trajectory_hash"}
+        trajectory["trajectory_hash"] = hash_json(body)
+
+        result = verify_trajectory(trajectory)
+        self.assertFalse(result.valid)
+        self.assertEqual(result.reason, "provenance_chain_invalid")
 
     def test_rl_export_tampering_is_detected_even_if_outer_hash_is_recomputed(self) -> None:
         fixture = load_fixture("disproved")

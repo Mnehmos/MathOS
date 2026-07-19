@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+import sqlite3
 import sys
 from typing import Any
 
@@ -198,7 +199,7 @@ class MathOSMcpServer:
             else:
                 return _tool_result({"error": f"unknown tool: {name}"}, is_error=True)
             return _tool_result(value)
-        except (KeyError, OSError, TypeError, ValueError) as error:
+        except (KeyError, OSError, TypeError, ValueError, sqlite3.Error) as error:
             return _tool_result(
                 {"error": type(error).__name__, "message": str(error)},
                 is_error=True,

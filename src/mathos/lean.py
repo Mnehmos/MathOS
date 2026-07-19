@@ -40,13 +40,24 @@ class LeanSubprocessVerifier:
                 VerificationOutcome.UNKNOWN,
                 {"reason": "lean_toolchain_unavailable", "source": str(source)},
             )
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as error:
+            return self._result(
+                VerificationOutcome.UNKNOWN,
+                {
+                    "reason": "lean_execution_failed",
+                    "source": str(source),
+                    "command": command,
+                    "error_type": type(error).__name__,
+                },
+            )
         details = {
             "source": str(source),
             "command": command,
