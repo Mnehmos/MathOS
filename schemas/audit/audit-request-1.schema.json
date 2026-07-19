@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/audit/request/1",
+  "title": "MathOS Lean Audit Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "subject", "diagnostic_evidence_id", "diagnostic_evidence_hash", "environment_hash", "module_artifact_hash", "declaration_name", "policy_hash"],
+  "properties": {
+    "schema_version": {"const": "audit_request/1"},
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "format": "uuid"},
+        "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "diagnostic_evidence_id": {"type": "string", "format": "uuid"},
+    "diagnostic_evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "module_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256},
+    "policy_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

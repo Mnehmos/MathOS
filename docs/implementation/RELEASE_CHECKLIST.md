@@ -43,6 +43,8 @@ Phase 3 execution evidence: a leased job can invoke only the allowlisted Lean ex
 
 Phase 3 diagnostic evidence: the closed `evidence/1` contract names exact subject versions, all required evidence kinds, explicit authority, provenance, artifacts, environment, supersession, and staleness. Migration 0009 makes evidence rows immutable and rejects subject/version mismatch. The application can now promote only non-authoritative Lean elaboration diagnostics after matching an exact formalization, terminal job, environment, module, declaration, private verifier report, and CAS artifact closure. Retry, restart, mismatch, forged-provenance, and corruption tests pass locally. Proof closure, authoritative evidence, and mathematical-status derivation remain absent, so every verification item remains unchecked.
 
+Phase 3 local audit evidence: the committed audit policy and closed request/report schemas bind an exact formalization, accepted elaboration diagnostic, environment, module, declaration, and policy identity. Durable audit jobs run source escape scans and verifier-controlled `#print axioms`, retain private diagnostics, and atomically promote diagnostic proof-closure and axiom-audit evidence. Policy mismatch, malformed output, duplicate axioms, retries, restart, partial promotion, and corruption fail closed. Local audits explicitly lack publication memory and network isolation and cannot become authoritative, so the complete proof-authority and publication criteria remain unchecked.
+
 ## Search and context
 
 - [ ] Exact, FTS, graph, declaration, and failure searches work.

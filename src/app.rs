@@ -14,7 +14,8 @@ use crate::domain::schemas::{ExactVersionReference, FormalizationPayload};
 use crate::domain::{
     ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeSnapshot, EnvironmentManifest,
     EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult,
-    EvidenceSnapshot, GraphTraversalHit, GraphTraversalRequest, RecordDraft, RecordKind,
+    EvidenceSnapshot, GraphTraversalHit, GraphTraversalRequest, LeanAuditClassification,
+    LeanAuditJobSnapshot, LeanAuditReport, LeanAuditRequest, RecordDraft, RecordKind,
     RecordSnapshot, RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
     VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
     VerifierJobSnapshot,
@@ -103,6 +104,26 @@ pub struct EvidencePromotionOutcome {
     pub dry_run: bool,
     pub proposed_evidence_hash: String,
     pub evidence: Option<EvidenceSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuditEnqueueOutcome {
+    pub dry_run: bool,
+    pub proposed_input_hash: String,
+    pub job: Option<LeanAuditJobSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuditWorkOutcome {
+    pub job: LeanAuditJobSnapshot,
+    pub report: LeanAuditReport,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuditEvidencePromotionOutcome {
+    pub dry_run: bool,
+    pub proposed_evidence_hashes: Vec<String>,
+    pub evidence: Option<Vec<EvidenceSnapshot>>,
 }
 
 pub struct Application {
@@ -707,6 +728,239 @@ impl Application {
         self.store.list_evidence(limit)
     }
 
+    pub fn enqueue_audit_job(
+        &mut self,
+        subject: &ExactVersionReference,
+        diagnostic_evidence_id: &str,
+        priority: i32,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<AuditEnqueueOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let formalization = self.store.get_record_version(&subject.version_hash)?;
+        if formalization.object_id != subject.object_id
+            || formalization.kind != RecordKind::Formalization
+        {
+            return Err(AppError::new(
+                "MCL_AUDIT_SUBJECT_INVALID",
+                "audit subject is not the requested exact formalization version",
+                false,
+                "Use one exact canonical formalization object and version.",
+            ));
+        }
+        let formal_payload: FormalizationPayload = serde_json::from_value(formalization.payload)
+            .map_err(|error| {
+                AppError::new(
+                    "MCL_AUDIT_SUBJECT_INVALID",
+                    error.to_string(),
+                    false,
+                    "Quarantine an invalid stored formalization and restore a verified backup.",
+                )
+            })?;
+        let evidence = self.store.get_evidence(diagnostic_evidence_id)?;
+        if evidence.payload.subject != *subject
+            || evidence.payload.evidence_kind != EvidenceKind::LeanElaboration
+            || evidence.payload.result != EvidenceResult::Accepted
+            || evidence.payload.authority_class != EvidenceAuthorityClass::Diagnostic
+            || evidence.payload.stale
+            || evidence.payload.environment_hash.as_deref()
+                != Some(formal_payload.environment_hash.as_str())
+            || !evidence
+                .payload
+                .artifact_hashes
+                .iter()
+                .any(|hash| hash == &formal_payload.module_artifact_hash)
+        {
+            return Err(AppError::new(
+                "MCL_AUDIT_EVIDENCE_INVALID",
+                "audit requires accepted diagnostic elaboration evidence for the exact formalization",
+                false,
+                "Promote an accepted exact verifier diagnostic before requesting an audit.",
+            ));
+        }
+        let policy = crate::domain::audit::committed_audit_policy()?;
+        let request = LeanAuditRequest {
+            schema_version: crate::domain::audit::AUDIT_REQUEST_SCHEMA_VERSION.to_owned(),
+            subject: subject.clone(),
+            diagnostic_evidence_id: evidence.evidence_id,
+            diagnostic_evidence_hash: evidence.evidence_hash,
+            environment_hash: formal_payload.environment_hash,
+            module_artifact_hash: formal_payload.module_artifact_hash,
+            declaration_name: formal_payload.declaration_name,
+            policy_hash: policy.policy_hash()?,
+        };
+        let proposed_input_hash = self.store.validate_audit_job_enqueue(&request, priority)?;
+        let job = if dry_run {
+            None
+        } else {
+            Some(
+                self.store
+                    .enqueue_audit_job(&request, priority, actor, idempotency_key)?,
+            )
+        };
+        Ok(AuditEnqueueOutcome {
+            dry_run,
+            proposed_input_hash,
+            job,
+        })
+    }
+
+    pub fn get_audit_job(&self, job_id: &str) -> Result<LeanAuditJobSnapshot, AppError> {
+        self.store.get_audit_job(job_id)
+    }
+
+    pub fn list_audit_jobs(&self, limit: usize) -> Result<Vec<LeanAuditJobSnapshot>, AppError> {
+        self.store.list_audit_jobs(limit)
+    }
+
+    pub fn promote_audit_evidence(
+        &mut self,
+        formalization_object_id: &str,
+        formalization_version_hash: &str,
+        audit_job_id: &str,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<AuditEvidencePromotionOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let formalization = self.store.get_record_version(formalization_version_hash)?;
+        if formalization.object_id != formalization_object_id
+            || formalization.kind != RecordKind::Formalization
+        {
+            return Err(AppError::new(
+                "MCL_AUDIT_SUBJECT_INVALID",
+                "audit evidence subject is not the requested exact formalization version",
+                false,
+                "Use one exact canonical formalization object and version.",
+            ));
+        }
+        let job = self.store.get_audit_job(audit_job_id)?;
+        if job.request.subject.object_id != formalization_object_id
+            || job.request.subject.version_hash != formalization_version_hash
+        {
+            return Err(AppError::new(
+                "MCL_AUDIT_EVIDENCE_MISMATCH",
+                "audit job does not target the requested exact formalization",
+                false,
+                "Promote evidence only against the audit job's exact subject.",
+            ));
+        }
+        let report_hash = job.result_artifact_hash.as_deref().ok_or_else(|| {
+            AppError::new(
+                "MCL_AUDIT_EVIDENCE_JOB_INVALID",
+                "audit job has no terminal report artifact",
+                true,
+                "Wait for the exact audit job to finish.",
+            )
+        })?;
+        let report_artifact = self.store.get_artifact(report_hash)?;
+        if report_artifact.media_type != crate::domain::ArtifactMediaType::Json
+            || report_artifact.creation_source != crate::domain::ArtifactCreationSource::Verifier
+            || report_artifact.restriction != crate::domain::ArtifactRestriction::Private
+            || report_artifact
+                .semantic_metadata
+                .get("job_id")
+                .is_none_or(|value| value != &job.job_id)
+            || report_artifact
+                .semantic_metadata
+                .get("artifact_role")
+                .is_none_or(|value| value != "audit_report")
+        {
+            return Err(AppError::new(
+                "MCL_AUDIT_REPORT_INVALID",
+                "audit result artifact lacks controlled private report provenance",
+                false,
+                "Quarantine the audit result and rerun the exact job.",
+            ));
+        }
+        let report_bytes = self.artifacts.read(report_hash)?;
+        let report: LeanAuditReport = serde_json::from_slice(&report_bytes).map_err(|error| {
+            AppError::new(
+                "MCL_AUDIT_REPORT_INVALID",
+                format!("audit report is invalid: {error}"),
+                false,
+                "Quarantine the audit result and rerun the exact job.",
+            )
+        })?;
+        let policy = crate::domain::audit::committed_audit_policy()?;
+        report.validate_against_policy(&policy)?;
+        if report.job_id != job.job_id
+            || report.request_hash != job.canonical_input_hash
+            || report.subject != job.request.subject
+            || report.diagnostic_evidence_hash != job.request.diagnostic_evidence_hash
+            || report.environment_hash != job.request.environment_hash
+            || report.module_artifact_hash != job.request.module_artifact_hash
+            || report.declaration_name != job.request.declaration_name
+            || report.policy_hash != job.request.policy_hash
+            || report.authoritative
+        {
+            return Err(AppError::new(
+                "MCL_AUDIT_REPORT_MISMATCH",
+                "audit report does not match the exact terminal job",
+                false,
+                "Quarantine the audit result and rerun the exact job.",
+            ));
+        }
+        let result = match report.classification {
+            LeanAuditClassification::Passed => EvidenceResult::Accepted,
+            LeanAuditClassification::Rejected => EvidenceResult::Rejected,
+            LeanAuditClassification::Inconclusive => EvidenceResult::Inconclusive,
+            LeanAuditClassification::Failed => EvidenceResult::Failed,
+        };
+        let mut artifact_hashes = vec![
+            job.request.module_artifact_hash.clone(),
+            report_hash.to_owned(),
+        ];
+        artifact_hashes.extend(report.stdout_artifact_hash.iter().cloned());
+        artifact_hashes.extend(report.stderr_artifact_hash.iter().cloned());
+        artifact_hashes.sort();
+        artifact_hashes.dedup();
+        let identity = format!(
+            "lean-audit:{}",
+            report
+                .observed_toolchain_version
+                .as_deref()
+                .unwrap_or("source-policy")
+        );
+        let build = |evidence_kind| EvidencePayload {
+            schema_version: crate::domain::evidence::EVIDENCE_SCHEMA_VERSION.to_owned(),
+            subject: job.request.subject.clone(),
+            evidence_kind,
+            result,
+            authority_class: EvidenceAuthorityClass::Diagnostic,
+            producing_run_id: None,
+            producing_job_id: Some(job.job_id.clone()),
+            artifact_hashes: artifact_hashes.clone(),
+            verifier_or_reviewer_identity: identity.clone(),
+            environment_hash: Some(job.request.environment_hash.clone()),
+            supersedes_evidence_id: None,
+            stale: false,
+            stale_reason: None,
+        };
+        let payloads = [
+            build(EvidenceKind::ProofClosureScan),
+            build(EvidenceKind::AxiomAudit),
+        ];
+        let proposed_evidence_hashes = payloads
+            .iter()
+            .map(EvidencePayload::evidence_hash)
+            .collect::<Result<Vec<_>, _>>()?;
+        let evidence = if dry_run {
+            None
+        } else {
+            Some(
+                self.store
+                    .create_audit_evidence_pair(&payloads, actor, idempotency_key)?,
+            )
+        };
+        Ok(AuditEvidencePromotionOutcome {
+            dry_run,
+            proposed_evidence_hashes,
+            evidence,
+        })
+    }
+
     pub fn work_one_verifier_job(
         &mut self,
         worker: &str,
@@ -887,6 +1141,258 @@ impl Application {
             last_error.as_ref(),
         )?;
         Ok(Some(VerifierWorkOutcome { job, report }))
+    }
+
+    pub fn work_one_audit_job(
+        &mut self,
+        worker: &str,
+        lease_seconds: u64,
+    ) -> Result<Option<AuditWorkOutcome>, AppError> {
+        let Some(leased) = self.store.lease_next_audit_job(worker, lease_seconds)? else {
+            return Ok(None);
+        };
+        let running = self.store.mark_audit_job_running(&leased.job_id, worker)?;
+        let environment = self
+            .store
+            .get_environment(&running.request.environment_hash)?;
+        if lease_seconds < environment.manifest.resource_limits.timeout_seconds + 60 {
+            return Err(AppError::new(
+                "MCL_AUDIT_LEASE_TOO_SHORT",
+                "audit worker lease does not cover the environment timeout plus cleanup margin",
+                true,
+                "Use a lease at least 60 seconds longer than the registered verifier timeout.",
+            ));
+        }
+        let module = self
+            .store
+            .get_artifact(&running.request.module_artifact_hash)?;
+        if module.media_type != crate::domain::ArtifactMediaType::LeanSource {
+            return Err(AppError::new(
+                "MCL_AUDIT_ARTIFACT_INVALID",
+                "leased audit job no longer resolves to Lean source metadata",
+                false,
+                "Quarantine the database and restore a verified backup.",
+            ));
+        }
+        let policy = crate::domain::audit::committed_audit_policy()?;
+        if policy.policy_hash()? != running.request.policy_hash {
+            return Err(AppError::new(
+                "MCL_AUDIT_POLICY_MISMATCH",
+                "leased audit job does not use the committed policy identity",
+                false,
+                "Quarantine the audit job and enqueue it under the committed policy.",
+            ));
+        }
+        let source = self.artifacts.read(&module.artifact_hash)?;
+        let source_forbidden_token = crate::verifier::scan_forbidden_source_token(&source)?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut observed_toolchain_version = None;
+        let mut observed_axioms = Vec::new();
+        let mut unexpected_axioms = Vec::new();
+        let mut dependency_closure_complete = false;
+        let mut process_error = None;
+        let classification = if source_forbidden_token.is_some() {
+            LeanAuditClassification::Rejected
+        } else {
+            let workspace = tempfile::Builder::new()
+                .prefix("mcl-audit-")
+                .tempdir_in(&self.workspace_root)
+                .map_err(|error| AppError::io("create audit temporary workspace", error))?;
+            self.artifacts.materialize(
+                &module.artifact_hash,
+                workspace.path(),
+                "Submission.lean",
+            )?;
+            let mut driver = source.clone();
+            driver.extend_from_slice(
+                format!("\n#print axioms {}\n", running.request.declaration_name).as_bytes(),
+            );
+            let driver_path = workspace.path().join("Audit.lean");
+            let mut driver_file = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&driver_path)
+                .map_err(|error| AppError::io("create audit driver", error))?;
+            use std::io::Write as _;
+            driver_file
+                .write_all(&driver)
+                .map_err(|error| AppError::io("write audit driver", error))?;
+            driver_file
+                .sync_all()
+                .map_err(|error| AppError::io("sync audit driver", error))?;
+            drop(driver_file);
+            match crate::verifier::execute_lean(
+                &self.verifier_command,
+                workspace.path(),
+                "Audit.lean",
+                &environment.manifest,
+            ) {
+                Ok(result) => {
+                    stdout = result.stdout;
+                    stderr = result.stderr;
+                    observed_toolchain_version = Some(result.observed_toolchain_version);
+                    if result.timed_out {
+                        process_error = Some(AppError::new(
+                            "MCL_AUDIT_TIMED_OUT",
+                            "Lean axiom audit exceeded its wall-clock bound",
+                            true,
+                            "Inspect the exact audit inputs before retrying with a reviewed policy change.",
+                        ));
+                        LeanAuditClassification::Failed
+                    } else if result.output_limit_exceeded {
+                        process_error = Some(AppError::new(
+                            "MCL_AUDIT_OUTPUT_LIMIT",
+                            "Lean axiom audit exceeded its retained-output bound",
+                            false,
+                            "Inspect the declaration and dependency output before changing the bound.",
+                        ));
+                        LeanAuditClassification::Failed
+                    } else if result.exit_code != Some(0) {
+                        process_error = Some(AppError::new(
+                            "MCL_AUDIT_LEAN_REJECTED",
+                            "Lean rejected the verifier-controlled axiom audit driver",
+                            false,
+                            "Inspect the retained audit diagnostics and exact declaration.",
+                        ));
+                        LeanAuditClassification::Failed
+                    } else {
+                        match crate::verifier::parse_axiom_dependencies(
+                            &running.request.declaration_name,
+                            &stdout,
+                            &stderr,
+                        ) {
+                            Ok(axioms) => {
+                                observed_axioms = axioms;
+                                unexpected_axioms = observed_axioms
+                                    .iter()
+                                    .filter(|axiom| {
+                                        policy.allowed_axioms.binary_search(axiom).is_err()
+                                    })
+                                    .cloned()
+                                    .collect();
+                                dependency_closure_complete = true;
+                                if unexpected_axioms.is_empty() {
+                                    LeanAuditClassification::Passed
+                                } else {
+                                    LeanAuditClassification::Rejected
+                                }
+                            }
+                            Err(error) => {
+                                process_error = Some(error);
+                                LeanAuditClassification::Failed
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    process_error = Some(error);
+                    LeanAuditClassification::Failed
+                }
+            }
+        };
+        let stdout_artifact_hash =
+            self.register_audit_output(&running, "audit_stdout", &stdout, worker)?;
+        let stderr_artifact_hash =
+            self.register_audit_output(&running, "audit_stderr", &stderr, worker)?;
+        let report = LeanAuditReport {
+            schema_version: crate::domain::audit::AUDIT_REPORT_SCHEMA_VERSION.to_owned(),
+            job_id: running.job_id.clone(),
+            request_hash: running.canonical_input_hash.clone(),
+            subject: running.request.subject.clone(),
+            diagnostic_evidence_hash: running.request.diagnostic_evidence_hash.clone(),
+            environment_hash: running.request.environment_hash.clone(),
+            module_artifact_hash: running.request.module_artifact_hash.clone(),
+            declaration_name: running.request.declaration_name.clone(),
+            policy_hash: running.request.policy_hash.clone(),
+            classification,
+            source_forbidden_token,
+            observed_axioms,
+            unexpected_axioms,
+            stdout_artifact_hash,
+            stderr_artifact_hash,
+            observed_toolchain_version,
+            trust_profile: environment.manifest.trust_profile,
+            dependency_closure_complete,
+            memory_limit_enforced: false,
+            network_isolation_enforced: false,
+            authoritative: false,
+        };
+        report.validate_against_policy(&policy)?;
+        let report_bytes = canonical_json(&serde_json::to_value(&report).map_err(|error| {
+            AppError::new(
+                "MCL_AUDIT_RESULT_INVALID",
+                error.to_string(),
+                false,
+                "Report this deterministic audit result serialization defect.",
+            )
+        })?)?;
+        let report_metadata = ArtifactMetadata {
+            schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION.to_owned(),
+            media_type: crate::domain::ArtifactMediaType::Json,
+            creation_source: crate::domain::ArtifactCreationSource::Verifier,
+            license_expression: None,
+            restriction: crate::domain::ArtifactRestriction::Private,
+            semantic_metadata: BTreeMap::from([
+                ("job_id".to_owned(), running.job_id.clone()),
+                ("artifact_role".to_owned(), "audit_report".to_owned()),
+            ]),
+        };
+        let report_snapshot = self.ensure_verifier_artifact(
+            &report_bytes,
+            &report_metadata,
+            worker,
+            &format!("audit-report-{}-{}", running.job_id, running.attempt_count),
+        )?;
+        let operational_success = classification != LeanAuditClassification::Failed;
+        let last_error = process_error.as_ref().map(|error| {
+            json!({
+                "code": error.code,
+                "message": error.message,
+                "retryable": error.retryable,
+                "corrective_action": error.corrective_action,
+            })
+        });
+        let job = self.store.finish_audit_job(
+            &running.job_id,
+            worker,
+            &report_snapshot.artifact_hash,
+            operational_success,
+            last_error.as_ref(),
+        )?;
+        Ok(Some(AuditWorkOutcome { job, report }))
+    }
+
+    fn register_audit_output(
+        &mut self,
+        job: &LeanAuditJobSnapshot,
+        role: &str,
+        bytes: &[u8],
+        worker: &str,
+    ) -> Result<Option<String>, AppError> {
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        let metadata = ArtifactMetadata {
+            schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION.to_owned(),
+            media_type: crate::domain::ArtifactMediaType::OctetStream,
+            creation_source: crate::domain::ArtifactCreationSource::Verifier,
+            license_expression: None,
+            restriction: crate::domain::ArtifactRestriction::Private,
+            semantic_metadata: BTreeMap::from([
+                ("job_id".to_owned(), job.job_id.clone()),
+                ("artifact_role".to_owned(), role.to_owned()),
+            ]),
+        };
+        Ok(Some(
+            self.ensure_verifier_artifact(
+                bytes,
+                &metadata,
+                worker,
+                &format!("{role}-{}-{}", job.job_id, job.attempt_count),
+            )?
+            .artifact_hash,
+        ))
     }
 
     fn register_verifier_output(

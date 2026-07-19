@@ -1,0 +1,31 @@
+{
+  "schema_version": "audit_policy/1",
+  "policy_name": "lean_local_proof_closure",
+  "allowed_axioms": [
+    "Classical.choice",
+    "Quot.sound",
+    "propext"
+  ],
+  "forbidden_source_tokens": [
+    "admit",
+    "axiom",
+    "builtin_initialize",
+    "constant",
+    "elab",
+    "eval",
+    "extern",
+    "implemented_by",
+    "include_bytes",
+    "include_str",
+    "initialize",
+    "macro",
+    "native_decide",
+    "reduce",
+    "run_cmd",
+    "run_tac",
+    "sorry",
+    "sorryAx",
+    "syntax",
+    "unsafe"
+  ]
+}

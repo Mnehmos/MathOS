@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::{Value, to_value};
 
 use crate::app::{Application, root_exists};
@@ -170,6 +170,10 @@ enum VerifyAction {
     PromoteDiagnostic(VerifyPromoteDiagnosticOptions),
     Evidence(VerifyEvidenceOptions),
     EvidenceList(VerifyListOptions),
+    Audit(VerifyAuditOptions),
+    AuditStatus(VerifyStatusOptions),
+    AuditList(VerifyListOptions),
+    PromoteAudit(VerifyPromoteDiagnosticOptions),
 }
 
 #[derive(Debug, Args)]
@@ -224,12 +228,39 @@ struct VerifyEvidenceOptions {
 }
 
 #[derive(Debug, Args)]
+struct VerifyAuditOptions {
+    #[arg(long)]
+    formalization_object_id: String,
+
+    #[arg(long)]
+    formalization_version_hash: String,
+
+    #[arg(long)]
+    diagnostic_evidence_id: String,
+
+    #[arg(long, default_value_t = 0)]
+    priority: i32,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum WorkerJobKind {
+    Elaboration,
+    Audit,
+}
+
+#[derive(Debug, Args)]
 struct WorkerOptions {
     #[arg(long)]
     worker_id: String,
 
     #[arg(long, default_value_t = 3_660)]
     lease_seconds: u64,
+
+    #[arg(long, value_enum, default_value_t = WorkerJobKind::Elaboration)]
+    job_kind: WorkerJobKind,
 }
 
 #[derive(Debug, Args)]
@@ -465,18 +496,34 @@ impl Cli {
             Command::Verify(options) => execute_verify(&config, options),
             Command::Worker(options) => {
                 let mut application = Application::open(&config)?;
-                let outcome =
-                    application.work_one_verifier_job(&options.worker_id, options.lease_seconds)?;
-                Ok(CliOutcome {
-                    value: match outcome {
-                        Some(outcome) => {
+                let value = match options.job_kind {
+                    WorkerJobKind::Elaboration => application
+                        .work_one_verifier_job(&options.worker_id, options.lease_seconds)?
+                        .map(|outcome| {
                             to_value(outcome).expect("verifier work outcome is serializable")
-                        }
-                        None => serde_json::json!({
-                            "worked": false,
-                            "message": "No queued verifier job was available."
+                        })
+                        .unwrap_or_else(|| {
+                            serde_json::json!({
+                                "worked": false,
+                                "job_kind": "elaboration",
+                                "message": "No queued verifier job was available."
+                            })
                         }),
-                    },
+                    WorkerJobKind::Audit => application
+                        .work_one_audit_job(&options.worker_id, options.lease_seconds)?
+                        .map(|outcome| {
+                            to_value(outcome).expect("audit work outcome is serializable")
+                        })
+                        .unwrap_or_else(|| {
+                            serde_json::json!({
+                                "worked": false,
+                                "job_kind": "audit",
+                                "message": "No queued audit job was available."
+                            })
+                        }),
+                };
+                Ok(CliOutcome {
+                    value,
                     success: true,
                 })
             }
@@ -548,6 +595,31 @@ fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<Cli
         }
         VerifyAction::EvidenceList(options) => to_value(application.list_evidence(options.limit)?)
             .expect("evidence list is serializable"),
+        VerifyAction::Audit(options) => to_value(application.enqueue_audit_job(
+            &crate::domain::schemas::ExactVersionReference {
+                object_id: options.formalization_object_id,
+                version_hash: options.formalization_version_hash,
+            },
+            &options.diagnostic_evidence_id,
+            options.priority,
+            &options.mutation.actor,
+            &options.mutation.idempotency_key,
+            options.mutation.dry_run,
+        )?)
+        .expect("audit enqueue outcome is serializable"),
+        VerifyAction::AuditStatus(options) => to_value(application.get_audit_job(&options.job_id)?)
+            .expect("audit job is serializable"),
+        VerifyAction::AuditList(options) => to_value(application.list_audit_jobs(options.limit)?)
+            .expect("audit job list is serializable"),
+        VerifyAction::PromoteAudit(options) => to_value(application.promote_audit_evidence(
+            &options.formalization_object_id,
+            &options.formalization_version_hash,
+            &options.job_id,
+            &options.mutation.actor,
+            &options.mutation.idempotency_key,
+            options.mutation.dry_run,
+        )?)
+        .expect("audit evidence promotion is serializable"),
     };
     Ok(CliOutcome {
         value,

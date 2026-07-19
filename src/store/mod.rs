@@ -12,9 +12,9 @@ use crate::canonical::{canonical_json, record_version_hash, value_hash};
 use crate::domain::schemas::{FormalizationPayload, validate_record_payload};
 use crate::domain::{
     ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest,
-    EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceSnapshot,
-    RecordDraft, RecordKind, RecordSnapshot, VerifierJobRequest, VerifierJobSnapshot,
-    VerifierJobState,
+    EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult,
+    EvidenceSnapshot, LeanAuditJobSnapshot, LeanAuditRequest, RecordDraft, RecordKind,
+    RecordSnapshot, VerifierJobRequest, VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
 
@@ -857,6 +857,228 @@ impl Store {
         read_verifier_job(&self.connection, job_id)
     }
 
+    pub fn enqueue_audit_job(
+        &mut self,
+        request: &LeanAuditRequest,
+        priority: i32,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<LeanAuditJobSnapshot, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        validate_job_priority(priority)?;
+        request.validate()?;
+        validate_audit_job_references(&self.connection, request)?;
+        let request_value = serde_json::to_value(request).map_err(|error| {
+            AppError::new(
+                "MCL_AUDIT_REQUEST_INVALID",
+                error.to_string(),
+                false,
+                "Report this deterministic audit request serialization defect.",
+            )
+        })?;
+        let canonical_input_hash = value_hash(&request_value)?;
+        let input_hash = value_hash(&json!({
+            "operation": "audit.enqueue",
+            "request": request_value,
+            "priority": priority,
+            "actor": actor,
+        }))?;
+        let input_json = String::from_utf8(canonical_json(&request_value)?).map_err(|error| {
+            AppError::new(
+                "MCL_CANONICAL_JSON_INVALID",
+                error.to_string(),
+                false,
+                "Report this canonical JSON encoding defect.",
+            )
+        })?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start audit job enqueue", error))?;
+        if let Some(existing) =
+            read_idempotent_result(&transaction, "audit.enqueue", idempotency_key, &input_hash)?
+        {
+            return Ok(existing);
+        }
+        let job_id = Uuid::now_v7().to_string();
+        transaction
+            .execute(
+                "INSERT INTO jobs(job_id, job_type, canonical_input_hash, idempotency_key, state, priority, lease_owner, lease_expires_at, attempt_count, progress_json, result_artifact_hash, last_error_json, created_at, updated_at, input_json, actor) VALUES (?1, 'lean_audit', ?2, ?3, 'queued', ?4, NULL, NULL, 0, '{}', NULL, NULL, unixepoch(), unixepoch(), ?5, ?6)",
+                params![job_id, canonical_input_hash, idempotency_key, priority, input_json, actor],
+            )
+            .map_err(|error| AppError::database("insert audit job", error))?;
+        let snapshot = read_audit_job(&transaction, &job_id)?;
+        write_idempotent_result(
+            &transaction,
+            "audit.enqueue",
+            idempotency_key,
+            &input_hash,
+            &snapshot,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit audit job enqueue", error))?;
+        Ok(snapshot)
+    }
+
+    pub fn validate_audit_job_enqueue(
+        &self,
+        request: &LeanAuditRequest,
+        priority: i32,
+    ) -> Result<String, AppError> {
+        validate_job_priority(priority)?;
+        request.validate()?;
+        validate_audit_job_references(&self.connection, request)?;
+        request.request_hash()
+    }
+
+    pub fn get_audit_job(&self, job_id: &str) -> Result<LeanAuditJobSnapshot, AppError> {
+        validate_uuid(job_id, "audit job")?;
+        read_audit_job(&self.connection, job_id)
+    }
+
+    pub fn list_audit_jobs(&self, limit: usize) -> Result<Vec<LeanAuditJobSnapshot>, AppError> {
+        if !(1..=100).contains(&limit) {
+            return Err(AppError::new(
+                "MCL_AUDIT_JOB_LIMIT_INVALID",
+                "audit job list limit must be between 1 and 100",
+                false,
+                "Use a bounded audit job list limit.",
+            ));
+        }
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT job_id FROM jobs WHERE job_type = 'lean_audit' ORDER BY created_at, job_id LIMIT ?1",
+            )
+            .map_err(|error| AppError::database("prepare audit job list", error))?;
+        let ids = statement
+            .query_map([limit as i64], |row| row.get::<_, String>(0))
+            .map_err(|error| AppError::database("list audit jobs", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AppError::database("read audit job list", error))?;
+        ids.iter()
+            .map(|job_id| read_audit_job(&self.connection, job_id))
+            .collect()
+    }
+
+    pub fn lease_next_audit_job(
+        &mut self,
+        worker: &str,
+        lease_seconds: u64,
+    ) -> Result<Option<LeanAuditJobSnapshot>, AppError> {
+        validate_worker_lease(worker, lease_seconds)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start audit job lease", error))?;
+        requeue_expired_jobs(&transaction)?;
+        let job_id = transaction
+            .query_row(
+                "SELECT job_id FROM jobs WHERE job_type = 'lean_audit' AND state = 'queued' ORDER BY priority DESC, created_at, job_id LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| AppError::database("select audit job lease", error))?;
+        let Some(job_id) = job_id else {
+            transaction
+                .commit()
+                .map_err(|error| AppError::database("commit empty audit job lease", error))?;
+            return Ok(None);
+        };
+        transaction
+            .execute(
+                "UPDATE jobs SET state = 'leased', lease_owner = ?2, lease_expires_at = unixepoch() + ?3, attempt_count = attempt_count + 1, progress_json = '{\"phase\":\"leased\"}', updated_at = unixepoch() WHERE job_id = ?1 AND state = 'queued'",
+                params![job_id, worker, lease_seconds as i64],
+            )
+            .map_err(|error| AppError::database("lease audit job", error))?;
+        let snapshot = read_audit_job(&transaction, &job_id)?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit audit job lease", error))?;
+        Ok(Some(snapshot))
+    }
+
+    pub fn mark_audit_job_running(
+        &mut self,
+        job_id: &str,
+        worker: &str,
+    ) -> Result<LeanAuditJobSnapshot, AppError> {
+        validate_uuid(job_id, "audit job")?;
+        validate_worker_lease(worker, 1)?;
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE jobs SET state = 'running', progress_json = '{\"phase\":\"running\"}', updated_at = unixepoch() WHERE job_id = ?1 AND job_type = 'lean_audit' AND state = 'leased' AND lease_owner = ?2 AND lease_expires_at >= unixepoch()",
+                params![job_id, worker],
+            )
+            .map_err(|error| AppError::database("start audit job", error))?;
+        if changed != 1 {
+            return Err(audit_job_conflict(job_id));
+        }
+        read_audit_job(&self.connection, job_id)
+    }
+
+    pub fn finish_audit_job(
+        &mut self,
+        job_id: &str,
+        worker: &str,
+        result_artifact_hash: &str,
+        succeeded: bool,
+        last_error: Option<&Value>,
+    ) -> Result<LeanAuditJobSnapshot, AppError> {
+        validate_uuid(job_id, "audit job")?;
+        validate_worker_lease(worker, 1)?;
+        validate_hash(result_artifact_hash, "audit result artifact")?;
+        let result_media_type = self
+            .connection
+            .query_row(
+                "SELECT media_type FROM artifacts WHERE artifact_hash = ?1",
+                [result_artifact_hash],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| AppError::database("validate audit result artifact", error))?;
+        if result_media_type.as_deref() != Some("application/json") {
+            return Err(AppError::new(
+                "MCL_AUDIT_RESULT_INVALID",
+                "audit result must resolve to a registered JSON artifact",
+                false,
+                "Register the exact structured audit report before finishing the job.",
+            ));
+        }
+        let state = if succeeded { "succeeded" } else { "failed" };
+        let progress = if succeeded {
+            "{\"phase\":\"completed\"}"
+        } else {
+            "{\"phase\":\"failed\"}"
+        };
+        let last_error_json =
+            last_error
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| {
+                    AppError::new(
+                        "MCL_AUDIT_RESULT_INVALID",
+                        error.to_string(),
+                        false,
+                        "Supply one structured audit error object.",
+                    )
+                })?;
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE jobs SET state = ?3, lease_owner = NULL, lease_expires_at = NULL, progress_json = ?4, result_artifact_hash = ?5, last_error_json = ?6, updated_at = unixepoch() WHERE job_id = ?1 AND job_type = 'lean_audit' AND state = 'running' AND lease_owner = ?2 AND lease_expires_at >= unixepoch()",
+                params![job_id, worker, state, progress, result_artifact_hash, last_error_json],
+            )
+            .map_err(|error| AppError::database("finish audit job", error))?;
+        if changed != 1 {
+            return Err(audit_job_conflict(job_id));
+        }
+        read_audit_job(&self.connection, job_id)
+    }
+
     pub fn create_diagnostic_evidence(
         &mut self,
         payload: &EvidencePayload,
@@ -972,6 +1194,145 @@ impl Store {
             .commit()
             .map_err(|error| AppError::database("commit diagnostic evidence", error))?;
         Ok(snapshot)
+    }
+
+    pub fn create_audit_evidence_pair(
+        &mut self,
+        payloads: &[EvidencePayload; 2],
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<Vec<EvidenceSnapshot>, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        let mut kinds = payloads
+            .iter()
+            .map(|payload| payload.evidence_kind)
+            .collect::<Vec<_>>();
+        kinds.sort_by_key(|kind| kind.as_str());
+        if kinds != [EvidenceKind::AxiomAudit, EvidenceKind::ProofClosureScan] {
+            return Err(AppError::new(
+                "MCL_AUDIT_EVIDENCE_INVALID",
+                "audit promotion must create exactly one axiom audit and one proof-closure scan",
+                false,
+                "Derive the exact audit evidence pair from one completed audit report.",
+            ));
+        }
+        for payload in payloads {
+            payload.validate()?;
+            if payload.authority_class != EvidenceAuthorityClass::Diagnostic {
+                return Err(AppError::new(
+                    "MCL_EVIDENCE_AUTHORITY_FORBIDDEN",
+                    "local audit evidence cannot be authoritative",
+                    false,
+                    "Complete publication isolation before adding an authoritative evidence path.",
+                ));
+            }
+            validate_audit_evidence_references(&self.connection, payload)?;
+        }
+        let input_hash = value_hash(&json!({
+            "operation": "evidence.create_audit_pair",
+            "payloads": payloads,
+            "actor": actor,
+        }))?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start audit evidence creation", error))?;
+        if let Some(existing) = read_idempotent_result(
+            &transaction,
+            "evidence.create_audit_pair",
+            idempotency_key,
+            &input_hash,
+        )? {
+            return Ok(existing);
+        }
+        let mut prepared = Vec::with_capacity(2);
+        for payload in payloads {
+            let evidence_hash = payload.evidence_hash()?;
+            if transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM evidence WHERE evidence_hash = ?1)",
+                    [&evidence_hash],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| AppError::database("search audit evidence", error))?
+            {
+                return Err(AppError::new(
+                    "MCL_EVIDENCE_EXISTS",
+                    format!("evidence {evidence_hash} already exists"),
+                    false,
+                    "Retrieve the existing evidence or retry with the original idempotency key.",
+                ));
+            }
+            let payload_json = String::from_utf8(canonical_json(
+                &serde_json::to_value(payload).map_err(|error| {
+                    AppError::new(
+                        "MCL_EVIDENCE_INVALID",
+                        error.to_string(),
+                        false,
+                        "Report this deterministic audit evidence serialization defect.",
+                    )
+                })?,
+            )?)
+            .map_err(|error| {
+                AppError::new(
+                    "MCL_CANONICAL_JSON_INVALID",
+                    error.to_string(),
+                    false,
+                    "Report this canonical JSON encoding defect.",
+                )
+            })?;
+            let artifact_hashes_json =
+                serde_json::to_string(&payload.artifact_hashes).map_err(|error| {
+                    AppError::new(
+                        "MCL_EVIDENCE_INVALID",
+                        error.to_string(),
+                        false,
+                        "Report this audit evidence artifact serialization defect.",
+                    )
+                })?;
+            prepared.push((evidence_hash, payload_json, artifact_hashes_json));
+        }
+        let mut snapshots = Vec::with_capacity(2);
+        for (payload, (evidence_hash, payload_json, artifact_hashes_json)) in
+            payloads.iter().zip(prepared)
+        {
+            let evidence_id = Uuid::now_v7().to_string();
+            transaction
+                .execute(
+                    "INSERT INTO evidence(evidence_id, subject_object_id, subject_version_hash, evidence_kind, result, authority_class, run_id, environment_hash, artifact_hash, metadata_json, created_at, superseded_by, evidence_hash, job_id, artifact_hashes_json, verifier_identity, created_by, stale_reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, unixepoch(), NULL, ?11, ?12, ?13, ?14, ?15, ?16)",
+                    params![
+                        evidence_id,
+                        payload.subject.object_id,
+                        payload.subject.version_hash,
+                        payload.evidence_kind.as_str(),
+                        payload.result.as_str(),
+                        payload.authority_class.as_str(),
+                        payload.producing_run_id,
+                        payload.environment_hash,
+                        payload.artifact_hashes.first(),
+                        payload_json,
+                        evidence_hash,
+                        payload.producing_job_id,
+                        artifact_hashes_json,
+                        payload.verifier_or_reviewer_identity,
+                        actor,
+                        payload.stale_reason,
+                    ],
+                )
+                .map_err(|error| AppError::database("insert audit evidence", error))?;
+            snapshots.push(read_evidence(&transaction, &evidence_id)?);
+        }
+        write_idempotent_result(
+            &transaction,
+            "evidence.create_audit_pair",
+            idempotency_key,
+            &input_hash,
+            &snapshots,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit audit evidence", error))?;
+        Ok(snapshots)
     }
 
     pub fn get_evidence(&self, evidence_id: &str) -> Result<EvidenceSnapshot, AppError> {
@@ -1676,7 +2037,7 @@ fn validate_verifier_job_references(
 fn requeue_expired_jobs(connection: &Connection) -> Result<usize, AppError> {
     connection
         .execute(
-            "UPDATE jobs SET state = 'queued', lease_owner = NULL, lease_expires_at = NULL, progress_json = '{\"phase\":\"requeued_after_expired_lease\"}', updated_at = unixepoch() WHERE job_type = 'lean_elaboration' AND state IN ('leased', 'running') AND lease_expires_at < unixepoch()",
+            "UPDATE jobs SET state = 'queued', lease_owner = NULL, lease_expires_at = NULL, progress_json = '{\"phase\":\"requeued_after_expired_lease\"}', updated_at = unixepoch() WHERE job_type IN ('lean_elaboration', 'lean_audit') AND state IN ('leased', 'running') AND lease_expires_at < unixepoch()",
             [],
         )
         .map_err(|error| AppError::database("requeue expired verifier jobs", error))
@@ -1689,6 +2050,189 @@ fn verifier_job_conflict(job_id: &str) -> AppError {
         true,
         "Reload job status and lease the next eligible job before starting work.",
     )
+}
+
+fn audit_job_conflict(job_id: &str) -> AppError {
+    AppError::new(
+        "MCL_AUDIT_JOB_CONFLICT",
+        format!("audit job {job_id} is not leased by this worker with a live lease"),
+        true,
+        "Reload audit status and lease the next eligible audit before starting work.",
+    )
+}
+
+fn validate_audit_job_references(
+    connection: &Connection,
+    request: &LeanAuditRequest,
+) -> Result<(), AppError> {
+    let subject = connection
+        .query_row(
+            "SELECT r.record_type, v.payload_json FROM records r JOIN record_versions v ON v.object_id = r.object_id WHERE r.object_id = ?1 AND v.version_hash = ?2",
+            params![request.subject.object_id, request.subject.version_hash],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|error| AppError::database("validate audit formalization", error))?;
+    let Some((kind, payload_json)) = subject else {
+        return Err(AppError::new(
+            "MCL_AUDIT_SUBJECT_INVALID",
+            "audit request does not resolve to an exact formalization version",
+            false,
+            "Select an exact canonical formalization object and version.",
+        ));
+    };
+    if kind != "formalization" {
+        return Err(AppError::new(
+            "MCL_AUDIT_SUBJECT_INVALID",
+            "audit subject is not a formalization",
+            false,
+            "Select an exact canonical formalization object and version.",
+        ));
+    }
+    let formalization: FormalizationPayload =
+        serde_json::from_str(&payload_json).map_err(|error| {
+            AppError::new(
+                "MCL_AUDIT_SUBJECT_INVALID",
+                format!("stored formalization payload is invalid: {error}"),
+                false,
+                "Quarantine the database and restore a verified backup.",
+            )
+        })?;
+    if formalization.environment_hash != request.environment_hash
+        || formalization.module_artifact_hash != request.module_artifact_hash
+        || formalization.declaration_name != request.declaration_name
+    {
+        return Err(AppError::new(
+            "MCL_AUDIT_FORMALIZATION_MISMATCH",
+            "audit request does not match the exact formalization target",
+            false,
+            "Derive audit inputs from the exact formalization version.",
+        ));
+    }
+    let evidence = read_evidence(connection, &request.diagnostic_evidence_id)?;
+    if evidence.evidence_hash != request.diagnostic_evidence_hash
+        || evidence.payload.subject != request.subject
+        || evidence.payload.evidence_kind != EvidenceKind::LeanElaboration
+        || evidence.payload.result != EvidenceResult::Accepted
+        || evidence.payload.authority_class != EvidenceAuthorityClass::Diagnostic
+        || evidence.payload.stale
+        || evidence.payload.environment_hash.as_deref() != Some(request.environment_hash.as_str())
+        || !evidence
+            .payload
+            .artifact_hashes
+            .iter()
+            .any(|hash| hash == &request.module_artifact_hash)
+    {
+        return Err(AppError::new(
+            "MCL_AUDIT_EVIDENCE_INVALID",
+            "audit requires current accepted diagnostic elaboration evidence for the exact target",
+            false,
+            "Promote an accepted exact verifier diagnostic before requesting an audit.",
+        ));
+    }
+    let policy = crate::domain::audit::committed_audit_policy()?;
+    if policy.policy_hash()? != request.policy_hash {
+        return Err(AppError::new(
+            "MCL_AUDIT_POLICY_MISMATCH",
+            "audit request does not use the committed policy identity",
+            false,
+            "Derive the audit policy hash from the committed policy.",
+        ));
+    }
+    let environment_exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM environments WHERE environment_hash = ?1)",
+            [&request.environment_hash],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| AppError::database("validate audit environment", error))?;
+    let module_media = connection
+        .query_row(
+            "SELECT media_type FROM artifacts WHERE artifact_hash = ?1",
+            [&request.module_artifact_hash],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| AppError::database("validate audit module", error))?;
+    if !environment_exists || module_media.as_deref() != Some("text/x-lean") {
+        return Err(AppError::new(
+            "MCL_AUDIT_REFERENCE_INVALID",
+            "audit environment or Lean module is not registered",
+            false,
+            "Restore the exact registered audit inputs before enqueueing.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_audit_evidence_references(
+    connection: &Connection,
+    payload: &EvidencePayload,
+) -> Result<(), AppError> {
+    if !matches!(
+        payload.evidence_kind,
+        EvidenceKind::ProofClosureScan | EvidenceKind::AxiomAudit
+    ) {
+        return Err(AppError::new(
+            "MCL_AUDIT_EVIDENCE_INVALID",
+            "audit evidence kind is not proof closure or axiom audit",
+            false,
+            "Derive the exact audit evidence pair from one completed audit report.",
+        ));
+    }
+    let job_id = payload
+        .producing_job_id
+        .as_deref()
+        .expect("validated audit job ID");
+    let job = read_audit_job(connection, job_id)?;
+    if !matches!(
+        job.state,
+        VerifierJobState::Succeeded | VerifierJobState::Failed
+    ) || job.result_artifact_hash.is_none()
+    {
+        return Err(AppError::new(
+            "MCL_AUDIT_EVIDENCE_JOB_INVALID",
+            "audit evidence requires one completed audit job with a result artifact",
+            true,
+            "Wait for the exact audit job to finish before promoting evidence.",
+        ));
+    }
+    if payload.subject != job.request.subject
+        || payload.environment_hash.as_deref() != Some(job.request.environment_hash.as_str())
+        || !payload
+            .artifact_hashes
+            .iter()
+            .any(|hash| hash == &job.request.module_artifact_hash)
+        || !payload
+            .artifact_hashes
+            .iter()
+            .any(|hash| Some(hash) == job.result_artifact_hash.as_ref())
+    {
+        return Err(AppError::new(
+            "MCL_AUDIT_EVIDENCE_MISMATCH",
+            "audit evidence does not match its exact subject, job, environment, module, and report",
+            false,
+            "Derive audit evidence only from the exact completed audit job.",
+        ));
+    }
+    for artifact_hash in &payload.artifact_hashes {
+        if !connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM artifacts WHERE artifact_hash = ?1)",
+                [artifact_hash],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::database("validate audit evidence artifact", error))?
+        {
+            return Err(AppError::new(
+                "MCL_AUDIT_EVIDENCE_ARTIFACT_INVALID",
+                format!("audit evidence artifact {artifact_hash} is not registered"),
+                false,
+                "Register and verify every exact audit artifact before promotion.",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_diagnostic_evidence_references(
@@ -2206,6 +2750,137 @@ fn read_verifier_job(
                 AppError::new(
                     "MCL_VERIFIER_JOB_INTEGRITY_FAILED",
                     format!("stored verifier error is invalid: {error}"),
+                    false,
+                    "Quarantine the database and restore a verified backup.",
+                )
+            })?,
+        actor,
+        created_at,
+        updated_at,
+    })
+}
+
+fn read_audit_job(connection: &Connection, job_id: &str) -> Result<LeanAuditJobSnapshot, AppError> {
+    type RawJob = (
+        String,
+        String,
+        String,
+        i32,
+        Option<String>,
+        Option<i64>,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        i64,
+        i64,
+    );
+    let row: Option<RawJob> = connection
+        .query_row(
+            "SELECT input_json, canonical_input_hash, state, priority, lease_owner, lease_expires_at, attempt_count, progress_json, result_artifact_hash, last_error_json, actor, created_at, updated_at FROM jobs WHERE job_id = ?1 AND job_type = 'lean_audit'",
+            [job_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| AppError::database("read audit job", error))?;
+    let Some((
+        input_json,
+        canonical_input_hash,
+        state,
+        priority,
+        lease_owner,
+        lease_expires_at,
+        attempt_count,
+        progress_json,
+        result_artifact_hash,
+        last_error_json,
+        actor,
+        created_at,
+        updated_at,
+    )) = row
+    else {
+        return Err(AppError::new(
+            "MCL_AUDIT_JOB_NOT_FOUND",
+            format!("audit job {job_id} does not exist"),
+            false,
+            "Use an exact audit job ID returned by enqueue or listing.",
+        ));
+    };
+    let request: LeanAuditRequest = serde_json::from_str(&input_json).map_err(|error| {
+        AppError::new(
+            "MCL_AUDIT_JOB_INTEGRITY_FAILED",
+            format!("stored audit request is invalid: {error}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    request.validate().map_err(|error| {
+        AppError::new(
+            "MCL_AUDIT_JOB_INTEGRITY_FAILED",
+            format!("stored audit request fails validation: {error}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    let computed_hash = request.request_hash()?;
+    if computed_hash != canonical_input_hash {
+        return Err(AppError::new(
+            "MCL_AUDIT_JOB_INTEGRITY_FAILED",
+            format!("stored audit job input hash disagrees for {job_id}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        ));
+    }
+    let attempt_count = u32::try_from(attempt_count).map_err(|_| {
+        AppError::new(
+            "MCL_AUDIT_JOB_INTEGRITY_FAILED",
+            "stored audit attempt count is outside range",
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    Ok(LeanAuditJobSnapshot {
+        job_id: job_id.to_owned(),
+        request,
+        canonical_input_hash,
+        state: VerifierJobState::from_str(&state)?,
+        priority,
+        lease_owner,
+        lease_expires_at,
+        attempt_count,
+        progress: serde_json::from_str(&progress_json).map_err(|error| {
+            AppError::new(
+                "MCL_AUDIT_JOB_INTEGRITY_FAILED",
+                format!("stored audit progress is invalid: {error}"),
+                false,
+                "Quarantine the database and restore a verified backup.",
+            )
+        })?,
+        result_artifact_hash,
+        last_error: last_error_json
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map_err(|error| {
+                AppError::new(
+                    "MCL_AUDIT_JOB_INTEGRITY_FAILED",
+                    format!("stored audit error is invalid: {error}"),
                     false,
                     "Quarantine the database and restore a verified backup.",
                 )
@@ -3694,6 +4369,135 @@ mod tests {
                 .expect("exact retry"),
             evidence
         );
+        let policy = crate::domain::audit::committed_audit_policy().expect("audit policy");
+        let audit_request = LeanAuditRequest {
+            schema_version: crate::domain::audit::AUDIT_REQUEST_SCHEMA_VERSION.to_owned(),
+            subject: evidence.payload.subject.clone(),
+            diagnostic_evidence_id: evidence.evidence_id.clone(),
+            diagnostic_evidence_hash: evidence.evidence_hash.clone(),
+            environment_hash: environment.environment_hash.clone(),
+            module_artifact_hash: module.artifact_hash,
+            declaration_name: "MathOS.Verifier.fixture".to_owned(),
+            policy_hash: policy.policy_hash().expect("policy hash"),
+        };
+        assert_eq!(
+            store
+                .validate_audit_job_enqueue(&audit_request, 5)
+                .expect("audit validates"),
+            audit_request.request_hash().expect("audit request hash")
+        );
+        let mut wrong_declaration = audit_request.clone();
+        wrong_declaration.declaration_name = "MathOS.Verifier.other".to_owned();
+        assert_eq!(
+            store
+                .validate_audit_job_enqueue(&wrong_declaration, 5)
+                .expect_err("wrong declaration rejected")
+                .code,
+            "MCL_AUDIT_FORMALIZATION_MISMATCH"
+        );
+        let mut changed_environment = environment_manifest();
+        changed_environment.resource_limits.timeout_seconds += 1;
+        let other_environment = store
+            .register_environment(
+                &changed_environment,
+                "environment-author",
+                "audit-other-environment",
+            )
+            .expect("other environment registers");
+        let mut wrong_environment = audit_request.clone();
+        wrong_environment.environment_hash = other_environment.environment_hash;
+        assert_eq!(
+            store
+                .validate_audit_job_enqueue(&wrong_environment, 5)
+                .expect_err("wrong environment rejected")
+                .code,
+            "MCL_AUDIT_FORMALIZATION_MISMATCH"
+        );
+        let audit = store
+            .enqueue_audit_job(&audit_request, 5, "auditor", "audit-enqueue")
+            .expect("audit enqueues");
+        assert_eq!(
+            store
+                .enqueue_audit_job(&audit_request, 5, "auditor", "audit-enqueue")
+                .expect("audit exact retry"),
+            audit
+        );
+        let mut forged_policy = audit_request.clone();
+        forged_policy.policy_hash = "f".repeat(64);
+        assert_eq!(
+            store
+                .enqueue_audit_job(&forged_policy, 5, "auditor", "audit-forged-policy")
+                .expect_err("forged audit policy rejected")
+                .code,
+            "MCL_AUDIT_POLICY_MISMATCH"
+        );
+        let leased_audit = store
+            .lease_next_audit_job("audit-worker", 60)
+            .expect("audit lease succeeds")
+            .expect("audit leased");
+        assert_eq!(leased_audit.job_id, audit.job_id);
+        store
+            .mark_audit_job_running(&audit.job_id, "audit-worker")
+            .expect("audit starts");
+        let audit_report_bytes = b"{\"audit\":true}";
+        let audit_report_hash = format!("{:x}", Sha256::digest(audit_report_bytes));
+        store
+            .register_artifact(
+                &audit_report_hash,
+                audit_report_bytes.len() as u64,
+                &report_metadata,
+                "audit-worker",
+                "audit-report",
+            )
+            .expect("audit report registers");
+        let finished_audit = store
+            .finish_audit_job(
+                &audit.job_id,
+                "audit-worker",
+                &audit_report_hash,
+                true,
+                None,
+            )
+            .expect("audit finishes");
+        assert_eq!(finished_audit.state, VerifierJobState::Succeeded);
+        let mut audit_artifacts = vec![
+            audit_request.module_artifact_hash.clone(),
+            audit_report_hash,
+        ];
+        audit_artifacts.sort();
+        let audit_payload = |kind| EvidencePayload {
+            schema_version: crate::domain::evidence::EVIDENCE_SCHEMA_VERSION.to_owned(),
+            subject: audit_request.subject.clone(),
+            evidence_kind: kind,
+            result: EvidenceResult::Accepted,
+            authority_class: EvidenceAuthorityClass::Diagnostic,
+            producing_run_id: None,
+            producing_job_id: Some(audit.job_id.clone()),
+            artifact_hashes: audit_artifacts.clone(),
+            verifier_or_reviewer_identity: "lean-audit:test".to_owned(),
+            environment_hash: Some(audit_request.environment_hash.clone()),
+            supersedes_evidence_id: None,
+            stale: false,
+            stale_reason: None,
+        };
+        let audit_payloads = [
+            audit_payload(EvidenceKind::ProofClosureScan),
+            audit_payload(EvidenceKind::AxiomAudit),
+        ];
+        let audit_evidence = store
+            .create_audit_evidence_pair(&audit_payloads, "audit-reviewer", "audit-evidence-create")
+            .expect("audit evidence pair created");
+        assert_eq!(audit_evidence.len(), 2);
+        assert_eq!(
+            store
+                .create_audit_evidence_pair(
+                    &audit_payloads,
+                    "audit-reviewer",
+                    "audit-evidence-create",
+                )
+                .expect("audit evidence exact retry"),
+            audit_evidence
+        );
         drop(store);
 
         let reopened = Store::open(&database).expect("database reopens");
@@ -3703,6 +4507,24 @@ mod tests {
                 .expect("evidence survives restart"),
             evidence
         );
+        assert_eq!(
+            reopened
+                .get_audit_job(&audit.job_id)
+                .expect("audit survives restart"),
+            finished_audit
+        );
+        assert_eq!(
+            reopened.list_audit_jobs(10).expect("audit listing"),
+            [finished_audit]
+        );
+        for audit_record in &audit_evidence {
+            assert_eq!(
+                reopened
+                    .get_evidence(&audit_record.evidence_id)
+                    .expect("audit evidence survives restart"),
+                *audit_record
+            );
+        }
         reopened
             .connection
             .execute("DROP TRIGGER evidence_reject_update", [])

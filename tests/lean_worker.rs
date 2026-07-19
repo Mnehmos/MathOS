@@ -86,7 +86,7 @@ fn pinned_lean_worker_elaborates_real_source_without_granting_authority() {
     let artifact_hash = artifact["proposed_artifact_hash"]
         .as_str()
         .expect("artifact hash");
-    run(
+    let accepted_job = run(
         root.path(),
         &[
             "verify".to_owned(),
@@ -105,6 +105,9 @@ fn pinned_lean_worker_elaborates_real_source_without_granting_authority() {
             "lean-ci-job".to_owned(),
         ],
     );
+    let accepted_job_id = accepted_job["job"]["job_id"]
+        .as_str()
+        .expect("accepted job ID");
     let worked = run(
         root.path(),
         &[
@@ -126,6 +129,213 @@ fn pinned_lean_worker_elaborates_real_source_without_granting_authority() {
     );
     assert_eq!(worked["job"]["state"], "succeeded");
     assert!(worked["job"]["result_artifact_hash"].is_string());
+
+    let source = run(
+        root.path(),
+        &[
+            "source".to_owned(),
+            "create".to_owned(),
+            "--payload-json".to_owned(),
+            json!({
+                "source_type": "user_statement",
+                "title_or_label": "Lean audit fixture",
+                "authors_or_origin": ["CI"],
+                "canonical_locator": "local:lean-audit-fixture",
+                "acquisition_date": "2026-07-19",
+                "license_expression": null,
+                "redistribution_status": "unknown",
+                "content_hash": null,
+                "citation_metadata": {},
+                "redaction_class": "private",
+                "provenance_notes": "real Lean audit integration",
+                "original_text": "True is inhabited."
+            })
+            .to_string(),
+            "--searchable-text".to_owned(),
+            "Lean audit fixture".to_owned(),
+            "--actor".to_owned(),
+            "lean-ci".to_owned(),
+            "--idempotency-key".to_owned(),
+            "lean-ci-source".to_owned(),
+        ],
+    );
+    let claim = run(
+        root.path(),
+        &[
+            "claim".to_owned(),
+            "create".to_owned(),
+            "--payload-json".to_owned(),
+            json!({
+                "source_reference": {
+                    "object_id": source["record"]["object_id"],
+                    "version_hash": source["record"]["version_hash"]
+                },
+                "normalized_informal_statement": "True is inhabited.",
+                "claim_kind": "existential",
+                "logical_shape": "True",
+                "assumptions": [],
+                "variables": [],
+                "concept_links": [],
+                "source_citations": [],
+                "ambiguity_notes": []
+            })
+            .to_string(),
+            "--searchable-text".to_owned(),
+            "True is inhabited".to_owned(),
+            "--actor".to_owned(),
+            "lean-ci".to_owned(),
+            "--idempotency-key".to_owned(),
+            "lean-ci-claim".to_owned(),
+        ],
+    );
+    let formalization = run(
+        root.path(),
+        &[
+            "formalization".to_owned(),
+            "create".to_owned(),
+            "--payload-json".to_owned(),
+            json!({
+                "claim_version": {
+                    "object_id": claim["record"]["object_id"],
+                    "version_hash": claim["record"]["version_hash"]
+                },
+                "formal_system": "lean4",
+                "environment_hash": include_str!("../fixtures/environment/lean-4.32-local.sha256").trim(),
+                "module_artifact_hash": artifact_hash,
+                "declaration_name": "MathOS.LeanWorker.truth",
+                "exact_theorem_type": "True",
+                "declaration_hash": "1".repeat(64),
+                "import_manifest": [],
+                "formalization_notes": "real audit fixture",
+                "fidelity_evidence_references": [],
+                "verification_evidence_references": []
+            })
+            .to_string(),
+            "--searchable-text".to_owned(),
+            "MathOS LeanWorker truth".to_owned(),
+            "--actor".to_owned(),
+            "lean-ci".to_owned(),
+            "--idempotency-key".to_owned(),
+            "lean-ci-formalization".to_owned(),
+        ],
+    );
+    let diagnostic = run(
+        root.path(),
+        &[
+            "verify".to_owned(),
+            "promote-diagnostic".to_owned(),
+            "--formalization-object-id".to_owned(),
+            formalization["record"]["object_id"]
+                .as_str()
+                .expect("formalization ID")
+                .to_owned(),
+            "--formalization-version-hash".to_owned(),
+            formalization["record"]["version_hash"]
+                .as_str()
+                .expect("formalization hash")
+                .to_owned(),
+            "--job-id".to_owned(),
+            accepted_job_id.to_owned(),
+            "--actor".to_owned(),
+            "lean-ci".to_owned(),
+            "--idempotency-key".to_owned(),
+            "lean-ci-diagnostic".to_owned(),
+        ],
+    );
+    assert_eq!(diagnostic["evidence"]["payload"]["result"], "accepted");
+    assert_eq!(
+        diagnostic["evidence"]["payload"]["authority_class"],
+        "diagnostic"
+    );
+    let audit = run(
+        root.path(),
+        &[
+            "verify".to_owned(),
+            "audit".to_owned(),
+            "--formalization-object-id".to_owned(),
+            formalization["record"]["object_id"]
+                .as_str()
+                .expect("formalization ID")
+                .to_owned(),
+            "--formalization-version-hash".to_owned(),
+            formalization["record"]["version_hash"]
+                .as_str()
+                .expect("formalization hash")
+                .to_owned(),
+            "--diagnostic-evidence-id".to_owned(),
+            diagnostic["evidence"]["evidence_id"]
+                .as_str()
+                .expect("diagnostic evidence ID")
+                .to_owned(),
+            "--actor".to_owned(),
+            "lean-ci".to_owned(),
+            "--idempotency-key".to_owned(),
+            "lean-ci-audit".to_owned(),
+        ],
+    );
+    assert_eq!(audit["job"]["state"], "queued");
+    let audited = run(
+        root.path(),
+        &[
+            "worker".to_owned(),
+            "--job-kind".to_owned(),
+            "audit".to_owned(),
+            "--worker-id".to_owned(),
+            "lean-ci-audit-worker".to_owned(),
+            "--lease-seconds".to_owned(),
+            "3660".to_owned(),
+        ],
+    );
+    assert_eq!(audited["report"]["classification"], "passed");
+    assert_eq!(audited["report"]["observed_axioms"], json!([]));
+    assert_eq!(audited["report"]["unexpected_axioms"], json!([]));
+    assert_eq!(audited["report"]["dependency_closure_complete"], true);
+    assert_eq!(audited["report"]["authoritative"], false);
+    assert_eq!(audited["job"]["state"], "succeeded");
+    let audit_evidence = run(
+        root.path(),
+        &[
+            "verify".to_owned(),
+            "promote-audit".to_owned(),
+            "--formalization-object-id".to_owned(),
+            formalization["record"]["object_id"]
+                .as_str()
+                .expect("formalization ID")
+                .to_owned(),
+            "--formalization-version-hash".to_owned(),
+            formalization["record"]["version_hash"]
+                .as_str()
+                .expect("formalization hash")
+                .to_owned(),
+            "--job-id".to_owned(),
+            audited["job"]["job_id"]
+                .as_str()
+                .expect("audit job ID")
+                .to_owned(),
+            "--actor".to_owned(),
+            "lean-ci".to_owned(),
+            "--idempotency-key".to_owned(),
+            "lean-ci-audit-evidence".to_owned(),
+        ],
+    );
+    let audit_records = audit_evidence["evidence"]
+        .as_array()
+        .expect("audit evidence pair");
+    assert_eq!(audit_records.len(), 2);
+    assert!(audit_records.iter().all(|evidence| {
+        evidence["payload"]["authority_class"] == "diagnostic"
+            && evidence["payload"]["result"] == "accepted"
+    }));
+    let mut evidence_kinds = audit_records
+        .iter()
+        .map(|evidence| {
+            evidence["payload"]["evidence_kind"]
+                .as_str()
+                .expect("audit evidence kind")
+        })
+        .collect::<Vec<_>>();
+    evidence_kinds.sort();
+    assert_eq!(evidence_kinds, ["axiom_audit", "proof_closure_scan"]);
 
     let rejected_module = root.path().join("LeanWorkerRejected.lean");
     fs::write(

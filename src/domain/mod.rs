@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::error::AppError;
 
 pub mod artifact;
+pub mod audit;
 pub mod environment;
 pub mod evidence;
 pub mod schemas;
@@ -15,6 +16,10 @@ pub mod verifier;
 pub use artifact::{
     ArtifactCreationSource, ArtifactMediaType, ArtifactMetadata, ArtifactRestriction,
     ArtifactSnapshot,
+};
+pub use audit::{
+    LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditPolicy, LeanAuditReport,
+    LeanAuditRequest,
 };
 pub use environment::{
     DependencyRevision, EnvironmentManifest, EnvironmentPlatform, EnvironmentSnapshot,

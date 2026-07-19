@@ -12,7 +12,7 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 Transition from Phase 2 canonical interfaces to Phase 3 formalization and Lean authority.
 
-Active implementation issue: [#18, bind immutable diagnostic evidence to exact verifier attempts](https://github.com/Mnehmos/MathOS/issues/18).
+Active implementation issue: [#19, implement proof-closure and axiom audits without authority](https://github.com/Mnehmos/MathOS/issues/19).
 
 Issues [#14](https://github.com/Mnehmos/MathOS/issues/14) and [#15](https://github.com/Mnehmos/MathOS/issues/15) closed after GitHub Actions run `29699563931` passed all jobs on fresh Linux and Windows runners.
 
@@ -21,6 +21,8 @@ Issue [#16](https://github.com/Mnehmos/MathOS/issues/16) closed after GitHub Act
 The first issue #17 durable verifier-job slice passed all jobs in GitHub Actions run `29700933580` on its exact remote tree. It remained non-authoritative while contained execution was completed in later slices.
 
 Issue [#17](https://github.com/Mnehmos/MathOS/issues/17) closed after GitHub Actions run `29701916437` passed all jobs, including real accepted and rejected Lean modules, wrong-version rejection, and fresh Linux and Windows suites on exact tree `724cbd2332c988c874462ea6d825fd93b2c4d809`. This closes contained diagnostic execution only, not proof authority.
+
+Issue [#18](https://github.com/Mnehmos/MathOS/issues/18) closed after GitHub Actions run `29703359524` passed all five jobs, including real pinned Lean integration, on exact remote tree `7622bf7c2408061104f2b27fcca0fb451d4653a2`. This closes immutable diagnostic-evidence binding only, not proof authority.
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -132,20 +134,27 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Evidence creation is deterministic and actor-attributed. Exact retries return the same record, reads survive restart, and projection corruption is detected by recomputing identity and comparing every stored field.
 - CLI integration covers dry-run non-mutation, exact promotion, retrieval, deterministic listing, retry, cross-object versions, mismatched formalizations, forged report provenance, corrupted CAS bytes, and unchanged mathematical status.
 - Diagnostic elaboration remains structurally non-authoritative. No authoritative evidence or mathematical status exists.
+- The local Lean audit policy is a closed, canonical, content-identified contract that rejects holes, custom axioms, unsafe declarations, native evaluation, command elaborators, initialization hooks, file inclusion, and metaprogramming escapes on the submitted authority path.
+- Audit requests bind one exact formalization version, accepted diagnostic elaboration record, environment, Lean module, declaration, and committed policy hash. Callers cannot submit an audit verdict.
+- `mcl verify audit/status/list` and `mcl worker --job-kind audit` use durable SQLite jobs with idempotent enqueue, transactional leases, legal state transitions, bounded contained execution, restart recovery, and private CAS reports.
+- The audit worker appends verifier-controlled `#print axioms` inspection, accepts one declaration-specific bounded output, records transitive axiom dependencies, and rejects unexpected axioms outside the narrow standard allowlist.
+- Audit reports are schema-closed, hash-bound to their request and artifacts, and permanently non-authoritative. Local reports state honestly that memory and network isolation are not enforced.
+- `mcl verify promote-audit` revalidates the exact terminal report and atomically creates one diagnostic proof-closure scan plus one diagnostic axiom audit. Exact retries return the same pair, while partial or cross-object promotion fails closed.
+- Unit coverage exercises policy identity, closed schemas, report shape, output ambiguity, duplicate axioms, job retry, policy mismatch, restart recovery, evidence-pair atomicity, immutable retrieval, and corruption detection. The real pinned Lean integration is delegated to the protected Linux CI job because this managed workspace has no Lean executable.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, complete MCP mutation surface, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Publish the exact diagnostic-evidence tree and require fresh Linux and Windows CI before closing issue #18.
-- Keep authority and mathematical status impossible while proof-closure policy is absent.
+- Publish the exact local audit tree and require fresh Linux, Windows, and real pinned Lean CI before closing issue #19.
+- Keep local audit evidence diagnostic and mathematical status impossible until the separate publication authority boundary exists.
 
 ## Next highest-priority criteria
 
-1. Complete issue #18 diagnostic evidence persistence and verifier-attempt binding.
-2. Implement proof-closure, hole, unsafe, and axiom audits before deriving any proof status.
+1. Complete issue #19 proof-closure and axiom audit evidence under the local diagnostic profile.
+2. Implement the publication-profile verifier and authoritative exact proof/refutation evidence without weakening local isolation claims.
 3. Add fidelity review as an independent evidence axis.
-4. Complete Pilot A through the real interfaces only after those authority controls exist.
+4. Complete Pilot A through the real interfaces only after both authority and fidelity controls exist.
 
 ## Exact last validation commands
 
@@ -163,7 +172,7 @@ Observed validation evidence for this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 69 Rust unit tests passed;
+- 73 Rust unit tests passed;
 - 9 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.
@@ -171,6 +180,7 @@ Observed validation evidence for this update:
 - GitHub Actions run `29700398370` passed all five jobs for the canonical artifact slice, including both Rust operating-system targets.
 - GitHub Actions run `29700933580` passed all jobs for the durable verifier input, leasing, recovery, CLI, and migration slice on its exact remote tree.
 - GitHub Actions run `29701916437` passed all jobs for exact contained execution, including real Lean 4.32.0 acceptance and rejection plus wrong-version refusal.
+- GitHub Actions run `29703359524` passed all jobs for exact diagnostic evidence, including the real pinned Lean worker and fresh Linux and Windows suites.
 - The managed workspace still lacks Lean; local `mcl doctor` correctly reports that one unhealthy check while database, CAS, leases, environments, and artifact inventory remain healthy.
 
 ## Release readiness

@@ -9,6 +9,29 @@ use std::time::{Duration, Instant};
 use crate::domain::{EnvironmentManifest, EnvironmentPlatform, TrustProfile};
 use crate::error::AppError;
 
+pub const FORBIDDEN_SOURCE_TOKENS: &[&str] = &[
+    "admit",
+    "axiom",
+    "builtin_initialize",
+    "constant",
+    "elab",
+    "eval",
+    "extern",
+    "implemented_by",
+    "include_bytes",
+    "include_str",
+    "initialize",
+    "macro",
+    "native_decide",
+    "reduce",
+    "run_cmd",
+    "run_tac",
+    "sorry",
+    "sorryAx",
+    "syntax",
+    "unsafe",
+];
+
 #[derive(Debug)]
 pub struct LeanProcessResult {
     pub exit_code: Option<i32>,
@@ -30,31 +53,89 @@ pub fn scan_forbidden_source_token(bytes: &[u8]) -> Result<Option<String>, AppEr
         )
     })?;
     let identifiers = lean_identifiers_without_comments_or_strings(source);
-    const FORBIDDEN: &[&str] = &[
-        "sorry",
-        "admit",
-        "sorryAx",
-        "axiom",
-        "constant",
-        "unsafe",
-        "extern",
-        "implemented_by",
-        "native_decide",
-        "run_cmd",
-        "run_tac",
-        "elab",
-        "macro",
-        "syntax",
-        "initialize",
-        "builtin_initialize",
-        "include_str",
-        "include_bytes",
-        "eval",
-        "reduce",
-    ];
     Ok(identifiers
         .into_iter()
-        .find(|identifier| FORBIDDEN.contains(&identifier.as_str())))
+        .find(|identifier| FORBIDDEN_SOURCE_TOKENS.contains(&identifier.as_str())))
+}
+
+pub fn parse_axiom_dependencies(
+    declaration_name: &str,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<Vec<String>, AppError> {
+    if declaration_name.is_empty()
+        || declaration_name.len() > 256
+        || !is_audit_name(declaration_name)
+    {
+        return Err(audit_output_error(
+            "audit declaration name is not a bounded Lean name",
+        ));
+    }
+    let stdout = std::str::from_utf8(stdout)
+        .map_err(|error| audit_output_error(format!("audit stdout is not UTF-8: {error}")))?;
+    let stderr = std::str::from_utf8(stderr)
+        .map_err(|error| audit_output_error(format!("audit stderr is not UTF-8: {error}")))?;
+    let output = format!("{stdout}\n{stderr}");
+    let no_axioms = format!("'{declaration_name}' does not depend on any axioms");
+    let list_prefix = format!("'{declaration_name}' depends on axioms: [");
+    let no_axiom_count = output.matches(&no_axioms).count();
+    let list_count = output.matches(&list_prefix).count();
+    if no_axiom_count == 1 && list_count == 0 {
+        return Ok(Vec::new());
+    }
+    if no_axiom_count != 0 || list_count != 1 {
+        return Err(audit_output_error(
+            "audit output did not contain exactly one declaration-specific axiom result",
+        ));
+    }
+    let start = output.find(&list_prefix).expect("single marker exists") + list_prefix.len();
+    let tail = &output[start..];
+    let end = tail
+        .find(']')
+        .ok_or_else(|| audit_output_error("audit axiom list did not contain a closing bracket"))?;
+    let raw = &tail[..end];
+    if raw.trim().is_empty() {
+        return Err(audit_output_error(
+            "audit axiom list was empty instead of using the no-axioms result",
+        ));
+    }
+    let mut axioms = raw
+        .split(',')
+        .map(str::trim)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if axioms.len() > 256 || axioms.iter().any(|name| !is_audit_name(name)) {
+        return Err(audit_output_error(
+            "audit axiom list was malformed or excessive",
+        ));
+    }
+    let original_len = axioms.len();
+    axioms.sort();
+    axioms.dedup();
+    if axioms.len() != original_len {
+        return Err(audit_output_error("audit axiom list contained duplicates"));
+    }
+    Ok(axioms)
+}
+
+fn is_audit_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'\''))
+        })
+}
+
+fn audit_output_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_AUDIT_OUTPUT_INVALID",
+        message,
+        false,
+        "Quarantine the audit output and rerun the exact audit job with the pinned Lean toolchain.",
+    )
 }
 
 pub fn execute_lean(
@@ -362,24 +443,77 @@ mod tests {
 
     #[test]
     fn unsafe_tokens_are_detected_but_comments_and_strings_do_not_trigger() {
-        assert_eq!(
-            scan_forbidden_source_token(b"theorem x : True := by sorry\n").expect("scan"),
-            Some("sorry".to_owned())
-        );
-        assert_eq!(
-            scan_forbidden_source_token(b"run_cmd IO.println \"side effect\"\n").expect("scan"),
-            Some("run_cmd".to_owned())
-        );
-        assert_eq!(
-            scan_forbidden_source_token(b"axiom fabricated : False\n").expect("scan"),
-            Some("axiom".to_owned())
-        );
+        for (source, expected) in [
+            ("theorem x : True := by sorry\n", "sorry"),
+            ("theorem x : True := by admit\n", "admit"),
+            ("axiom fabricated : False\n", "axiom"),
+            ("unsafe def escape := true\n", "unsafe"),
+            ("extern \"escape\" opaque escape : True\n", "extern"),
+            ("theorem x : True := by native_decide\n", "native_decide"),
+            ("run_cmd IO.println \"side effect\"\n", "run_cmd"),
+        ] {
+            assert_eq!(
+                scan_forbidden_source_token(source.as_bytes()).expect("scan"),
+                Some(expected.to_owned())
+            );
+        }
         assert_eq!(
             scan_forbidden_source_token(
                 b"-- sorry\n/- unsafe /- admit -/ -/\ndef text := \"native_decide\"\ntheorem x : True := by trivial\n"
             )
             .expect("scan"),
             None
+        );
+    }
+
+    #[test]
+    fn axiom_output_is_declaration_specific_bounded_and_canonical() {
+        assert_eq!(
+            parse_axiom_dependencies(
+                "MathOS.truth",
+                b"'MathOS.truth' does not depend on any axioms\n",
+                b"",
+            )
+            .expect("axiom-free output"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_axiom_dependencies(
+                "MathOS.classical",
+                b"",
+                b"'MathOS.classical' depends on axioms: [propext, Classical.choice, Quot.sound]\n",
+            )
+            .expect("standard axioms parse"),
+            ["Classical.choice", "Quot.sound", "propext"]
+        );
+        assert_eq!(
+            parse_axiom_dependencies(
+                "MathOS.incomplete",
+                b"'MathOS.incomplete' depends on axioms: [sorryAx, MathOS.customAxiom]\n",
+                b"",
+            )
+            .expect("hidden and custom axioms remain visible"),
+            ["MathOS.customAxiom", "sorryAx"]
+        );
+        assert_eq!(
+            parse_axiom_dependencies(
+                "MathOS.ambiguous",
+                b"'MathOS.ambiguous' does not depend on any axioms\n'MathOS.ambiguous' does not depend on any axioms\n",
+                b"",
+            )
+            .expect_err("duplicate declaration output rejected")
+            .code,
+            "MCL_AUDIT_OUTPUT_INVALID"
+        );
+        assert_eq!(
+            parse_axiom_dependencies(
+                "MathOS.duplicate",
+                b"'MathOS.duplicate' depends on axioms: [propext, propext]\n",
+                b"",
+            )
+            .expect_err("duplicate axiom rejected")
+            .code,
+            "MCL_AUDIT_OUTPUT_INVALID"
         );
     }
 

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/audit/report/1",
+  "title": "MathOS Lean Audit Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "job_id", "request_hash", "subject", "diagnostic_evidence_hash", "environment_hash", "module_artifact_hash", "declaration_name", "policy_hash", "classification", "source_forbidden_token", "observed_axioms", "unexpected_axioms", "stdout_artifact_hash", "stderr_artifact_hash", "observed_toolchain_version", "trust_profile", "dependency_closure_complete", "memory_limit_enforced", "network_isolation_enforced", "authoritative"],
+  "properties": {
+    "schema_version": {"const": "audit_report/1"},
+    "job_id": {"type": "string", "format": "uuid"},
+    "request_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "format": "uuid"},
+        "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "diagnostic_evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "module_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256},
+    "policy_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "classification": {"enum": ["passed", "rejected", "inconclusive", "failed"]},
+    "source_forbidden_token": {"type": ["string", "null"], "minLength": 1, "maxLength": 64},
+    "observed_axioms": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"type": "string", "minLength": 1, "maxLength": 256}
+    },
+    "unexpected_axioms": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"type": "string", "minLength": 1, "maxLength": 256}
+    },
+    "stdout_artifact_hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "stderr_artifact_hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "observed_toolchain_version": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+    "trust_profile": {"enum": ["local", "publication"]},
+    "dependency_closure_complete": {"type": "boolean"},
+    "memory_limit_enforced": {"type": "boolean"},
+    "network_isolation_enforced": {"type": "boolean"},
+    "authoritative": {"const": false}
+  }
+}

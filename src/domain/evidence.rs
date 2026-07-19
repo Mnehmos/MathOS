@@ -139,6 +139,12 @@ impl EvidencePayload {
                 && (self.authority_class != EvidenceAuthorityClass::Diagnostic
                     || self.producing_job_id.is_none()
                     || self.environment_hash.is_none()))
+            || (matches!(
+                self.evidence_kind,
+                EvidenceKind::ProofClosureScan | EvidenceKind::AxiomAudit
+            ) && (self.authority_class != EvidenceAuthorityClass::Diagnostic
+                || self.producing_job_id.is_none()
+                || self.environment_hash.is_none()))
             || self
                 .producing_run_id
                 .as_deref()
