@@ -42,19 +42,23 @@ fi
 
 mkdir -p "$output_dir"
 raw_verification="${output_dir}/attestation-verification-raw.json"
+verification_stderr="${output_dir}/attestation-verification.stderr"
 verification_record="${output_dir}/attestation-verification.json"
 
-"$gh_bin" attestation verify "$report" \
+if ! "$gh_bin" attestation verify "$report" \
   --repo "$repository" \
   --bundle "$bundle" \
-  --signer-workflow "$workflow" \
   --cert-identity "$certificate_identity" \
   --source-ref "$source_ref" \
   --source-digest "$source_digest" \
   --signer-digest "$source_digest" \
   --predicate-type "$predicate_type" \
   --deny-self-hosted-runners \
-  --format json >"$raw_verification"
+  --format json >"$raw_verification" 2>"$verification_stderr"; then
+  printf 'publication attestation verification failed\n' >&2
+  sed -n '1,120p' "$verification_stderr" >&2
+  exit 70
+fi
 
 report_hash="$(sha256sum "$report" | cut -d ' ' -f 1)"
 report_content_hash="$(jq -cS . "$report" | tr -d '\n' | sha256sum | cut -d ' ' -f 1)"
