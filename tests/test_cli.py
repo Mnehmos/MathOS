@@ -18,21 +18,7 @@ class CliTests(unittest.TestCase):
 
     def test_demo_runs_complete_vertical_slice(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "mathos",
-                    "demo",
-                    "--workspace",
-                    directory,
-                    "--reset",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            result = json.loads(completed.stdout)
+            result = self.run_cli("demo", "--workspace", directory, "--reset")
 
         self.assertEqual(result["summary"]["verified_proved"], 1)
         self.assertEqual(result["summary"]["verified_disproved"], 1)

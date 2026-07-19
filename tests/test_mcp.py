@@ -1,4 +1,5 @@
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import subprocess
 import sys
@@ -9,6 +10,24 @@ from tests.helpers import load_fixture
 
 
 class McpTests(unittest.TestCase):
+    @contextmanager
+    def server(self, database: Path):
+        process = subprocess.Popen(
+            [sys.executable, "-m", "mathos.mcp_server", "--db", str(database)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            yield process
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+
     def request(self, process: subprocess.Popen, message: dict) -> dict:
         assert process.stdin is not None
         assert process.stdout is not None
@@ -21,14 +40,7 @@ class McpTests(unittest.TestCase):
     def test_stdio_handshake_and_tool_listing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / "mcp.db"
-            process = subprocess.Popen(
-                [sys.executable, "-m", "mathos.mcp_server", "--db", str(db_path)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            try:
+            with self.server(db_path) as process:
                 denied = self.request(
                     process,
                     {"jsonrpc": "2.0", "id": 0, "method": "tools/list", "params": {}},
@@ -133,29 +145,10 @@ class McpTests(unittest.TestCase):
                     },
                 )
                 self.assertTrue(validated["result"]["structuredContent"]["valid"])
-            finally:
-                process.terminate()
-                process.wait(timeout=5)
-                for stream in (process.stdin, process.stdout, process.stderr):
-                    if stream is not None:
-                        stream.close()
 
     def test_parse_error_does_not_kill_server(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "mathos.mcp_server",
-                    "--db",
-                    str(Path(directory) / "mcp.db"),
-                ],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            try:
+            with self.server(Path(directory) / "mcp.db") as process:
                 assert process.stdin is not None
                 assert process.stdout is not None
                 process.stdin.write("{not-json}\n")
@@ -177,12 +170,6 @@ class McpTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(initialized["result"]["serverInfo"]["name"], "MathOS")
-            finally:
-                process.terminate()
-                process.wait(timeout=5)
-                for stream in (process.stdin, process.stdout, process.stderr):
-                    if stream is not None:
-                        stream.close()
 
 
 if __name__ == "__main__":
