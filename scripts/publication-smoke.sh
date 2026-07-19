@@ -52,13 +52,13 @@ if ! sudo /usr/bin/bwrap \
   --new-session \
   --cap-drop ALL \
   --ro-bind / / \
-  --ro-bind "$PWD" /work \
-  --ro-bind "$lean_root" /toolchain \
+  --ro-bind "$PWD" /mnt \
+  --ro-bind "$lean_root" /opt \
   --proc /proc \
   --dev /dev \
   --tmpfs /tmp \
-  --chdir /work \
-  /usr/bin/prlimit --as=1073741824 -- /toolchain/bin/lean "$module" \
+  --chdir /mnt \
+  /usr/bin/prlimit --as=1073741824 -- /opt/bin/lean "$module" \
   >"${output_dir}/lean.stdout" \
   2>"${output_dir}/lean.stderr"; then
   printf 'isolated Lean execution failed\n' >&2
