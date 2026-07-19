@@ -6,9 +6,14 @@ use serde_json::Value;
 
 use crate::error::AppError;
 
+pub mod artifact;
 pub mod environment;
 pub mod schemas;
 
+pub use artifact::{
+    ArtifactCreationSource, ArtifactMediaType, ArtifactMetadata, ArtifactRestriction,
+    ArtifactSnapshot,
+};
 pub use environment::{
     DependencyRevision, EnvironmentManifest, EnvironmentPlatform, EnvironmentSnapshot,
     ResourceLimits, TrustProfile, VerifierArgument, VerifierCommandTemplate, VerifierExecutable,

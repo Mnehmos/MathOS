@@ -1,15 +1,17 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::artifacts::ArtifactStore;
 use crate::config::ResolvedConfig;
 use crate::domain::{
-    EdgeDraft, EdgeSnapshot, EnvironmentManifest, EnvironmentSnapshot, GraphTraversalHit,
-    GraphTraversalRequest, RecordDraft, RecordSnapshot, RunChainReport, RunEventDraft,
-    RunEventSnapshot, RunKind, RunSnapshot,
+    ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeSnapshot, EnvironmentManifest,
+    EnvironmentSnapshot, GraphTraversalHit, GraphTraversalRequest, RecordDraft, RecordSnapshot,
+    RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
 };
 use crate::error::AppError;
 use crate::store::Store;
@@ -63,8 +65,23 @@ pub struct EnvironmentRegistrationOutcome {
     pub environment: Option<EnvironmentSnapshot>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ArtifactIngestOutcome {
+    pub dry_run: bool,
+    pub proposed_artifact_hash: String,
+    pub artifact: Option<ArtifactSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ArtifactVerificationReport {
+    pub artifact: ArtifactSnapshot,
+    pub content_hash_verified: bool,
+    pub metadata_verified: bool,
+}
+
 pub struct Application {
     store: Store,
+    artifacts: ArtifactStore,
 }
 
 impl Application {
@@ -79,6 +96,7 @@ impl Application {
         }
         Ok(Self {
             store: Store::open(&config.database)?,
+            artifacts: ArtifactStore::open(&config.artifacts)?,
         })
     }
 
@@ -253,6 +271,56 @@ impl Application {
                     &error.corrective_action,
                 )),
             }
+
+            match Store::open(&config.database).and_then(|store| store.artifact_count()) {
+                Ok(count) => report.checks.push(passed_check(
+                    "artifacts",
+                    format!(
+                        "registered={count}; artifact presence does not itself establish mathematical authority"
+                    ),
+                )),
+                Err(error) => report.checks.push(failed_check(
+                    "artifacts",
+                    error.to_string(),
+                    &error.corrective_action,
+                )),
+            }
+
+            let inventory = ArtifactStore::open(&config.artifacts).and_then(|artifacts| {
+                let scan = artifacts.scan()?;
+                let registered = Store::open(&config.database)?
+                    .all_artifact_hashes()?
+                    .into_iter()
+                    .collect::<BTreeSet<_>>();
+                let canary_hash = format!("{:x}", Sha256::digest(DOCTOR_CANARY));
+                let stored = scan.content_hashes.iter().cloned().collect::<BTreeSet<_>>();
+                let orphan_count = stored
+                    .difference(&registered)
+                    .filter(|hash| hash.as_str() != canary_hash)
+                    .count();
+                let missing_count = registered.difference(&stored).count();
+                Ok((orphan_count, missing_count, scan.incomplete_temporary_files))
+            });
+            match inventory {
+                Ok((orphans, 0, temporary)) => report.checks.push(passed_check(
+                    "artifact_inventory",
+                    format!(
+                        "unregistered_orphans={orphans}, incomplete_temporary_files={temporary}, missing_registered=0; orphans are retained but never canonical"
+                    ),
+                )),
+                Ok((orphans, missing, temporary)) => report.checks.push(failed_check(
+                    "artifact_inventory",
+                    format!(
+                        "unregistered_orphans={orphans}, incomplete_temporary_files={temporary}, missing_registered={missing}"
+                    ),
+                    "Quarantine the instance and restore missing registered artifacts from a verified backup.",
+                )),
+                Err(error) => report.checks.push(failed_check(
+                    "artifact_inventory",
+                    error.to_string(),
+                    &error.corrective_action,
+                )),
+            }
         }
 
         match lean_version(&config.verifier.lean_command) {
@@ -302,6 +370,87 @@ impl Application {
 
     pub fn list_environments(&self, limit: usize) -> Result<Vec<EnvironmentSnapshot>, AppError> {
         self.store.list_environments(limit)
+    }
+
+    pub fn ingest_artifact(
+        &mut self,
+        bytes: &[u8],
+        metadata: &ArtifactMetadata,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<ArtifactIngestOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        metadata.validate_bytes(bytes)?;
+        let proposed_artifact_hash = format!("{:x}", Sha256::digest(bytes));
+        self.store.validate_artifact_registration(
+            &proposed_artifact_hash,
+            bytes.len() as u64,
+            metadata,
+        )?;
+        let artifact = if dry_run {
+            None
+        } else {
+            let stored_hash = self.artifacts.put(bytes)?;
+            if stored_hash != proposed_artifact_hash {
+                return Err(AppError::new(
+                    "MCL_ARTIFACT_INTEGRITY_FAILED",
+                    "content-addressed store returned an unexpected artifact identity",
+                    false,
+                    "Quarantine the artifact store and restore a verified backup.",
+                ));
+            }
+            Some(self.store.register_artifact(
+                &stored_hash,
+                bytes.len() as u64,
+                metadata,
+                actor,
+                idempotency_key,
+            )?)
+        };
+        Ok(ArtifactIngestOutcome {
+            dry_run,
+            proposed_artifact_hash,
+            artifact,
+        })
+    }
+
+    pub fn get_artifact(&self, artifact_hash: &str) -> Result<ArtifactSnapshot, AppError> {
+        self.store.get_artifact(artifact_hash)
+    }
+
+    pub fn list_artifacts(&self, limit: usize) -> Result<Vec<ArtifactSnapshot>, AppError> {
+        self.store.list_artifacts(limit)
+    }
+
+    pub fn verify_artifact(
+        &self,
+        artifact_hash: &str,
+    ) -> Result<ArtifactVerificationReport, AppError> {
+        let artifact = self.store.get_artifact(artifact_hash)?;
+        let bytes = self.artifacts.read(artifact_hash)?;
+        let metadata = ArtifactMetadata {
+            schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION.to_owned(),
+            media_type: artifact.media_type,
+            creation_source: artifact.creation_source,
+            license_expression: artifact.license_expression.clone(),
+            restriction: artifact.restriction,
+            semantic_metadata: artifact.semantic_metadata.clone(),
+        };
+        metadata.validate_bytes(&bytes)?;
+        if bytes.len() as u64 != artifact.byte_size {
+            return Err(AppError::new(
+                "MCL_ARTIFACT_INTEGRITY_FAILED",
+                format!("artifact {artifact_hash} byte size disagrees with canonical metadata"),
+                false,
+                "Quarantine the artifact store and restore a verified backup.",
+            ));
+        }
+        Ok(ArtifactVerificationReport {
+            artifact,
+            content_hash_verified: true,
+            metadata_verified: true,
+        })
     }
 
     pub fn create_record(

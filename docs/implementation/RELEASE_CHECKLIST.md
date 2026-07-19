@@ -35,6 +35,8 @@ Phase 1 evidence: `lean-toolchain` pins Lean 4.32.0. No proof-authority item is 
 
 Phase 3 environment evidence: a closed canonical manifest, exact hash, immutable persistence, CLI registration, restart retrieval, corruption detection, and formalization reference gate exist. No Lean artifact has been executed or accepted as evidence, so every verification item remains unchecked.
 
+Phase 3 artifact evidence: Lean source bytes can be validated, atomically content-addressed, registered with immutable metadata, verified after restart, and materialized into a fresh contained workspace. Formalizations require the exact registered Lean source hash. This establishes artifact integrity only, so every verification item remains unchecked.
+
 ## Search and context
 
 - [ ] Exact, FTS, graph, declaration, and failure searches work.

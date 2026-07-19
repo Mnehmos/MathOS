@@ -12,9 +12,9 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 Transition from Phase 2 canonical interfaces to Phase 3 formalization and Lean authority.
 
-Active implementation issue: [#15, implement immutable Lean environment manifests](https://github.com/Mnehmos/MathOS/issues/15).
+Active implementation issue: [#16, implement canonical verifier artifacts](https://github.com/Mnehmos/MathOS/issues/16).
 
-Closure gate still monitored: [#14, add a thin MCP stdio adapter](https://github.com/Mnehmos/MathOS/issues/14) was reopened for one literal invalid-action test and will close after that exact branch state passes remote CI.
+Issues [#14](https://github.com/Mnehmos/MathOS/issues/14) and [#15](https://github.com/Mnehmos/MathOS/issues/15) closed after GitHub Actions run `29699563931` passed all jobs on fresh Linux and Windows runners.
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -92,20 +92,28 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Environment reads recompute manifest identity and trust profile, detecting corrupted stored JSON even if database mutation guards are bypassed.
 - `mcl doctor` reports registered environment count while explicitly stating that environment identity does not establish proof authority.
 - New formalizations must reference an exact registered environment hash. A syntactically valid but unresolved hash fails before canonical record persistence.
+- Artifact metadata has a closed `artifact_metadata/1` Rust type and committed JSON Schema for media type, creation source, license, restriction, and bounded semantic metadata.
+- Artifact semantic metadata cannot claim proof, disproof, fidelity, certification, or authority.
+- Lean source, text, and JSON bytes are checked against their declared media type before CAS ingestion. Empty and excessive artifacts fail closed.
+- CAS ingestion is atomic and content-addressed. Immutable SQLite metadata adds actor attribution, idempotent retry, exact lookup, deterministic listing, restart persistence, and corruption detection.
+- Doctor inventories registered metadata against CAS, reports safe unregistered orphans and incomplete crash-window files, and fails when registered bytes are missing. It never promotes filesystem contents to canonical state.
+- `mcl artifact ingest/get/list/verify` uses the shared application path. Dry runs predict the exact SHA-256 identity without writing bytes or metadata.
+- CLI input paths must resolve to regular files inside the instance root. Symbolic links and outside-root paths fail closed.
+- Verified artifact materialization accepts only a fresh temporary workspace and one verifier-selected plain file name. Traversal and overwrite attempts fail.
+- Formalizations now require their exact module artifact to be registered as `text/x-lean`. Missing and wrong-media artifacts fail before persistence.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, complete MCP mutation surface, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Require fresh Linux and Windows CI evidence containing the explicit unknown-action MCP test before closing issue #14 again.
-- Publish the completed issue #15 persistence and formalization-binding slice and require fresh Linux and Windows CI.
-- Design the narrow Lean subprocess boundary only after the exact environment can be resolved from canonical state.
+- Complete and publish issue #16 canonical artifact storage and require fresh Linux and Windows CI.
+- Design the narrow Lean subprocess boundary only after the exact environment and module artifact both resolve from canonical state.
 - Keep the local Lean launch limitation visible without misclassifying it as a project-wide blocker.
 
 ## Next highest-priority criteria
 
-1. Obtain remote CI evidence for environment persistence, forward migration, CLI, corruption detection, and formalization binding.
-2. Implement the narrow Lean elaboration boundary using registered environments.
+1. Obtain remote CI evidence for artifact persistence, forward migration, CLI, corruption detection, and formalization binding.
+2. Implement the narrow Lean elaboration boundary using registered environments and canonical module artifacts.
 3. Implement evidence records and derived truth rules before any proof-status surface exists.
 4. Complete Pilot A through the real interfaces only after those authority controls exist.
 
@@ -125,11 +133,12 @@ Observed validation evidence for this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 52 Rust unit tests passed;
-- 7 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
+- 59 Rust unit tests passed;
+- 8 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.
-- GitHub Actions run `29698741558` passed all five jobs for the completed MCP mutation surface, including exact pinned Lean availability and both Rust operating-system targets. The subsequent explicit invalid-action test awaits a branch CI run.
+- GitHub Actions run `29699563931` passed all five jobs for the completed MCP invalid-action and environment-persistence state, including exact pinned Lean availability and both Rust operating-system targets.
+- The canonical artifact slice awaits publication and a fresh branch CI run before issue #16 can close.
 
 ## Release readiness
 

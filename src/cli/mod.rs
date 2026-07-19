@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -7,8 +8,8 @@ use serde_json::{Value, to_value};
 use crate::app::{Application, root_exists};
 use crate::config::ResolvedConfig;
 use crate::domain::{
-    EdgeDraft, EdgeKind, EnvironmentManifest, GraphTraversalRequest, RecordDraft, RecordKind,
-    RecordSnapshot, RunEventDraft, RunEventKind, RunKind, TraversalDirection,
+    ArtifactMetadata, EdgeDraft, EdgeKind, EnvironmentManifest, GraphTraversalRequest, RecordDraft,
+    RecordKind, RecordSnapshot, RunEventDraft, RunEventKind, RunKind, TraversalDirection,
 };
 use crate::error::AppError;
 
@@ -44,6 +45,8 @@ enum Command {
     Doctor,
     /// Register or retrieve an immutable pinned Lean environment manifest.
     Environment(EnvironmentOptions),
+    /// Ingest, retrieve, or verify a canonical content-addressed artifact.
+    Artifact(ArtifactOptions),
     /// Serve the Model Context Protocol over newline-delimited stdio.
     Serve,
     /// Create, version, or retrieve a source through the canonical application path.
@@ -106,6 +109,44 @@ struct EnvironmentGetOptions {
 
 #[derive(Debug, Args)]
 struct EnvironmentListOptions {
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+}
+
+#[derive(Debug, Args)]
+struct ArtifactOptions {
+    #[command(subcommand)]
+    action: ArtifactAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum ArtifactAction {
+    Ingest(ArtifactIngestOptions),
+    Get(ArtifactGetOptions),
+    List(ArtifactListOptions),
+    Verify(ArtifactGetOptions),
+}
+
+#[derive(Debug, Args)]
+struct ArtifactIngestOptions {
+    #[arg(long)]
+    input_file: PathBuf,
+
+    #[arg(long)]
+    metadata_json: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct ArtifactGetOptions {
+    #[arg(long)]
+    artifact_hash: String,
+}
+
+#[derive(Debug, Args)]
+struct ArtifactListOptions {
     #[arg(long, default_value_t = 20)]
     limit: usize,
 }
@@ -339,6 +380,7 @@ impl Cli {
                 })
             }
             Command::Environment(options) => execute_environment(&config, options),
+            Command::Artifact(options) => execute_artifact(&config, options),
             Command::Serve => {
                 crate::mcp::serve_stdio(config)?;
                 Ok(CliOutcome {
@@ -365,6 +407,83 @@ impl Cli {
             Command::Research(options) => execute_research(&config, options),
         }
     }
+}
+
+fn execute_artifact(
+    config: &ResolvedConfig,
+    options: ArtifactOptions,
+) -> Result<CliOutcome, AppError> {
+    let mut application = Application::open(config)?;
+    let value = match options.action {
+        ArtifactAction::Ingest(options) => {
+            let metadata: ArtifactMetadata = serde_json::from_str(&options.metadata_json)
+                .map_err(|error| {
+                    AppError::new(
+                        "MCL_ARTIFACT_JSON_INVALID",
+                        format!("artifact metadata JSON is invalid: {error}"),
+                        false,
+                        "Supply one complete object matching `schemas/artifact/artifact-metadata-1.schema.json`.",
+                    )
+                })?;
+            let input = if options.input_file.is_absolute() {
+                options.input_file
+            } else {
+                config.root.join(options.input_file)
+            };
+            if fs::symlink_metadata(&input)
+                .map_err(|error| AppError::io("inspect artifact input", error))?
+                .file_type()
+                .is_symlink()
+            {
+                return Err(AppError::new(
+                    "MCL_ARTIFACT_INPUT_UNSAFE",
+                    "artifact input may not be a symbolic link",
+                    false,
+                    "Use a regular file contained by the instance root.",
+                ));
+            }
+            let input = input
+                .canonicalize()
+                .map_err(|error| AppError::io("canonicalize artifact input", error))?;
+            if !input.starts_with(&config.root) || !input.is_file() {
+                return Err(AppError::new(
+                    "MCL_ARTIFACT_INPUT_UNSAFE",
+                    format!(
+                        "artifact input {} is not a regular file contained by the instance root",
+                        input.display()
+                    ),
+                    false,
+                    "Copy the intended file under the instance root and retry.",
+                ));
+            }
+            let input_size = fs::metadata(&input)
+                .map_err(|error| AppError::io("inspect artifact input size", error))?
+                .len();
+            metadata.validate(input_size)?;
+            let bytes =
+                fs::read(&input).map_err(|error| AppError::io("read artifact input", error))?;
+            to_value(application.ingest_artifact(
+                &bytes,
+                &metadata,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("artifact ingest outcome is serializable")
+        }
+        ArtifactAction::Get(options) => to_value(application.get_artifact(&options.artifact_hash)?)
+            .expect("artifact snapshot is serializable"),
+        ArtifactAction::List(options) => to_value(application.list_artifacts(options.limit)?)
+            .expect("artifact list is serializable"),
+        ArtifactAction::Verify(options) => {
+            to_value(application.verify_artifact(&options.artifact_hash)?)
+                .expect("artifact verification report is serializable")
+        }
+    };
+    Ok(CliOutcome {
+        value,
+        success: true,
+    })
 }
 
 fn execute_environment(

@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -108,6 +109,16 @@ impl McpProcess {
 }
 
 fn mcl(root: &Path, arguments: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_mcl"))
+        .arg("--root")
+        .arg(root)
+        .arg("--json")
+        .args(arguments)
+        .output()
+        .expect("mcl process runs")
+}
+
+fn mcl_owned(root: &Path, arguments: &[String]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_mcl"))
         .arg("--root")
         .arg(root)
@@ -403,6 +414,41 @@ fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs(
         String::from_utf8_lossy(&registered_environment.stderr)
     );
     let environment_hash = include_str!("../fixtures/environment/lean-4.32-local.sha256").trim();
+    let module_path = root.path().join("McpFixture.lean");
+    fs::write(&module_path, b"theorem primeParity : True := by trivial\n")
+        .expect("Lean fixture writes");
+    let artifact_metadata = json!({
+        "schema_version": "artifact_metadata/1",
+        "media_type": "text/x-lean",
+        "creation_source": "user_ingest",
+        "license_expression": "PolyForm-Noncommercial-1.0.0",
+        "restriction": "restricted",
+        "semantic_metadata": {"declaration_name": "MathOS.Pilot.primeParity"}
+    });
+    let ingested = mcl_owned(
+        root.path(),
+        &[
+            "artifact".to_owned(),
+            "ingest".to_owned(),
+            "--input-file".to_owned(),
+            module_path.to_string_lossy().into_owned(),
+            "--metadata-json".to_owned(),
+            artifact_metadata.to_string(),
+            "--actor".to_owned(),
+            "mcp-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "mcp-artifact-register".to_owned(),
+        ],
+    );
+    assert!(
+        ingested.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ingested.stderr)
+    );
+    let ingested: Value = serde_json::from_slice(&ingested.stdout).expect("artifact ingest JSON");
+    let module_artifact_hash = ingested["proposed_artifact_hash"]
+        .as_str()
+        .expect("artifact hash");
     let mut server = McpProcess::spawn(root.path());
     initialize_protocol(&mut server, "2025-11-25");
 
@@ -490,7 +536,7 @@ fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs(
         "claim_version": {"object_id": claim_id, "version_hash": claim_hash},
         "formal_system": "lean4",
         "environment_hash": environment_hash,
-        "module_artifact_hash": "b".repeat(64),
+        "module_artifact_hash": module_artifact_hash,
         "declaration_name": "MathOS.Pilot.primeParity",
         "exact_theorem_type": "forall p : Nat, Nat.Prime p -> Odd p",
         "declaration_hash": "c".repeat(64),
@@ -521,7 +567,7 @@ fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs(
                 "claim_version": {"object_id": claim_id, "version_hash": claim_hash},
                 "formal_system": "lean4",
                 "environment_hash": environment_hash,
-                "module_artifact_hash": "b".repeat(64),
+                "module_artifact_hash": module_artifact_hash,
                 "declaration_name": "MathOS.Pilot.falseAuthority",
                 "exact_theorem_type": "True",
                 "declaration_hash": "d".repeat(64),

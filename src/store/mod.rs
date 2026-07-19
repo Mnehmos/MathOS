@@ -11,8 +11,8 @@ use uuid::Uuid;
 use crate::canonical::{canonical_json, record_version_hash, value_hash};
 use crate::domain::schemas::{FormalizationPayload, validate_record_payload};
 use crate::domain::{
-    EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest, EnvironmentSnapshot, RecordDraft,
-    RecordKind, RecordSnapshot,
+    ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest,
+    EnvironmentSnapshot, RecordDraft, RecordKind, RecordSnapshot,
 };
 use crate::error::AppError;
 
@@ -25,6 +25,7 @@ const MIGRATION_0003: &str = include_str!("../../migrations/0003_record_invarian
 const MIGRATION_0004: &str = include_str!("../../migrations/0004_edge_invariants.sql");
 const MIGRATION_0005: &str = include_str!("../../migrations/0005_run_event_invariants.sql");
 const MIGRATION_0006: &str = include_str!("../../migrations/0006_environment_invariants.sql");
+const MIGRATION_0007: &str = include_str!("../../migrations/0007_artifact_invariants.sql");
 const REQUIRED_TABLES: &[&str] = &[
     "artifacts",
     "edges",
@@ -198,6 +199,24 @@ impl Store {
                     params![6_i64, "environment invariants"],
                 )
                 .map_err(|error| AppError::database("record migration 0006", error))?;
+        }
+        let migration_0007_applied: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 7)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::database("inspect migration 0007", error))?;
+        if !migration_0007_applied {
+            transaction
+                .execute_batch(MIGRATION_0007)
+                .map_err(|error| AppError::database("apply migration 0007", error))?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, unixepoch())",
+                    params![7_i64, "artifact invariants"],
+                )
+                .map_err(|error| AppError::database("record migration 0007", error))?;
         }
         transaction
             .commit()
@@ -397,6 +416,166 @@ impl Store {
         self.connection
             .query_row("SELECT COUNT(*) FROM environments", [], |row| row.get(0))
             .map_err(|error| AppError::database("count environments", error))
+    }
+
+    pub fn register_artifact(
+        &mut self,
+        artifact_hash: &str,
+        byte_size: u64,
+        metadata: &ArtifactMetadata,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<ArtifactSnapshot, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        self.validate_artifact_registration(artifact_hash, byte_size, metadata)?;
+        let input_hash = value_hash(&json!({
+            "operation": "artifact.register",
+            "artifact_hash": artifact_hash,
+            "byte_size": byte_size,
+            "metadata": metadata,
+            "actor": actor,
+        }))?;
+        let metadata_json = String::from_utf8(canonical_json(
+            &serde_json::to_value(metadata).map_err(|error| {
+                AppError::new(
+                    "MCL_ARTIFACT_METADATA_INVALID",
+                    error.to_string(),
+                    false,
+                    "Report this deterministic artifact serialization defect.",
+                )
+            })?,
+        )?)
+        .map_err(|error| {
+            AppError::new(
+                "MCL_CANONICAL_JSON_INVALID",
+                error.to_string(),
+                false,
+                "Report this canonical JSON encoding defect.",
+            )
+        })?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start artifact registration", error))?;
+        if let Some(existing) = read_idempotent_result(
+            &transaction,
+            "artifact.register",
+            idempotency_key,
+            &input_hash,
+        )? {
+            return Ok(existing);
+        }
+        if transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM artifacts WHERE artifact_hash = ?1)",
+                [artifact_hash],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::database("search registered artifact", error))?
+        {
+            return Err(AppError::new(
+                "MCL_ARTIFACT_EXISTS",
+                format!("artifact {artifact_hash} is already registered"),
+                false,
+                "Retrieve the existing artifact or retry with the original idempotency key.",
+            ));
+        }
+        transaction
+            .execute(
+                "INSERT INTO artifacts(artifact_hash, media_type, byte_size, creation_source, license_expression, restriction, metadata_json, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch(), ?8)",
+                params![
+                    artifact_hash,
+                    metadata.media_type.as_str(),
+                    byte_size as i64,
+                    metadata.creation_source.as_str(),
+                    metadata.license_expression,
+                    metadata.restriction.as_str(),
+                    metadata_json,
+                    actor,
+                ],
+            )
+            .map_err(|error| AppError::database("insert artifact metadata", error))?;
+        let snapshot = read_artifact(&transaction, artifact_hash)?;
+        write_idempotent_result(
+            &transaction,
+            "artifact.register",
+            idempotency_key,
+            &input_hash,
+            &snapshot,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit artifact registration", error))?;
+        Ok(snapshot)
+    }
+
+    pub fn validate_artifact_registration(
+        &self,
+        artifact_hash: &str,
+        byte_size: u64,
+        metadata: &ArtifactMetadata,
+    ) -> Result<(), AppError> {
+        validate_hash(artifact_hash, "artifact")?;
+        metadata.validate(byte_size)?;
+        Ok(())
+    }
+
+    pub fn get_artifact(&self, artifact_hash: &str) -> Result<ArtifactSnapshot, AppError> {
+        validate_hash(artifact_hash, "artifact")?;
+        read_artifact(&self.connection, artifact_hash)
+    }
+
+    pub fn list_artifacts(&self, limit: usize) -> Result<Vec<ArtifactSnapshot>, AppError> {
+        if !(1..=100).contains(&limit) {
+            return Err(AppError::new(
+                "MCL_ARTIFACT_LIMIT_INVALID",
+                "artifact list limit must be between 1 and 100",
+                false,
+                "Use a bounded artifact list limit.",
+            ));
+        }
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT artifact_hash FROM artifacts ORDER BY created_at, artifact_hash LIMIT ?1",
+            )
+            .map_err(|error| AppError::database("prepare artifact list", error))?;
+        let hashes = statement
+            .query_map([limit as i64], |row| row.get::<_, String>(0))
+            .map_err(|error| AppError::database("list artifacts", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AppError::database("read artifact list", error))?;
+        hashes
+            .iter()
+            .map(|hash| read_artifact(&self.connection, hash))
+            .collect()
+    }
+
+    pub fn artifact_count(&self) -> Result<i64, AppError> {
+        self.connection
+            .query_row("SELECT COUNT(*) FROM artifacts", [], |row| row.get(0))
+            .map_err(|error| AppError::database("count artifacts", error))
+    }
+
+    pub fn all_artifact_hashes(&self) -> Result<Vec<String>, AppError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT artifact_hash FROM artifacts ORDER BY artifact_hash")
+            .map_err(|error| AppError::database("prepare artifact inventory", error))?;
+        let hashes = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| AppError::database("inventory artifacts", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AppError::database("read artifact inventory", error))?;
+        if hashes.len() > 100_000 {
+            return Err(AppError::new(
+                "MCL_ARTIFACT_SCAN_LIMIT",
+                "canonical artifact inventory exceeded its reviewed bound",
+                false,
+                "Inspect storage growth before increasing the inventory policy.",
+            ));
+        }
+        Ok(hashes)
     }
 
     pub fn create_record(
@@ -907,6 +1086,39 @@ fn validate_record_references(
             "Register and select an exact pinned environment before creating the formalization.",
         ));
     }
+    let artifact_media_type = connection
+        .query_row(
+            "SELECT media_type FROM artifacts WHERE artifact_hash = ?1",
+            [&formalization.module_artifact_hash],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| AppError::database("validate formalization module artifact", error))?;
+    match artifact_media_type.as_deref() {
+        Some("text/x-lean") => {}
+        Some(media_type) => {
+            return Err(AppError::new(
+                "MCL_FORMALIZATION_ARTIFACT_INVALID",
+                format!(
+                    "formalization module artifact {} has media type `{media_type}`, not `text/x-lean`",
+                    formalization.module_artifact_hash
+                ),
+                false,
+                "Attach an exact registered Lean source artifact before creating the formalization.",
+            ));
+        }
+        None => {
+            return Err(AppError::new(
+                "MCL_FORMALIZATION_ARTIFACT_INVALID",
+                format!(
+                    "formalization module artifact {} is not registered",
+                    formalization.module_artifact_hash
+                ),
+                false,
+                "Ingest and register the exact Lean source artifact before creating the formalization.",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1093,6 +1305,96 @@ fn read_environment(
     Ok(EnvironmentSnapshot {
         environment_hash: environment_hash.to_owned(),
         manifest,
+        created_at,
+        created_by,
+    })
+}
+
+fn read_artifact(
+    connection: &Connection,
+    artifact_hash: &str,
+) -> Result<ArtifactSnapshot, AppError> {
+    let row = connection
+        .query_row(
+            "SELECT media_type, byte_size, creation_source, license_expression, restriction, metadata_json, created_at, created_by FROM artifacts WHERE artifact_hash = ?1",
+            [artifact_hash],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| AppError::database("read artifact metadata", error))?;
+    let Some((
+        stored_media_type,
+        byte_size,
+        stored_creation_source,
+        stored_license_expression,
+        stored_restriction,
+        metadata_json,
+        created_at,
+        created_by,
+    )) = row
+    else {
+        return Err(AppError::new(
+            "MCL_ARTIFACT_NOT_FOUND",
+            format!("artifact {artifact_hash} is not registered"),
+            false,
+            "Ingest the artifact or use an exact registered artifact hash.",
+        ));
+    };
+    let metadata: ArtifactMetadata = serde_json::from_str(&metadata_json).map_err(|error| {
+        AppError::new(
+            "MCL_ARTIFACT_INTEGRITY_FAILED",
+            format!("stored artifact metadata is invalid: {error}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    let byte_size = u64::try_from(byte_size).map_err(|_| {
+        AppError::new(
+            "MCL_ARTIFACT_INTEGRITY_FAILED",
+            "stored artifact byte size is negative",
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    metadata.validate(byte_size).map_err(|error| {
+        AppError::new(
+            "MCL_ARTIFACT_INTEGRITY_FAILED",
+            format!("stored artifact metadata fails validation: {error}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    if stored_media_type != metadata.media_type.as_str()
+        || stored_creation_source != metadata.creation_source.as_str()
+        || stored_license_expression != metadata.license_expression
+        || stored_restriction != metadata.restriction.as_str()
+    {
+        return Err(AppError::new(
+            "MCL_ARTIFACT_INTEGRITY_FAILED",
+            format!("stored artifact metadata columns disagree for {artifact_hash}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        ));
+    }
+    Ok(ArtifactSnapshot {
+        artifact_hash: artifact_hash.to_owned(),
+        media_type: metadata.media_type,
+        byte_size,
+        creation_source: metadata.creation_source,
+        license_expression: metadata.license_expression,
+        restriction: metadata.restriction,
+        semantic_metadata: metadata.semantic_metadata,
         created_at,
         created_by,
     })
@@ -1286,8 +1588,9 @@ fn read_edge(connection: &Connection, edge_id: &str) -> Result<EdgeSnapshot, App
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashSet};
 
+    use sha2::{Digest, Sha256};
     use tempfile::TempDir;
 
     use super::*;
@@ -1299,7 +1602,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("migration succeeds");
 
-        assert_eq!(store.migration_version().expect("migration version"), 6);
+        assert_eq!(store.migration_version().expect("migration version"), 7);
         assert_eq!(store.journal_mode().expect("journal mode"), "wal");
         assert_eq!(store.integrity_check().expect("integrity"), "ok");
         store.schema_check().expect("required schema exists");
@@ -1313,11 +1616,11 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("first migration succeeds");
         store.migrate().expect("second migration succeeds");
-        assert_eq!(store.migration_version().expect("migration version"), 6);
+        assert_eq!(store.migration_version().expect("migration version"), 7);
     }
 
     #[test]
-    fn migration_advances_v5_database() {
+    fn migration_advances_v6_database() {
         let temporary = TempDir::new().expect("temporary directory");
         let database = temporary.path().join("state.sqlite3");
         let mut store = Store::open(&database).expect("database opens");
@@ -1328,6 +1631,7 @@ mod tests {
             (3_i64, "record invariants", MIGRATION_0003),
             (4_i64, "edge invariants", MIGRATION_0004),
             (5_i64, "run event invariants", MIGRATION_0005),
+            (6_i64, "environment invariants", MIGRATION_0006),
         ] {
             transaction
                 .execute_batch(sql)
@@ -1340,10 +1644,10 @@ mod tests {
                 .expect("legacy migration recorded");
         }
         transaction.commit().expect("legacy migrations commit");
-        assert_eq!(store.migration_version().expect("legacy version"), 5);
+        assert_eq!(store.migration_version().expect("legacy version"), 6);
 
         store.migrate().expect("forward migration succeeds");
-        assert_eq!(store.migration_version().expect("current version"), 6);
+        assert_eq!(store.migration_version().expect("current version"), 7);
         assert!(
             store
                 .connection
@@ -1354,6 +1658,16 @@ mod tests {
                 )
                 .expect("environment attribution column")
         );
+        assert!(
+            store
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('artifacts') WHERE name = 'created_by')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .expect("artifact attribution column")
+        );
     }
 
     fn environment_manifest() -> EnvironmentManifest {
@@ -1361,6 +1675,125 @@ mod tests {
             "../../fixtures/environment/lean-4.32-local.json"
         ))
         .expect("environment fixture")
+    }
+
+    fn lean_artifact_metadata() -> ArtifactMetadata {
+        ArtifactMetadata {
+            schema_version: "artifact_metadata/1".to_owned(),
+            media_type: crate::domain::ArtifactMediaType::LeanSource,
+            creation_source: crate::domain::ArtifactCreationSource::UserIngest,
+            license_expression: Some("PolyForm-Noncommercial-1.0.0".to_owned()),
+            restriction: crate::domain::ArtifactRestriction::Restricted,
+            semantic_metadata: BTreeMap::new(),
+        }
+    }
+
+    fn register_lean_artifact(
+        store: &mut Store,
+        bytes: &[u8],
+        idempotency_key: &str,
+    ) -> ArtifactSnapshot {
+        let hash = format!("{:x}", Sha256::digest(bytes));
+        store
+            .register_artifact(
+                &hash,
+                bytes.len() as u64,
+                &lean_artifact_metadata(),
+                "artifact-author",
+                idempotency_key,
+            )
+            .expect("Lean artifact registers")
+    }
+
+    #[test]
+    fn artifact_metadata_is_immutable_idempotent_and_exact_after_restart() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let bytes = b"theorem truth : True := by trivial\n";
+        let first = register_lean_artifact(&mut store, bytes, "artifact-register");
+        assert_eq!(first.created_by, "artifact-author");
+        assert_eq!(first.byte_size, bytes.len() as u64);
+        assert_eq!(store.artifact_count().expect("artifact count"), 1);
+        assert_eq!(
+            store
+                .register_artifact(
+                    &first.artifact_hash,
+                    bytes.len() as u64,
+                    &lean_artifact_metadata(),
+                    "artifact-author",
+                    "artifact-register",
+                )
+                .expect("exact retry"),
+            first
+        );
+        assert_eq!(
+            store
+                .register_artifact(
+                    &first.artifact_hash,
+                    bytes.len() as u64,
+                    &lean_artifact_metadata(),
+                    "artifact-author",
+                    "artifact-duplicate",
+                )
+                .expect_err("duplicate artifact")
+                .code,
+            "MCL_ARTIFACT_EXISTS"
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "UPDATE artifacts SET byte_size = byte_size + 1 WHERE artifact_hash = ?1",
+                    [&first.artifact_hash],
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "DELETE FROM artifacts WHERE artifact_hash = ?1",
+                    [&first.artifact_hash],
+                )
+                .is_err()
+        );
+        drop(store);
+        let restarted = Store::open(&database).expect("database reopens");
+        assert_eq!(
+            restarted
+                .get_artifact(&first.artifact_hash)
+                .expect("artifact metadata survives restart"),
+            first
+        );
+    }
+
+    #[test]
+    fn artifact_metadata_corruption_is_detected() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let artifact = register_lean_artifact(&mut store, b"def one := 1\n", "artifact-corrupt");
+        store
+            .connection
+            .execute("DROP TRIGGER artifacts_reject_update", [])
+            .expect("test removes artifact mutation guard");
+        store
+            .connection
+            .execute(
+                "UPDATE artifacts SET media_type = 'application/json' WHERE artifact_hash = ?1",
+                [&artifact.artifact_hash],
+            )
+            .expect("test simulates metadata corruption");
+        assert_eq!(
+            store
+                .get_artifact(&artifact.artifact_hash)
+                .expect_err("corruption detected")
+                .code,
+            "MCL_ARTIFACT_INTEGRITY_FAILED"
+        );
     }
 
     #[test]
@@ -1947,7 +2380,7 @@ mod tests {
         claim: &RecordSnapshot,
         theorem_type: &str,
         environment_hash: &str,
-        artifact_marker: char,
+        artifact_hash: &str,
         imports: &[&str],
     ) -> RecordDraft {
         RecordDraft {
@@ -1960,7 +2393,7 @@ mod tests {
                 },
                 "formal_system": "lean4",
                 "environment_hash": environment_hash,
-                "module_artifact_hash": artifact_marker.to_string().repeat(64),
+                "module_artifact_hash": artifact_hash,
                 "declaration_name": "MathOS.Pilot.prime_claim",
                 "exact_theorem_type": theorem_type,
                 "declaration_hash": "d".repeat(64),
@@ -2002,40 +2435,50 @@ mod tests {
                 "formalization-environment-b",
             )
             .expect("second environment");
+        let first_artifact = register_lean_artifact(
+            &mut store,
+            b"theorem prime_claim_a : True := by trivial\n",
+            "formalization-artifact-a",
+        );
+        let second_artifact = register_lean_artifact(
+            &mut store,
+            b"theorem prime_claim_b : True := by trivial\n",
+            "formalization-artifact-b",
+        );
         let variants = [
             formalization(
                 &claim,
                 "∀ p, Nat.Prime p → Odd p",
                 &first_environment.environment_hash,
-                'b',
+                &first_artifact.artifact_hash,
                 &["Mathlib"],
             ),
             formalization(
                 &claim,
                 "∀ p, Nat.Prime p → p % 2 = 1",
                 &first_environment.environment_hash,
-                'b',
+                &first_artifact.artifact_hash,
                 &["Mathlib"],
             ),
             formalization(
                 &claim,
                 "∀ p, Nat.Prime p → Odd p",
                 &second_environment.environment_hash,
-                'b',
+                &first_artifact.artifact_hash,
                 &["Mathlib"],
             ),
             formalization(
                 &claim,
                 "∀ p, Nat.Prime p → Odd p",
                 &first_environment.environment_hash,
-                'c',
+                &second_artifact.artifact_hash,
                 &["Mathlib"],
             ),
             formalization(
                 &claim,
                 "∀ p, Nat.Prime p → Odd p",
                 &first_environment.environment_hash,
-                'b',
+                &first_artifact.artifact_hash,
                 &["Mathlib", "MathOS.Foundation"],
             ),
         ];
@@ -2092,6 +2535,11 @@ mod tests {
                 "reference-environment",
             )
             .expect("environment registered");
+        let lean_artifact = register_lean_artifact(
+            &mut store,
+            b"theorem reference_fixture : True := by trivial\n",
+            "reference-artifact",
+        );
 
         let missing_claim = RecordSnapshot {
             object_id: "missing-claim".to_owned(),
@@ -2110,7 +2558,7 @@ mod tests {
                         &missing_claim,
                         "True",
                         &environment.environment_hash,
-                        'c',
+                        &lean_artifact.artifact_hash,
                         &["Mathlib"],
                     ),
                     "formalizer",
@@ -2128,7 +2576,7 @@ mod tests {
                         &source,
                         "True",
                         &environment.environment_hash,
-                        'c',
+                        &lean_artifact.artifact_hash,
                         &["Mathlib"],
                     ),
                     "formalizer",
@@ -2145,7 +2593,13 @@ mod tests {
         assert_eq!(
             store
                 .create_record(
-                    &formalization(&claim, "True", &"f".repeat(64), 'c', &["Mathlib"]),
+                    &formalization(
+                        &claim,
+                        "True",
+                        &"f".repeat(64),
+                        &lean_artifact.artifact_hash,
+                        &["Mathlib"],
+                    ),
                     "formalizer",
                     "missing-environment",
                 )
@@ -2153,13 +2607,66 @@ mod tests {
                 .code,
             "MCL_FORMALIZATION_ENVIRONMENT_INVALID"
         );
+        assert_eq!(
+            store
+                .create_record(
+                    &formalization(
+                        &claim,
+                        "True",
+                        &environment.environment_hash,
+                        &"f".repeat(64),
+                        &["Mathlib"],
+                    ),
+                    "formalizer",
+                    "missing-artifact",
+                )
+                .expect_err("missing module artifact rejected")
+                .code,
+            "MCL_FORMALIZATION_ARTIFACT_INVALID"
+        );
+        let json_bytes = br#"{"not":"lean source"}"#;
+        let json_hash = format!("{:x}", Sha256::digest(json_bytes));
+        let json_metadata = ArtifactMetadata {
+            schema_version: "artifact_metadata/1".to_owned(),
+            media_type: crate::domain::ArtifactMediaType::Json,
+            creation_source: crate::domain::ArtifactCreationSource::UserIngest,
+            license_expression: Some("PolyForm-Noncommercial-1.0.0".to_owned()),
+            restriction: crate::domain::ArtifactRestriction::Restricted,
+            semantic_metadata: BTreeMap::new(),
+        };
+        store
+            .register_artifact(
+                &json_hash,
+                json_bytes.len() as u64,
+                &json_metadata,
+                "artifact-author",
+                "reference-json-artifact",
+            )
+            .expect("JSON artifact registers");
+        assert_eq!(
+            store
+                .create_record(
+                    &formalization(
+                        &claim,
+                        "True",
+                        &environment.environment_hash,
+                        &json_hash,
+                        &["Mathlib"],
+                    ),
+                    "formalizer",
+                    "wrong-media-artifact",
+                )
+                .expect_err("non-Lean module artifact rejected")
+                .code,
+            "MCL_FORMALIZATION_ARTIFACT_INVALID"
+        );
         let created = store
             .create_record(
                 &formalization(
                     &claim,
                     "True",
                     &environment.environment_hash,
-                    'c',
+                    &lean_artifact.artifact_hash,
                     &["Mathlib"],
                 ),
                 "formalizer",
@@ -2170,7 +2677,7 @@ mod tests {
             &claim,
             "True ∧ True",
             &environment.environment_hash,
-            'c',
+            &lean_artifact.artifact_hash,
             &["Mathlib"],
         );
         invalid_version.payload["claim_version"] = json!({

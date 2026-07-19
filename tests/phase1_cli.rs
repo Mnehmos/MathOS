@@ -1,8 +1,10 @@
+use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
 use serde_json::Value;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 fn mcl(root: &TempDir, arguments: &[&str]) -> Output {
@@ -103,7 +105,7 @@ fn init_creates_real_storage_and_health_passes() {
         String::from_utf8_lossy(&initialized.stderr)
     );
     let value = parse_stdout(&initialized);
-    assert_eq!(value["migration_version"], 6);
+    assert_eq!(value["migration_version"], 7);
     assert_eq!(value["journal_mode"], "wal");
     assert!(root.path().join("mcl.toml").is_file());
     assert!(root.path().join(".mcl/state.sqlite3").is_file());
@@ -221,6 +223,147 @@ fn environment_cli_registers_dry_runs_retries_and_survives_restart() {
             .as_str()
             .is_some_and(|detail| detail.contains("registered=1"))
     );
+}
+
+#[test]
+fn artifact_cli_ingests_dry_runs_retries_verifies_and_detects_corruption() {
+    let root = TempDir::new().expect("temporary root");
+    assert!(
+        mcl(
+            &root,
+            &[
+                "init",
+                "--actor",
+                "artifact-cli-test",
+                "--idempotency-key",
+                "artifact-cli-init",
+            ],
+        )
+        .status
+        .success()
+    );
+    let module = root.path().join("ArtifactFixture.lean");
+    fs::write(&module, b"theorem artifactFixture : True := by trivial\n").expect("fixture writes");
+    let metadata = json!({
+        "schema_version": "artifact_metadata/1",
+        "media_type": "text/x-lean",
+        "creation_source": "user_ingest",
+        "license_expression": "PolyForm-Noncommercial-1.0.0",
+        "restriction": "restricted",
+        "semantic_metadata": {"declaration_name": "MathOS.ArtifactFixture"}
+    })
+    .to_string();
+    let ingest = |dry_run: bool, idempotency_key: &str| {
+        let mut arguments = vec![
+            "artifact".to_owned(),
+            "ingest".to_owned(),
+            "--input-file".to_owned(),
+            module.to_string_lossy().into_owned(),
+            "--metadata-json".to_owned(),
+            metadata.clone(),
+            "--actor".to_owned(),
+            "artifact-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            idempotency_key.to_owned(),
+        ];
+        if dry_run {
+            arguments.push("--dry-run".to_owned());
+        }
+        mcl_owned(&root, &arguments)
+    };
+
+    let preview = parse_stdout(&ingest(true, "artifact-cli-preview"));
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["artifact"], Value::Null);
+    assert_eq!(parse_stdout(&mcl(&root, &["artifact", "list"])), json!([]));
+
+    let created_output = ingest(false, "artifact-cli-register");
+    assert!(
+        created_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created_output.stderr)
+    );
+    let created = parse_stdout(&created_output);
+    let hash = created["proposed_artifact_hash"]
+        .as_str()
+        .expect("artifact hash");
+    assert_eq!(created["artifact"]["artifact_hash"], hash);
+    assert_eq!(created["artifact"]["media_type"], "text/x-lean");
+    assert_eq!(
+        parse_stdout(&ingest(false, "artifact-cli-register"))["artifact"],
+        created["artifact"]
+    );
+    assert_eq!(
+        parse_stdout(&mcl(&root, &["artifact", "get", "--artifact-hash", hash])),
+        created["artifact"]
+    );
+    let verified = parse_stdout(&mcl(
+        &root,
+        &["artifact", "verify", "--artifact-hash", hash],
+    ));
+    assert_eq!(verified["content_hash_verified"], true);
+    assert_eq!(verified["metadata_verified"], true);
+
+    let orphan_bytes = b"crash window orphan";
+    let orphan_hash = format!("{:x}", Sha256::digest(orphan_bytes));
+    let orphan_path = root
+        .path()
+        .join(".mcl/artifacts/sha256")
+        .join(&orphan_hash[0..2])
+        .join(&orphan_hash[2..4])
+        .join(&orphan_hash);
+    fs::create_dir_all(orphan_path.parent().expect("orphan parent"))
+        .expect("orphan directory creates");
+    fs::write(orphan_path, orphan_bytes).expect("orphan bytes write");
+    let doctor = parse_stdout(&mcl(&root, &["doctor"]));
+    let inventory = doctor["checks"]
+        .as_array()
+        .expect("doctor checks")
+        .iter()
+        .find(|check| check["name"] == "artifact_inventory")
+        .expect("artifact inventory check");
+    assert_eq!(inventory["healthy"], true);
+    assert!(
+        inventory["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("unregistered_orphans=1"))
+    );
+
+    let outside = TempDir::new().expect("outside root");
+    let outside_file = outside.path().join("Outside.lean");
+    fs::write(&outside_file, b"theorem outside : True := by trivial\n")
+        .expect("outside fixture writes");
+    let unsafe_input = mcl_owned(
+        &root,
+        &[
+            "artifact".to_owned(),
+            "ingest".to_owned(),
+            "--input-file".to_owned(),
+            outside_file.to_string_lossy().into_owned(),
+            "--metadata-json".to_owned(),
+            metadata,
+            "--actor".to_owned(),
+            "artifact-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "artifact-cli-outside".to_owned(),
+        ],
+    );
+    assert!(!unsafe_input.status.success());
+    let unsafe_error: Value =
+        serde_json::from_slice(&unsafe_input.stderr).expect("unsafe input error JSON");
+    assert_eq!(unsafe_error["code"], "MCL_ARTIFACT_INPUT_UNSAFE");
+
+    let cas_path = root
+        .path()
+        .join(".mcl/artifacts/sha256")
+        .join(&hash[0..2])
+        .join(&hash[2..4])
+        .join(hash);
+    fs::write(cas_path, b"one byte changed").expect("test corrupts CAS bytes");
+    let corrupted = mcl(&root, &["artifact", "verify", "--artifact-hash", hash]);
+    assert!(!corrupted.status.success());
+    let error: Value = serde_json::from_slice(&corrupted.stderr).expect("artifact error JSON");
+    assert_eq!(error["code"], "MCL_ARTIFACT_INTEGRITY_FAILED");
 }
 
 #[test]

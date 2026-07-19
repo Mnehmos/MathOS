@@ -26,3 +26,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 16. [A Mutation Must Introduce Itself](0016-a-mutation-must-introduce-itself.md)
 17. [The World Around a Proof](0017-the-world-around-a-proof.md)
 18. [A Name Must Lead Somewhere](0018-a-name-must-lead-somewhere.md)
+19. [Nothing Exists Until It Can Be Retrieved](0019-nothing-exists-until-it-can-be-retrieved.md)
