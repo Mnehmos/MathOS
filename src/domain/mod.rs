@@ -6,6 +6,8 @@ use serde_json::Value;
 
 use crate::error::AppError;
 
+pub mod schemas;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordKind {

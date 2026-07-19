@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/claim/1",
+  "title": "MathOS Claim Payload v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source_reference",
+    "normalized_informal_statement",
+    "claim_kind",
+    "logical_shape",
+    "assumptions",
+    "variables",
+    "concept_links",
+    "source_citations",
+    "ambiguity_notes"
+  ],
+  "properties": {
+    "source_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "normalized_informal_statement": {"type": "string", "minLength": 1, "maxLength": 1048576},
+    "claim_kind": {"enum": ["universal", "existential", "equality", "inequality", "equivalence", "classification", "finite_computation", "open_question", "definition_soundness", "method_claim"]},
+    "logical_shape": {"type": ["string", "null"], "maxLength": 1048576},
+    "assumptions": {"type": "array", "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 1048576}},
+    "variables": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "domain", "notes"],
+        "properties": {
+          "symbol": {"type": "string", "minLength": 1, "maxLength": 256},
+          "domain": {"type": "string", "minLength": 1, "maxLength": 1048576},
+          "notes": {"type": "string", "maxLength": 1048576}
+        }
+      }
+    },
+    "concept_links": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["object_id", "version_hash"],
+        "properties": {
+          "object_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "source_citations": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["object_id", "version_hash"],
+        "properties": {
+          "object_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "ambiguity_notes": {"type": "array", "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 1048576}}
+  }
+}

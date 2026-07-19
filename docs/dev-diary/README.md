@@ -16,3 +16,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 6. [The Right to Remain the Same](0006-the-right-to-remain-the-same.md)
 7. [The Trace Remembers](0007-the-trace-remembers.md)
 8. [A Path Is Not a Proof](0008-a-path-is-not-a-proof.md)
+9. [The Original and the Claim](0009-the-original-and-the-claim.md)

@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::canonical::{canonical_json, record_version_hash, value_hash};
+use crate::domain::schemas::validate_record_payload;
 use crate::domain::{EdgeDraft, EdgeKind, EdgeSnapshot, RecordDraft, RecordKind, RecordSnapshot};
 use crate::error::AppError;
 
@@ -252,6 +253,7 @@ impl Store {
         idempotency_key: &str,
     ) -> Result<RecordSnapshot, AppError> {
         validate_mutation_inputs(actor, idempotency_key)?;
+        validate_record_payload(draft.kind, &draft.schema_version, &draft.payload)?;
         let version_hash = record_version_hash(&draft.schema_version, &draft.payload)?;
         let input_hash = mutation_input_hash("record.create", None, None, draft, actor)?;
         let transaction = self
@@ -331,6 +333,7 @@ impl Store {
         idempotency_key: &str,
     ) -> Result<RecordSnapshot, AppError> {
         validate_mutation_inputs(actor, idempotency_key)?;
+        validate_record_payload(draft.kind, &draft.schema_version, &draft.payload)?;
         validate_hash(expected_head, "expected head")?;
         let version_hash = record_version_hash(&draft.schema_version, &draft.payload)?;
         if version_hash == expected_head {
@@ -924,7 +927,20 @@ mod tests {
         RecordDraft {
             kind: RecordKind::Claim,
             schema_version: "claim/1".to_owned(),
-            payload: json!({"statement": statement}),
+            payload: json!({
+                "source_reference": {
+                    "object_id": "fixture-source",
+                    "version_hash": "a".repeat(64)
+                },
+                "normalized_informal_statement": statement,
+                "claim_kind": "universal",
+                "logical_shape": "forall",
+                "assumptions": [],
+                "variables": [],
+                "concept_links": [],
+                "source_citations": [],
+                "ambiguity_notes": []
+            }),
             searchable_text: statement.to_owned(),
         }
     }
@@ -1330,5 +1346,91 @@ mod tests {
                 "equiv-b-a",
             )
             .expect("equivalence reverse");
+    }
+
+    fn source(label: &str) -> RecordDraft {
+        RecordDraft {
+            kind: RecordKind::Source,
+            schema_version: "source/1".to_owned(),
+            payload: json!({
+                "source_type": "user_statement",
+                "title_or_label": label,
+                "authors_or_origin": ["fixture author"],
+                "canonical_locator": format!("local:{label}"),
+                "acquisition_date": "2026-07-19",
+                "license_expression": null,
+                "redistribution_status": "unknown",
+                "content_hash": null,
+                "citation_metadata": {},
+                "redaction_class": "private",
+                "provenance_notes": "test fixture",
+                "original_text": label
+            }),
+            searchable_text: label.to_owned(),
+        }
+    }
+
+    #[test]
+    fn typed_source_survives_restart_without_normalizing_original_text() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let original = "  Every prime number is odd.  ";
+        let created = {
+            let mut store = Store::open(&database).expect("database opens");
+            store.migrate().expect("migration succeeds");
+            store
+                .create_record(&source(original), "intake", "source-valid")
+                .expect("source created")
+        };
+        let reopened = Store::open(&database).expect("database reopens");
+        let loaded = reopened
+            .get_record_version(&created.version_hash)
+            .expect("source version loads");
+        assert_eq!(loaded, created);
+        assert_eq!(loaded.payload["original_text"], original);
+    }
+
+    #[test]
+    fn rejected_schema_payload_leaves_no_record_or_idempotency_receipt() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let mut invalid = source("invalid source");
+        invalid.payload["content_hash"] = json!("bad-hash");
+        assert_eq!(
+            store
+                .create_record(&invalid, "intake", "source-invalid")
+                .expect_err("invalid source rejected")
+                .code,
+            "MCL_SCHEMA_HASH_INVALID"
+        );
+        assert_eq!(
+            store
+                .connection
+                .query_row("SELECT COUNT(*) FROM records", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("record count"),
+            0
+        );
+        assert_eq!(
+            store
+                .connection
+                .query_row("SELECT COUNT(*) FROM idempotency_results", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("idempotency count"),
+            0
+        );
+
+        let mut unsupported = source("future source");
+        unsupported.schema_version = "source/2".to_owned();
+        assert_eq!(
+            store
+                .create_record(&unsupported, "intake", "source-future")
+                .expect_err("unsupported schema rejected")
+                .code,
+            "MCL_SCHEMA_VERSION_UNSUPPORTED"
+        );
     }
 }

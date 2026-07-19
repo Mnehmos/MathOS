@@ -12,7 +12,7 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 Phase 2: Canonical records and trace.
 
-Active issue: [#8, add deterministic bounded graph traversal](https://github.com/Mnehmos/MathOS/issues/8).
+Active issue: [#9, enforce versioned source and claim schemas](https://github.com/Mnehmos/MathOS/issues/9).
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -47,6 +47,11 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Incoming, outgoing, and bidirectional traversal support typed edge-kind filters without accepting raw query text.
 - Depth, result count, and scanned edges are bounded; cycles terminate without duplicate edge results.
 - Traversal ordering is deterministic across restart and remains read-only and non-authoritative.
+- Source and claim payloads have separate closed Rust types and committed JSON Schemas for `source/1` and `claim/1`.
+- Source records explicitly preserve original text, locator, licensing, redistribution, citations, redaction, and provenance.
+- Claim records explicitly preserve exact source reference, normalized statement, kind, assumptions, variables, concept links, citations, and ambiguity.
+- Canonical create and version paths reject unknown fields, unsupported schema versions, malformed hashes, empty required text, and excessive collections before persistence.
+- Schema rejection leaves no record or idempotency receipt, while valid original source text survives restart byte-for-byte.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, MCP behavior, pilot, portable release, or 1.0 acceptance result.
 
@@ -55,13 +60,13 @@ These items establish only part of the product foundation and Phase 2 trace mode
 - Publish the local controlled commits and run the CI matrix once authenticated Git transport is available.
 - Validate the pinned Lean toolchain on a fresh Linux CI runner because the current managed execution sandbox cannot launch the Lean runtime.
 - Publish and run remote CI for the locally completed hash-chained run-event slice.
-- Generate and commit the first typed JSON Schemas from the domain contract.
+- Extend typed schema enforcement to concepts and formalizations after source and claim review.
 
 ## Next highest-priority criteria
 
 1. Close Phase 1 issue #4 and Phase 2 issue #5 with remote CI evidence.
-2. Establish source and claim schemas on the shared application path.
-3. Add bounded graph traversal to the future shared CLI and MCP query operation.
+2. Establish concept and formalization schemas on the shared application path.
+3. Expose canonical records, runs, and bounded graph traversal through one shared application service and CLI.
 4. Add the MCP adapter only after it can call that same real application path.
 5. Begin the Lean authority path only after the environment is pinned and executable.
 
@@ -83,7 +88,7 @@ Observed Rust evidence before this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 36 Rust unit tests passed;
+- 41 Rust unit tests passed;
 - 4 Rust CLI integration tests passed;
 - manual initialization exited 0 with migrations through version 5 and WAL mode;
 - manual health exited 0 after an FTS5 probe defect was reproduced and repaired;
