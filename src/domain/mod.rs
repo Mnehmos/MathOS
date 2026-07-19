@@ -319,6 +319,30 @@ pub struct EdgeSnapshot {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum TraversalDirection {
+    Outgoing,
+    Incoming,
+    Both,
+}
+
+#[derive(Clone, Debug)]
+pub struct GraphTraversalRequest {
+    pub root_object_id: String,
+    pub root_version_hash: String,
+    pub direction: TraversalDirection,
+    pub edge_kinds: Vec<EdgeKind>,
+    pub max_depth: u32,
+    pub limit: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GraphTraversalHit {
+    pub depth: u32,
+    pub edge: EdgeSnapshot,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RunKind {
     Formalize,
     Prove,

@@ -12,6 +12,7 @@ use crate::canonical::{canonical_json, record_version_hash, value_hash};
 use crate::domain::{EdgeDraft, EdgeKind, EdgeSnapshot, RecordDraft, RecordKind, RecordSnapshot};
 use crate::error::AppError;
 
+mod graph;
 mod runs;
 
 const MIGRATION_0001: &str = include_str!("../../migrations/0001_initial.sql");

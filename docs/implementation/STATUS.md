@@ -12,7 +12,7 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 Phase 2: Canonical records and trace.
 
-Active issue: [#7, implement append-only hash-chained run events](https://github.com/Mnehmos/MathOS/issues/7).
+Active issue: [#8, add deterministic bounded graph traversal](https://github.com/Mnehmos/MathOS/issues/8).
 
 Active branch: `feat/spec-driven-rust-rebuild`.
 
@@ -43,6 +43,10 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - SQLite anchors and triggers reject missing predecessors, gaps, rewrites, deletion, and run-origin mutation.
 - Chain verification detects forged payloads, reordered events, and final-event truncation, including after restart.
 - Run history remains explicitly non-authoritative for proof, fidelity, and novelty.
+- Graph traversal begins from an exact object and version pair and preserves exact version-bound edges in every result.
+- Incoming, outgoing, and bidirectional traversal support typed edge-kind filters without accepting raw query text.
+- Depth, result count, and scanned edges are bounded; cycles terminate without duplicate edge results.
+- Traversal ordering is deterministic across restart and remains read-only and non-authoritative.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, MCP behavior, pilot, portable release, or 1.0 acceptance result.
 
@@ -56,8 +60,8 @@ These items establish only part of the product foundation and Phase 2 trace mode
 ## Next highest-priority criteria
 
 1. Close Phase 1 issue #4 and Phase 2 issue #5 with remote CI evidence.
-2. Implement graph traversal queries over exact version-bound edges.
-3. Establish source and claim schemas on the shared application path.
+2. Establish source and claim schemas on the shared application path.
+3. Add bounded graph traversal to the future shared CLI and MCP query operation.
 4. Add the MCP adapter only after it can call that same real application path.
 5. Begin the Lean authority path only after the environment is pinned and executable.
 
@@ -79,7 +83,7 @@ Observed Rust evidence before this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 32 Rust unit tests passed;
+- 36 Rust unit tests passed;
 - 4 Rust CLI integration tests passed;
 - manual initialization exited 0 with migrations through version 5 and WAL mode;
 - manual health exited 0 after an FTS5 probe defect was reproduced and repaired;
