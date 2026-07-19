@@ -33,7 +33,7 @@ toolchain="$(tr -d '\r\n' < lean-toolchain)"
 lean_path="$(elan which lean)"
 bwrap_version="$(/usr/bin/bwrap --version)"
 
-if ! sudo /usr/bin/bwrap \
+if ! /usr/bin/bwrap \
   --unshare-all \
   --die-with-parent \
   --new-session \
