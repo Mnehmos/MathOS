@@ -61,7 +61,7 @@ The local worker:
 - constructs arguments from typed state rather than request text;
 - verifies source bytes from CAS and materializes them below the instance root;
 - creates a controlled driver that checks the requested declaration;
-- clears the child environment and restores only a narrow runtime allowlist;
+- clears the child environment, restores only a narrow runtime allowlist, and selects the validated exact toolchain through worker-controlled `ELAN_TOOLCHAIN`;
 - supplies null stdin;
 - bounds wall-clock time and retained stdout plus stderr;
 - preserves bounded diagnostics and a canonical execution report as private artifacts;

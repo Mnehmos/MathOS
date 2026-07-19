@@ -87,6 +87,7 @@ pub fn execute_lean(
         workspace,
         Duration::from_secs(environment.resource_limits.timeout_seconds.min(30)),
         4_096,
+        Some(&environment.lean_toolchain),
     )?;
     let observed_toolchain_version =
         String::from_utf8(version_capture.stdout.clone()).map_err(|error| {
@@ -101,6 +102,11 @@ pub fn execute_lean(
         .lean_toolchain
         .strip_prefix("leanprover/lean4:v")
         .expect("validated Lean toolchain");
+    let version_diagnostic = format!(
+        "{}{}",
+        observed_toolchain_version.trim(),
+        String::from_utf8_lossy(&version_capture.stderr).trim()
+    );
     if version_capture.timed_out
         || version_capture.output_limit_exceeded
         || version_capture.exit_code != Some(0)
@@ -110,7 +116,7 @@ pub fn execute_lean(
             "MCL_VERIFIER_VERSION_MISMATCH",
             format!(
                 "observed Lean version does not match pinned release {expected}: {}",
-                observed_toolchain_version.trim()
+                version_diagnostic
             ),
             false,
             "Activate the exact registered Lean toolchain before running the worker.",
@@ -123,6 +129,7 @@ pub fn execute_lean(
         workspace,
         Duration::from_secs(environment.resource_limits.timeout_seconds),
         environment.resource_limits.max_output_bytes,
+        Some(&environment.lean_toolchain),
     )?;
     Ok(LeanProcessResult {
         exit_code: capture.exit_code,
@@ -150,6 +157,7 @@ fn run_bounded_process(
     workspace: &Path,
     timeout: Duration,
     max_output_bytes: u64,
+    elan_toolchain: Option<&str>,
 ) -> Result<ProcessCapture, AppError> {
     let mut command = Command::new(executable);
     command
@@ -167,6 +175,9 @@ fn run_bounded_process(
     #[cfg(windows)]
     if let Some(system_root) = std::env::var_os("SystemRoot") {
         command.env("SystemRoot", system_root);
+    }
+    if let Some(elan_toolchain) = elan_toolchain {
+        command.env("ELAN_TOOLCHAIN", elan_toolchain);
     }
     let mut child = command.spawn().map_err(|error| {
         AppError::new(
@@ -376,12 +387,55 @@ mod tests {
     #[test]
     fn process_capture_enforces_output_and_time_bounds() {
         let workspace = tempfile::TempDir::new().expect("workspace");
+        let selected = run_bounded_process(
+            "sh",
+            &["-c", "test \"$ELAN_TOOLCHAIN\" = leanprover/lean4:v4.32.0"],
+            workspace.path(),
+            Duration::from_secs(1),
+            64,
+            Some("leanprover/lean4:v4.32.0"),
+        )
+        .expect("typed toolchain environment");
+        assert_eq!(selected.exit_code, Some(0));
+
+        let leaked_name = std::env::vars()
+            .map(|(name, _)| name)
+            .find(|name| {
+                !matches!(
+                    name.as_str(),
+                    "PATH"
+                        | "HOME"
+                        | "USERPROFILE"
+                        | "ELAN_HOME"
+                        | "SystemRoot"
+                        | "PWD"
+                        | "OLDPWD"
+                        | "SHLVL"
+                        | "_"
+                ) && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
+            })
+            .expect("test process has one non-allowlisted environment variable");
+        let leak_check = format!("test -z \"${{{leaked_name}+present}}\"");
+        let cleared = run_bounded_process(
+            "sh",
+            &["-c", &leak_check],
+            workspace.path(),
+            Duration::from_secs(1),
+            64,
+            None,
+        )
+        .expect("cleared child environment");
+        assert_eq!(cleared.exit_code, Some(0), "leaked {leaked_name}");
+
         let output = run_bounded_process(
             "sh",
             &["-c", "printf 123456789"],
             workspace.path(),
             Duration::from_secs(1),
             4,
+            None,
         )
         .expect("bounded output process");
         assert!(output.output_limit_exceeded);
@@ -393,6 +447,7 @@ mod tests {
             workspace.path(),
             Duration::from_millis(30),
             64,
+            None,
         )
         .expect("bounded timeout process");
         assert!(timeout.timed_out);

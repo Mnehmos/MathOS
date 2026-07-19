@@ -12,7 +12,7 @@ The engine already persists exact verifier intent, immutable environment manifes
 
 ## Decision
 
-The local worker leases one canonical verifier job and constructs its invocation from typed state. It accepts only the configured `lean` or `lean.exe` executable, passes only `--version` or a verifier-selected module file, clears the child environment, restores a narrow runtime-variable allowlist, supplies null stdin, and runs inside a fresh temporary directory below the configured instance root.
+The local worker leases one canonical verifier job and constructs its invocation from typed state. It accepts only the configured `lean` or `lean.exe` executable, passes only `--version` or a verifier-selected module file, clears the child environment, restores a narrow runtime-variable allowlist, sets `ELAN_TOOLCHAIN` from the validated exact environment manifest, supplies null stdin, and runs inside a fresh temporary directory below the configured instance root.
 
 The worker copies verified source bytes from CAS into that directory and creates a controlled driver that checks the requested declaration. The request cannot supply a path, command, shell fragment, argument, or environment variable.
 

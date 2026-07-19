@@ -200,4 +200,66 @@ fn pinned_lean_worker_elaborates_real_source_without_granting_authority() {
             || rejected["report"]["stderr_artifact_hash"].is_string()
     );
     assert_eq!(rejected["job"]["state"], "succeeded");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        run(
+            root.path(),
+            &[
+                "verify".to_owned(),
+                "check".to_owned(),
+                "--environment-hash".to_owned(),
+                include_str!("../fixtures/environment/lean-4.32-local.sha256")
+                    .trim()
+                    .to_owned(),
+                "--module-artifact-hash".to_owned(),
+                artifact_hash.to_owned(),
+                "--declaration-name".to_owned(),
+                "MathOS.LeanWorker.truth".to_owned(),
+                "--actor".to_owned(),
+                "lean-ci".to_owned(),
+                "--idempotency-key".to_owned(),
+                "lean-ci-mismatched-job".to_owned(),
+            ],
+        );
+        let fake_bin = root.path().join("fake-bin");
+        fs::create_dir(&fake_bin).expect("fake binary directory");
+        let fake_lean = fake_bin.join("lean");
+        fs::write(
+            &fake_lean,
+            b"#!/bin/sh\nprintf 'Lean (version 4.31.0, fake, Release)\\n'\n",
+        )
+        .expect("fake Lean writes");
+        let mut permissions = fs::metadata(&fake_lean)
+            .expect("fake Lean metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&fake_lean, permissions).expect("fake Lean is executable");
+        let mismatch_output = Command::new(env!("CARGO_BIN_EXE_mcl"))
+            .arg("--root")
+            .arg(root.path())
+            .arg("--json")
+            .args([
+                "worker",
+                "--worker-id",
+                "lean-ci-worker",
+                "--lease-seconds",
+                "3660",
+            ])
+            .env("PATH", &fake_bin)
+            .output()
+            .expect("mismatched worker runs");
+        assert!(mismatch_output.status.success());
+        let mismatched: Value =
+            serde_json::from_slice(&mismatch_output.stdout).expect("mismatch JSON");
+        assert_eq!(mismatched["report"]["classification"], "toolchain_mismatch");
+        assert_eq!(mismatched["report"]["authoritative"], false);
+        assert_eq!(mismatched["job"]["state"], "failed");
+        assert_eq!(
+            mismatched["job"]["last_error"]["code"],
+            "MCL_VERIFIER_VERSION_MISMATCH"
+        );
+    }
 }

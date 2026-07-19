@@ -30,3 +30,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 20. [The Orphan Is Not a Ghost](0020-the-orphan-is-not-a-ghost.md)
 21. [A Process Must Be Expected](0021-a-process-must-be-expected.md)
 22. [Success Must Name Its Kind](0022-success-must-name-its-kind.md)
+23. [The Directory Was Part of the Proof](0023-the-directory-was-part-of-the-proof.md)
