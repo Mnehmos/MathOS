@@ -222,6 +222,31 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn every_run_kind_round_trips_through_its_stable_name() {
+        for kind in RunKind::ALL {
+            assert_eq!(RunKind::from_str(kind.as_str()).expect("known kind"), kind);
+            assert_eq!(
+                serde_json::to_value(kind).expect("serialize kind"),
+                Value::String(kind.as_str().to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn every_run_event_kind_round_trips_through_its_stable_name() {
+        for kind in RunEventKind::ALL {
+            assert_eq!(
+                RunEventKind::from_str(kind.as_str()).expect("known kind"),
+                kind
+            );
+            assert_eq!(
+                serde_json::to_value(kind).expect("serialize kind"),
+                Value::String(kind.as_str().to_owned())
+            );
+        }
+    }
 }
 
 impl FromStr for EdgeKind {
@@ -290,4 +315,213 @@ pub struct EdgeSnapshot {
     pub payload: Value,
     pub created_at: i64,
     pub created_by: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunKind {
+    Formalize,
+    Prove,
+    Disprove,
+    CounterexampleSearch,
+    LibrarySearch,
+    LiteratureReview,
+    Generalize,
+    Audit,
+    PedagogyBuild,
+    ReleaseBuild,
+    Migration,
+}
+
+impl RunKind {
+    pub const ALL: [Self; 11] = [
+        Self::Formalize,
+        Self::Prove,
+        Self::Disprove,
+        Self::CounterexampleSearch,
+        Self::LibrarySearch,
+        Self::LiteratureReview,
+        Self::Generalize,
+        Self::Audit,
+        Self::PedagogyBuild,
+        Self::ReleaseBuild,
+        Self::Migration,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Formalize => "formalize",
+            Self::Prove => "prove",
+            Self::Disprove => "disprove",
+            Self::CounterexampleSearch => "counterexample_search",
+            Self::LibrarySearch => "library_search",
+            Self::LiteratureReview => "literature_review",
+            Self::Generalize => "generalize",
+            Self::Audit => "audit",
+            Self::PedagogyBuild => "pedagogy_build",
+            Self::ReleaseBuild => "release_build",
+            Self::Migration => "migration",
+        }
+    }
+}
+
+impl FromStr for RunKind {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        RunKind::ALL
+            .into_iter()
+            .find(|kind| kind.as_str() == value)
+            .ok_or_else(|| {
+                AppError::new(
+                    "MCL_RUN_KIND_UNKNOWN",
+                    format!("unknown run kind `{value}`"),
+                    false,
+                    "Use a run kind declared by the committed domain model.",
+                )
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    Active,
+    Frozen,
+    Closed,
+    Failed,
+}
+
+impl RunState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Frozen => "frozen",
+            Self::Closed => "closed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl FromStr for RunState {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "active" => Ok(Self::Active),
+            "frozen" => Ok(Self::Frozen),
+            "closed" => Ok(Self::Closed),
+            "failed" => Ok(Self::Failed),
+            _ => Err(AppError::new(
+                "MCL_RUN_STATE_UNKNOWN",
+                format!("unknown run state `{value}`"),
+                false,
+                "Restore a verified backup if stored run state was altered.",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunEventKind {
+    RunStarted,
+    Observation,
+    ActionSubmitted,
+    OutputObserved,
+    Diagnostic,
+    EvidenceLinked,
+    LeaseChanged,
+    RunFrozen,
+    RunClosed,
+    RunFailed,
+}
+
+impl RunEventKind {
+    pub const ALL: [Self; 10] = [
+        Self::RunStarted,
+        Self::Observation,
+        Self::ActionSubmitted,
+        Self::OutputObserved,
+        Self::Diagnostic,
+        Self::EvidenceLinked,
+        Self::LeaseChanged,
+        Self::RunFrozen,
+        Self::RunClosed,
+        Self::RunFailed,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RunStarted => "run_started",
+            Self::Observation => "observation",
+            Self::ActionSubmitted => "action_submitted",
+            Self::OutputObserved => "output_observed",
+            Self::Diagnostic => "diagnostic",
+            Self::EvidenceLinked => "evidence_linked",
+            Self::LeaseChanged => "lease_changed",
+            Self::RunFrozen => "run_frozen",
+            Self::RunClosed => "run_closed",
+            Self::RunFailed => "run_failed",
+        }
+    }
+}
+
+impl FromStr for RunEventKind {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        RunEventKind::ALL
+            .into_iter()
+            .find(|kind| kind.as_str() == value)
+            .ok_or_else(|| {
+                AppError::new(
+                    "MCL_RUN_EVENT_KIND_UNKNOWN",
+                    format!("unknown run event kind `{value}`"),
+                    false,
+                    "Use a run event kind declared by the committed domain model.",
+                )
+            })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RunSnapshot {
+    pub run_id: String,
+    pub kind: RunKind,
+    pub state: RunState,
+    pub actor: String,
+    pub budget: Value,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub event_count: i64,
+    pub event_head_hash: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RunEventDraft {
+    pub kind: RunEventKind,
+    pub payload: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RunEventSnapshot {
+    pub event_id: String,
+    pub run_id: String,
+    pub sequence: i64,
+    pub kind: RunEventKind,
+    pub payload: Value,
+    pub previous_event_hash: Option<String>,
+    pub event_hash: String,
+    pub actor: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RunChainReport {
+    pub run_id: String,
+    pub valid: bool,
+    pub event_count: i64,
+    pub head_hash: Option<String>,
+    pub first_invalid_sequence: Option<i64>,
 }

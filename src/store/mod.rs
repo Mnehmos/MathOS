@@ -12,10 +12,13 @@ use crate::canonical::{canonical_json, record_version_hash, value_hash};
 use crate::domain::{EdgeDraft, EdgeKind, EdgeSnapshot, RecordDraft, RecordKind, RecordSnapshot};
 use crate::error::AppError;
 
+mod runs;
+
 const MIGRATION_0001: &str = include_str!("../../migrations/0001_initial.sql");
 const MIGRATION_0002: &str = include_str!("../../migrations/0002_idempotency.sql");
 const MIGRATION_0003: &str = include_str!("../../migrations/0003_record_invariants.sql");
 const MIGRATION_0004: &str = include_str!("../../migrations/0004_edge_invariants.sql");
+const MIGRATION_0005: &str = include_str!("../../migrations/0005_run_event_invariants.sql");
 const REQUIRED_TABLES: &[&str] = &[
     "artifacts",
     "edges",
@@ -153,6 +156,24 @@ impl Store {
                     params![4_i64, "edge invariants"],
                 )
                 .map_err(|error| AppError::database("record migration 0004", error))?;
+        }
+        let migration_0005_applied: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 5)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::database("inspect migration 0005", error))?;
+        if !migration_0005_applied {
+            transaction
+                .execute_batch(MIGRATION_0005)
+                .map_err(|error| AppError::database("apply migration 0005", error))?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, unixepoch())",
+                    params![5_i64, "run event invariants"],
+                )
+                .map_err(|error| AppError::database("record migration 0005", error))?;
         }
         transaction
             .commit()
@@ -881,7 +902,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("migration succeeds");
 
-        assert_eq!(store.migration_version().expect("migration version"), 4);
+        assert_eq!(store.migration_version().expect("migration version"), 5);
         assert_eq!(store.journal_mode().expect("journal mode"), "wal");
         assert_eq!(store.integrity_check().expect("integrity"), "ok");
         store.schema_check().expect("required schema exists");
@@ -895,7 +916,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("first migration succeeds");
         store.migrate().expect("second migration succeeds");
-        assert_eq!(store.migration_version().expect("migration version"), 4);
+        assert_eq!(store.migration_version().expect("migration version"), 5);
     }
 
     fn claim(statement: &str) -> RecordDraft {

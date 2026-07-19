@@ -14,3 +14,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 4. [The Name of Done](0004-the-name-of-done.md)
 5. [The Contract Before the Claim](0005-the-contract-before-the-claim.md)
 6. [The Right to Remain the Same](0006-the-right-to-remain-the-same.md)
+7. [The Trace Remembers](0007-the-trace-remembers.md)
