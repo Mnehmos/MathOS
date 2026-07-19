@@ -15,12 +15,13 @@ Read the administrative controls:
 
 1. Classify the change by risk.
 2. Create a short-lived branch from main.
-3. Define acceptance criteria and a failing test or formal obligation.
-4. Implement the smallest passing change.
-5. Refactor while tests remain green.
-6. Run the independent verifier required by the trust boundary.
-7. Record reproducible evidence in the pull request.
-8. Obtain the required review before merge.
+3. For a Class 0 documentation-only change, define acceptance criteria and run appropriate documentation checks. Executable Red and Green evidence is required only when executable examples or generated behavior change.
+4. For a Class 1 through Class 3 change, define acceptance criteria and a failing test or formal obligation.
+5. Implement the smallest passing change.
+6. Refactor while tests remain green.
+7. Run the independent verifier required by the trust boundary.
+8. Record reproducible evidence in the pull request.
+9. Obtain the required review before merge.
 
 ## Pull requests
 
@@ -28,7 +29,7 @@ Complete the repository pull-request template. A pull request must identify:
 
 - What changed and why
 - Its change class and affected trust boundary
-- Red and Green test evidence
+- Red and Green test evidence, or Class 0 documentation-check evidence
 - Verification commands and results
 - Claim, theorem, corpus, or artifact identifiers
 - Data and code provenance
@@ -47,4 +48,6 @@ By submitting a contribution, you represent that you have the right to submit it
 
 ## Security and private data
 
-Never commit credentials, private keys, tokens, personal data, unpublished confidential material, or access-controlled research data. Report security-sensitive defects privately to the repository owner until a security policy and reporting address are published.
+Never commit credentials, private keys, tokens, personal data, unpublished confidential material, or access-controlled research data.
+
+Report security-sensitive defects through [GitHub private vulnerability reporting](https://github.com/Mnehmos/MathOS/security/advisories/new) and follow the [Security Policy](SECURITY.md). Do not disclose vulnerability details in a public issue.
