@@ -21,7 +21,9 @@ pub use environment::{
     ResourceLimits, TrustProfile, VerifierArgument, VerifierCommandTemplate, VerifierExecutable,
     WorkingDirectoryPolicy,
 };
-pub use evidence::{EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult};
+pub use evidence::{
+    EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult, EvidenceSnapshot,
+};
 pub use verifier::{
     VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
     VerifierJobSnapshot, VerifierJobState,

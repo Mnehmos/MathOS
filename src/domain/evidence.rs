@@ -45,6 +45,58 @@ pub enum EvidenceAuthorityClass {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EvidenceSnapshot {
+    pub evidence_id: String,
+    pub evidence_hash: String,
+    pub payload: EvidencePayload,
+    pub created_at: i64,
+    pub created_by: String,
+}
+
+impl EvidenceKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LeanElaboration => "lean_elaboration",
+            Self::LeanKernelProof => "lean_kernel_proof",
+            Self::LeanKernelRefutation => "lean_kernel_refutation",
+            Self::CertificateReplay => "certificate_replay",
+            Self::BoundedComputation => "bounded_computation",
+            Self::EmpiricalSearch => "empirical_search",
+            Self::StatementFidelityReview => "statement_fidelity_review",
+            Self::LiteratureReview => "literature_review",
+            Self::NoveltyReview => "novelty_review",
+            Self::AxiomAudit => "axiom_audit",
+            Self::ProofClosureScan => "proof_closure_scan",
+            Self::CleanRebuild => "clean_rebuild",
+            Self::ComparatorRun => "comparator_run",
+            Self::HumanReview => "human_review",
+        }
+    }
+}
+
+impl EvidenceResult {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+            Self::Inconclusive => "inconclusive",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl EvidenceAuthorityClass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Diagnostic => "diagnostic",
+            Self::Empirical => "empirical",
+            Self::Reviewed => "reviewed",
+            Self::Authoritative => "authoritative",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EvidencePayload {
     pub schema_version: String,
@@ -83,6 +135,10 @@ impl EvidencePayload {
                 .as_deref()
                 .is_some_and(|reason| reason.trim().is_empty() || reason.len() > 4_096)
             || (self.producing_run_id.is_none() && self.producing_job_id.is_none())
+            || (self.evidence_kind == EvidenceKind::LeanElaboration
+                && (self.authority_class != EvidenceAuthorityClass::Diagnostic
+                    || self.producing_job_id.is_none()
+                    || self.environment_hash.is_none()))
             || self
                 .producing_run_id
                 .as_deref()
@@ -182,5 +238,15 @@ mod tests {
         .expect("diagnostic evidence decodes");
         payload.validate().expect("diagnostic evidence validates");
         assert_eq!(payload.authority_class, EvidenceAuthorityClass::Diagnostic);
+
+        let mut forged_authority = payload.clone();
+        forged_authority.authority_class = EvidenceAuthorityClass::Authoritative;
+        assert_eq!(
+            forged_authority
+                .validate()
+                .expect_err("elaboration cannot promote itself to authority")
+                .code,
+            "MCL_EVIDENCE_INVALID"
+        );
     }
 }

@@ -82,13 +82,17 @@
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "minLength": 1,
+      "maxLength": 256
     },
     "forbidden_source_token": {
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "minLength": 1,
+      "maxLength": 64
     },
     "trust_profile": {
       "enum": [

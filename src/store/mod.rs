@@ -12,8 +12,9 @@ use crate::canonical::{canonical_json, record_version_hash, value_hash};
 use crate::domain::schemas::{FormalizationPayload, validate_record_payload};
 use crate::domain::{
     ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest,
-    EnvironmentSnapshot, RecordDraft, RecordKind, RecordSnapshot, VerifierJobRequest,
-    VerifierJobSnapshot, VerifierJobState,
+    EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceSnapshot,
+    RecordDraft, RecordKind, RecordSnapshot, VerifierJobRequest, VerifierJobSnapshot,
+    VerifierJobState,
 };
 use crate::error::AppError;
 
@@ -856,7 +857,153 @@ impl Store {
         read_verifier_job(&self.connection, job_id)
     }
 
-    pub fn requeue_expired_verifier_jobs(&mut self) -> Result<usize, AppError> {
+    pub fn create_diagnostic_evidence(
+        &mut self,
+        payload: &EvidencePayload,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<EvidenceSnapshot, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        payload.validate()?;
+        if payload.evidence_kind != EvidenceKind::LeanElaboration
+            || payload.authority_class != EvidenceAuthorityClass::Diagnostic
+        {
+            return Err(AppError::new(
+                "MCL_EVIDENCE_AUTHORITY_FORBIDDEN",
+                "this path can create only non-authoritative Lean elaboration evidence",
+                false,
+                "Complete reviewed proof-closure controls before adding another evidence path.",
+            ));
+        }
+        validate_diagnostic_evidence_references(&self.connection, payload)?;
+        let evidence_hash = payload.evidence_hash()?;
+        let input_hash = value_hash(&json!({
+            "operation": "evidence.create_diagnostic",
+            "payload": payload,
+            "actor": actor,
+        }))?;
+        let payload_json = String::from_utf8(canonical_json(
+            &serde_json::to_value(payload).map_err(|error| {
+                AppError::new(
+                    "MCL_EVIDENCE_INVALID",
+                    error.to_string(),
+                    false,
+                    "Report this deterministic evidence serialization defect.",
+                )
+            })?,
+        )?)
+        .map_err(|error| {
+            AppError::new(
+                "MCL_CANONICAL_JSON_INVALID",
+                error.to_string(),
+                false,
+                "Report this canonical JSON encoding defect.",
+            )
+        })?;
+        let artifact_hashes_json =
+            serde_json::to_string(&payload.artifact_hashes).map_err(|error| {
+                AppError::new(
+                    "MCL_EVIDENCE_INVALID",
+                    error.to_string(),
+                    false,
+                    "Report this deterministic evidence artifact serialization defect.",
+                )
+            })?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start diagnostic evidence creation", error))?;
+        if let Some(existing) = read_idempotent_result(
+            &transaction,
+            "evidence.create_diagnostic",
+            idempotency_key,
+            &input_hash,
+        )? {
+            return Ok(existing);
+        }
+        if transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM evidence WHERE evidence_hash = ?1)",
+                [&evidence_hash],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::database("search diagnostic evidence", error))?
+        {
+            return Err(AppError::new(
+                "MCL_EVIDENCE_EXISTS",
+                format!("evidence {evidence_hash} already exists"),
+                false,
+                "Retrieve the existing evidence or retry with the original idempotency key.",
+            ));
+        }
+        let evidence_id = Uuid::now_v7().to_string();
+        transaction
+            .execute(
+                "INSERT INTO evidence(evidence_id, subject_object_id, subject_version_hash, evidence_kind, result, authority_class, run_id, environment_hash, artifact_hash, metadata_json, created_at, superseded_by, evidence_hash, job_id, artifact_hashes_json, verifier_identity, created_by, stale_reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, unixepoch(), NULL, ?11, ?12, ?13, ?14, ?15, ?16)",
+                params![
+                    evidence_id,
+                    payload.subject.object_id,
+                    payload.subject.version_hash,
+                    payload.evidence_kind.as_str(),
+                    payload.result.as_str(),
+                    payload.authority_class.as_str(),
+                    payload.producing_run_id,
+                    payload.environment_hash,
+                    payload.artifact_hashes.first(),
+                    payload_json,
+                    evidence_hash,
+                    payload.producing_job_id,
+                    artifact_hashes_json,
+                    payload.verifier_or_reviewer_identity,
+                    actor,
+                    payload.stale_reason,
+                ],
+            )
+            .map_err(|error| AppError::database("insert diagnostic evidence", error))?;
+        let snapshot = read_evidence(&transaction, &evidence_id)?;
+        write_idempotent_result(
+            &transaction,
+            "evidence.create_diagnostic",
+            idempotency_key,
+            &input_hash,
+            &snapshot,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit diagnostic evidence", error))?;
+        Ok(snapshot)
+    }
+
+    pub fn get_evidence(&self, evidence_id: &str) -> Result<EvidenceSnapshot, AppError> {
+        validate_uuid(evidence_id, "evidence")?;
+        read_evidence(&self.connection, evidence_id)
+    }
+
+    pub fn list_evidence(&self, limit: usize) -> Result<Vec<EvidenceSnapshot>, AppError> {
+        if !(1..=100).contains(&limit) {
+            return Err(AppError::new(
+                "MCL_EVIDENCE_LIMIT_INVALID",
+                "evidence list limit must be between 1 and 100",
+                false,
+                "Use a bounded evidence list limit.",
+            ));
+        }
+        let mut statement = self
+            .connection
+            .prepare("SELECT evidence_id FROM evidence WHERE evidence_hash IS NOT NULL ORDER BY created_at, evidence_id LIMIT ?1")
+            .map_err(|error| AppError::database("prepare evidence list", error))?;
+        let ids = statement
+            .query_map([limit as i64], |row| row.get::<_, String>(0))
+            .map_err(|error| AppError::database("list evidence", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AppError::database("read evidence list", error))?;
+        ids.iter()
+            .map(|evidence_id| read_evidence(&self.connection, evidence_id))
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn requeue_expired_verifier_jobs(&mut self) -> Result<usize, AppError> {
         requeue_expired_jobs(&self.connection)
     }
 
@@ -1544,6 +1691,230 @@ fn verifier_job_conflict(job_id: &str) -> AppError {
     )
 }
 
+fn validate_diagnostic_evidence_references(
+    connection: &Connection,
+    payload: &EvidencePayload,
+) -> Result<(), AppError> {
+    let subject = connection
+        .query_row(
+            "SELECT r.record_type, v.payload_json FROM records r JOIN record_versions v ON v.object_id = r.object_id WHERE r.object_id = ?1 AND v.version_hash = ?2",
+            params![payload.subject.object_id, payload.subject.version_hash],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|error| AppError::database("validate evidence subject", error))?;
+    let Some((subject_kind, subject_payload_json)) = subject else {
+        return Err(AppError::new(
+            "MCL_EVIDENCE_SUBJECT_INVALID",
+            "diagnostic Lean evidence must reference one exact formalization version",
+            false,
+            "Select an exact canonical formalization object and version.",
+        ));
+    };
+    if subject_kind != "formalization" {
+        return Err(AppError::new(
+            "MCL_EVIDENCE_SUBJECT_INVALID",
+            "diagnostic Lean evidence must reference one exact formalization version",
+            false,
+            "Select an exact canonical formalization object and version.",
+        ));
+    }
+    let formalization: FormalizationPayload =
+        serde_json::from_str(&subject_payload_json).map_err(|error| {
+            AppError::new(
+                "MCL_EVIDENCE_SUBJECT_INVALID",
+                format!("stored formalization payload is invalid: {error}"),
+                false,
+                "Quarantine the database and restore a verified backup.",
+            )
+        })?;
+    let job_id = payload
+        .producing_job_id
+        .as_deref()
+        .expect("validated job ID");
+    let job = read_verifier_job(connection, job_id)?;
+    if !matches!(
+        job.state,
+        VerifierJobState::Succeeded | VerifierJobState::Failed
+    ) || job.result_artifact_hash.is_none()
+    {
+        return Err(AppError::new(
+            "MCL_EVIDENCE_JOB_INVALID",
+            "diagnostic evidence requires one completed verifier job with a result artifact",
+            true,
+            "Wait for the exact verifier job to finish before creating evidence.",
+        ));
+    }
+    if formalization.environment_hash != job.request.environment_hash
+        || formalization.module_artifact_hash != job.request.module_artifact_hash
+        || formalization.declaration_name != job.request.declaration_name
+    {
+        return Err(AppError::new(
+            "MCL_EVIDENCE_FORMALIZATION_MISMATCH",
+            "formalization and verifier job do not describe the same exact target",
+            false,
+            "Run verification against the exact formalization environment, module, and declaration.",
+        ));
+    }
+    if payload.environment_hash.as_deref() != Some(&job.request.environment_hash) {
+        return Err(AppError::new(
+            "MCL_EVIDENCE_ENVIRONMENT_MISMATCH",
+            "evidence environment does not match its producing verifier job",
+            false,
+            "Derive diagnostic evidence from the exact producing job.",
+        ));
+    }
+    if !payload
+        .artifact_hashes
+        .iter()
+        .any(|hash| hash == &job.request.module_artifact_hash)
+        || !payload
+            .artifact_hashes
+            .iter()
+            .any(|hash| Some(hash) == job.result_artifact_hash.as_ref())
+    {
+        return Err(AppError::new(
+            "MCL_EVIDENCE_ARTIFACT_MISMATCH",
+            "evidence artifacts do not contain the exact module and terminal report",
+            false,
+            "Derive the artifact closure from the completed verifier job and report.",
+        ));
+    }
+    for artifact_hash in &payload.artifact_hashes {
+        if !connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM artifacts WHERE artifact_hash = ?1)",
+                [artifact_hash],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::database("validate evidence artifact", error))?
+        {
+            return Err(AppError::new(
+                "MCL_EVIDENCE_ARTIFACT_INVALID",
+                format!("evidence artifact {artifact_hash} is not registered"),
+                false,
+                "Register and verify every exact evidence artifact before promotion.",
+            ));
+        }
+    }
+    if let Some(run_id) = &payload.producing_run_id {
+        if !connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM runs WHERE run_id = ?1)",
+                [run_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::database("validate evidence run", error))?
+        {
+            return Err(AppError::new(
+                "MCL_EVIDENCE_RUN_INVALID",
+                format!("evidence run {run_id} does not exist"),
+                false,
+                "Select an exact producing run or omit it for a job-only diagnostic.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn read_evidence(connection: &Connection, evidence_id: &str) -> Result<EvidenceSnapshot, AppError> {
+    let row = connection
+        .query_row(
+            "SELECT evidence_hash, metadata_json, created_at, created_by, subject_object_id, subject_version_hash, evidence_kind, result, authority_class, run_id, job_id, environment_hash, artifact_hashes_json, verifier_identity, stale_reason FROM evidence WHERE evidence_id = ?1 AND evidence_hash IS NOT NULL",
+            [evidence_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?, row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?, row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?, row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?, row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?, row.get::<_, Option<String>>(11)?,
+                    row.get::<_, String>(12)?, row.get::<_, String>(13)?,
+                    row.get::<_, Option<String>>(14)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| AppError::database("read evidence", error))?;
+    let Some((
+        evidence_hash,
+        payload_json,
+        created_at,
+        created_by,
+        subject_object_id,
+        subject_version_hash,
+        kind,
+        result,
+        authority,
+        run_id,
+        job_id,
+        environment_hash,
+        artifact_hashes_json,
+        verifier_identity,
+        stale_reason,
+    )) = row
+    else {
+        return Err(AppError::new(
+            "MCL_EVIDENCE_NOT_FOUND",
+            format!("evidence {evidence_id} does not exist"),
+            false,
+            "Use an exact evidence ID returned by the canonical store.",
+        ));
+    };
+    let payload: EvidencePayload = serde_json::from_str(&payload_json).map_err(|error| {
+        AppError::new(
+            "MCL_EVIDENCE_INTEGRITY_FAILED",
+            format!("stored evidence payload is invalid: {error}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    payload.validate().map_err(|error| {
+        AppError::new(
+            "MCL_EVIDENCE_INTEGRITY_FAILED",
+            error.message,
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    let artifacts: Vec<String> = serde_json::from_str(&artifact_hashes_json).map_err(|error| {
+        AppError::new(
+            "MCL_EVIDENCE_INTEGRITY_FAILED",
+            error.to_string(),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        )
+    })?;
+    if payload.evidence_hash()? != evidence_hash
+        || payload.subject.object_id != subject_object_id
+        || payload.subject.version_hash != subject_version_hash
+        || payload.evidence_kind.as_str() != kind
+        || payload.result.as_str() != result
+        || payload.authority_class.as_str() != authority
+        || payload.producing_run_id != run_id
+        || payload.producing_job_id != job_id
+        || payload.environment_hash != environment_hash
+        || payload.artifact_hashes != artifacts
+        || payload.verifier_or_reviewer_identity != verifier_identity
+        || payload.stale_reason != stale_reason
+    {
+        return Err(AppError::new(
+            "MCL_EVIDENCE_INTEGRITY_FAILED",
+            format!("stored evidence projections disagree with {evidence_id}"),
+            false,
+            "Quarantine the database and restore a verified backup.",
+        ));
+    }
+    Ok(EvidenceSnapshot {
+        evidence_id: evidence_id.to_owned(),
+        evidence_hash,
+        payload,
+        created_at,
+        created_by,
+    })
+}
+
 fn mutation_input_hash(
     operation: &str,
     object_id: Option<&str>,
@@ -2129,6 +2500,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::domain::schemas::ExactVersionReference;
 
     #[test]
     fn migration_produces_wal_database_with_fts5() {
@@ -3197,6 +3569,158 @@ mod tests {
             }),
             searchable_text: theorem_type.to_owned(),
         }
+    }
+
+    #[test]
+    fn diagnostic_evidence_is_exact_idempotent_restart_safe_and_corruption_detecting() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let claim = store
+            .create_record(&claim("True is inhabited"), "author", "evidence-claim")
+            .expect("claim created");
+        let environment = store
+            .register_environment(
+                &environment_manifest(),
+                "environment-author",
+                "evidence-environment",
+            )
+            .expect("environment registers");
+        let module = register_lean_artifact(
+            &mut store,
+            b"theorem fixture : True := by trivial\n",
+            "evidence-module",
+        );
+        let mut formalization_draft = formalization(
+            &claim,
+            "True",
+            &environment.environment_hash,
+            &module.artifact_hash,
+            &[],
+        );
+        formalization_draft.payload["declaration_name"] = json!("MathOS.Verifier.fixture");
+        let formalization_record = store
+            .create_record(&formalization_draft, "formalizer", "evidence-formalization")
+            .expect("formalization created");
+        let request = verifier_request(&environment.environment_hash, &module.artifact_hash);
+        let queued = store
+            .enqueue_verifier_job(&request, 0, "verifier", "evidence-job")
+            .expect("job enqueued");
+        store
+            .lease_next_verifier_job("evidence-worker", 60)
+            .expect("lease succeeds")
+            .expect("job leased");
+        store
+            .mark_verifier_job_running(&queued.job_id, "evidence-worker")
+            .expect("job starts");
+        let report_bytes = b"{}";
+        let report_hash = format!("{:x}", Sha256::digest(report_bytes));
+        let report_metadata = ArtifactMetadata {
+            schema_version: "artifact_metadata/1".to_owned(),
+            media_type: crate::domain::ArtifactMediaType::Json,
+            creation_source: crate::domain::ArtifactCreationSource::Verifier,
+            license_expression: None,
+            restriction: crate::domain::ArtifactRestriction::Private,
+            semantic_metadata: BTreeMap::new(),
+        };
+        store
+            .register_artifact(
+                &report_hash,
+                report_bytes.len() as u64,
+                &report_metadata,
+                "evidence-worker",
+                "evidence-report",
+            )
+            .expect("report artifact registers");
+        store
+            .finish_verifier_job(&queued.job_id, "evidence-worker", &report_hash, true, None)
+            .expect("job finishes");
+        let mut artifact_hashes = vec![module.artifact_hash.clone(), report_hash];
+        artifact_hashes.sort();
+        let payload = EvidencePayload {
+            schema_version: crate::domain::evidence::EVIDENCE_SCHEMA_VERSION.to_owned(),
+            subject: ExactVersionReference {
+                object_id: formalization_record.object_id,
+                version_hash: formalization_record.version_hash,
+            },
+            evidence_kind: EvidenceKind::LeanElaboration,
+            result: crate::domain::EvidenceResult::Accepted,
+            authority_class: EvidenceAuthorityClass::Diagnostic,
+            producing_run_id: None,
+            producing_job_id: Some(queued.job_id),
+            artifact_hashes,
+            verifier_or_reviewer_identity: "lean:test".to_owned(),
+            environment_hash: Some(environment.environment_hash.clone()),
+            supersedes_evidence_id: None,
+            stale: false,
+            stale_reason: None,
+        };
+        let mismatched_formalization = store
+            .create_record(
+                &formalization(
+                    &claim,
+                    "True",
+                    &environment.environment_hash,
+                    &module.artifact_hash,
+                    &[],
+                ),
+                "formalizer",
+                "evidence-mismatched-formalization",
+            )
+            .expect("mismatched formalization created");
+        let mut mismatched_payload = payload.clone();
+        mismatched_payload.subject = ExactVersionReference {
+            object_id: mismatched_formalization.object_id,
+            version_hash: mismatched_formalization.version_hash,
+        };
+        assert_eq!(
+            store
+                .create_diagnostic_evidence(
+                    &mismatched_payload,
+                    "reviewer",
+                    "evidence-mismatched-create",
+                )
+                .expect_err("mismatched verifier target rejected")
+                .code,
+            "MCL_EVIDENCE_FORMALIZATION_MISMATCH"
+        );
+        let evidence = store
+            .create_diagnostic_evidence(&payload, "reviewer", "evidence-create")
+            .expect("diagnostic evidence created");
+        assert_eq!(
+            store
+                .create_diagnostic_evidence(&payload, "reviewer", "evidence-create")
+                .expect("exact retry"),
+            evidence
+        );
+        drop(store);
+
+        let reopened = Store::open(&database).expect("database reopens");
+        assert_eq!(
+            reopened
+                .get_evidence(&evidence.evidence_id)
+                .expect("evidence survives restart"),
+            evidence
+        );
+        reopened
+            .connection
+            .execute("DROP TRIGGER evidence_reject_update", [])
+            .expect("test removes evidence mutation guard");
+        reopened
+            .connection
+            .execute(
+                "UPDATE evidence SET result = 'failed' WHERE evidence_id = ?1",
+                [&evidence.evidence_id],
+            )
+            .expect("test simulates projection corruption");
+        assert_eq!(
+            reopened
+                .get_evidence(&evidence.evidence_id)
+                .expect_err("projection corruption detected")
+                .code,
+            "MCL_EVIDENCE_INTEGRITY_FAILED"
+        );
     }
 
     #[test]

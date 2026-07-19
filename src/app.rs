@@ -10,10 +10,12 @@ use sha2::{Digest, Sha256};
 use crate::artifacts::ArtifactStore;
 use crate::canonical::canonical_json;
 use crate::config::ResolvedConfig;
+use crate::domain::schemas::{ExactVersionReference, FormalizationPayload};
 use crate::domain::{
     ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeSnapshot, EnvironmentManifest,
-    EnvironmentSnapshot, GraphTraversalHit, GraphTraversalRequest, RecordDraft, RecordSnapshot,
-    RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
+    EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult,
+    EvidenceSnapshot, GraphTraversalHit, GraphTraversalRequest, RecordDraft, RecordKind,
+    RecordSnapshot, RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
     VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
     VerifierJobSnapshot,
 };
@@ -94,6 +96,13 @@ pub struct VerifierEnqueueOutcome {
 pub struct VerifierWorkOutcome {
     pub job: VerifierJobSnapshot,
     pub report: VerifierExecutionReport,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EvidencePromotionOutcome {
+    pub dry_run: bool,
+    pub proposed_evidence_hash: String,
+    pub evidence: Option<EvidenceSnapshot>,
 }
 
 pub struct Application {
@@ -416,6 +425,14 @@ impl Application {
         dry_run: bool,
     ) -> Result<ArtifactIngestOutcome, AppError> {
         validate_attribution(actor, idempotency_key)?;
+        if metadata.creation_source != crate::domain::ArtifactCreationSource::UserIngest {
+            return Err(AppError::new(
+                "MCL_ARTIFACT_CREATION_SOURCE_FORBIDDEN",
+                "public artifact ingestion can create only user-ingested provenance",
+                false,
+                "Use the controlled verifier, import, migration, or generation path for system-produced artifacts.",
+            ));
+        }
         metadata.validate_bytes(bytes)?;
         let proposed_artifact_hash = format!("{:x}", Sha256::digest(bytes));
         self.store.validate_artifact_registration(
@@ -521,6 +538,173 @@ impl Application {
 
     pub fn list_verifier_jobs(&self, limit: usize) -> Result<Vec<VerifierJobSnapshot>, AppError> {
         self.store.list_verifier_jobs(limit)
+    }
+
+    pub fn promote_verifier_diagnostic(
+        &mut self,
+        formalization_object_id: &str,
+        formalization_version_hash: &str,
+        job_id: &str,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<EvidencePromotionOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let formalization = self.store.get_record_version(formalization_version_hash)?;
+        if formalization.object_id != formalization_object_id
+            || formalization.kind != RecordKind::Formalization
+        {
+            return Err(AppError::new(
+                "MCL_EVIDENCE_SUBJECT_INVALID",
+                "evidence subject is not the requested exact formalization version",
+                false,
+                "Use one exact canonical formalization object and version.",
+            ));
+        }
+        let formal_payload: FormalizationPayload = serde_json::from_value(formalization.payload)
+            .map_err(|error| {
+                AppError::new(
+                    "MCL_EVIDENCE_SUBJECT_INVALID",
+                    error.to_string(),
+                    false,
+                    "Quarantine an invalid stored formalization and restore a verified backup.",
+                )
+            })?;
+        let job = self.store.get_verifier_job(job_id)?;
+        let report_hash = job.result_artifact_hash.as_deref().ok_or_else(|| {
+            AppError::new(
+                "MCL_EVIDENCE_JOB_INVALID",
+                "verifier job has no terminal report artifact",
+                true,
+                "Wait for the exact verifier job to finish.",
+            )
+        })?;
+        if formal_payload.environment_hash != job.request.environment_hash
+            || formal_payload.module_artifact_hash != job.request.module_artifact_hash
+            || formal_payload.declaration_name != job.request.declaration_name
+        {
+            return Err(AppError::new(
+                "MCL_EVIDENCE_FORMALIZATION_MISMATCH",
+                "formalization and verifier request do not describe the same exact target",
+                false,
+                "Run verification against the exact formalization environment, module, and declaration.",
+            ));
+        }
+        let report_artifact = self.store.get_artifact(report_hash)?;
+        if report_artifact.media_type != crate::domain::ArtifactMediaType::Json
+            || report_artifact.creation_source != crate::domain::ArtifactCreationSource::Verifier
+            || report_artifact.restriction != crate::domain::ArtifactRestriction::Private
+            || report_artifact
+                .semantic_metadata
+                .get("job_id")
+                .is_none_or(|value| value != &job.job_id)
+            || report_artifact
+                .semantic_metadata
+                .get("artifact_role")
+                .is_none_or(|value| value != "verifier_report")
+        {
+            return Err(AppError::new(
+                "MCL_EVIDENCE_REPORT_INVALID",
+                "verifier result artifact lacks controlled report provenance",
+                false,
+                "Quarantine the verifier result and rerun the exact job.",
+            ));
+        }
+        let report_bytes = self.artifacts.read(report_hash)?;
+        let report: VerifierExecutionReport =
+            serde_json::from_slice(&report_bytes).map_err(|error| {
+                AppError::new(
+                    "MCL_EVIDENCE_REPORT_INVALID",
+                    format!("verifier report is invalid: {error}"),
+                    false,
+                    "Quarantine the verifier result and rerun the exact job.",
+                )
+            })?;
+        report.validate().map_err(|error| {
+            AppError::new(
+                "MCL_EVIDENCE_REPORT_INVALID",
+                error.message,
+                false,
+                "Quarantine the verifier result and rerun the exact job.",
+            )
+        })?;
+        if report.job_id != job.job_id
+            || report.environment_hash != job.request.environment_hash
+            || report.module_artifact_hash != job.request.module_artifact_hash
+            || report.declaration_name != job.request.declaration_name
+            || report.authoritative
+        {
+            return Err(AppError::new(
+                "MCL_EVIDENCE_REPORT_MISMATCH",
+                "verifier report does not match the exact terminal job",
+                false,
+                "Quarantine the verifier result and rerun the exact job.",
+            ));
+        }
+        let result = match report.classification {
+            VerifierExecutionClassification::Elaborated => EvidenceResult::Accepted,
+            VerifierExecutionClassification::Rejected
+            | VerifierExecutionClassification::UnsafeSource => EvidenceResult::Rejected,
+            VerifierExecutionClassification::TimedOut
+            | VerifierExecutionClassification::OutputLimitExceeded
+            | VerifierExecutionClassification::ToolchainMismatch
+            | VerifierExecutionClassification::LaunchFailed => EvidenceResult::Failed,
+        };
+        let mut artifact_hashes = vec![
+            job.request.module_artifact_hash.clone(),
+            report_hash.to_owned(),
+        ];
+        artifact_hashes.extend(report.stdout_artifact_hash.iter().cloned());
+        artifact_hashes.extend(report.stderr_artifact_hash.iter().cloned());
+        artifact_hashes.sort();
+        artifact_hashes.dedup();
+        let verifier_identity = format!(
+            "lean:{}",
+            report
+                .observed_toolchain_version
+                .as_deref()
+                .unwrap_or("source-policy")
+        );
+        let payload = EvidencePayload {
+            schema_version: crate::domain::evidence::EVIDENCE_SCHEMA_VERSION.to_owned(),
+            subject: ExactVersionReference {
+                object_id: formalization_object_id.to_owned(),
+                version_hash: formalization_version_hash.to_owned(),
+            },
+            evidence_kind: EvidenceKind::LeanElaboration,
+            result,
+            authority_class: EvidenceAuthorityClass::Diagnostic,
+            producing_run_id: None,
+            producing_job_id: Some(job.job_id),
+            artifact_hashes,
+            verifier_or_reviewer_identity: verifier_identity,
+            environment_hash: Some(report.environment_hash),
+            supersedes_evidence_id: None,
+            stale: false,
+            stale_reason: None,
+        };
+        let proposed_evidence_hash = payload.evidence_hash()?;
+        let evidence = if dry_run {
+            None
+        } else {
+            Some(
+                self.store
+                    .create_diagnostic_evidence(&payload, actor, idempotency_key)?,
+            )
+        };
+        Ok(EvidencePromotionOutcome {
+            dry_run,
+            proposed_evidence_hash,
+            evidence,
+        })
+    }
+
+    pub fn get_evidence(&self, evidence_id: &str) -> Result<EvidenceSnapshot, AppError> {
+        self.store.get_evidence(evidence_id)
+    }
+
+    pub fn list_evidence(&self, limit: usize) -> Result<Vec<EvidenceSnapshot>, AppError> {
+        self.store.list_evidence(limit)
     }
 
     pub fn work_one_verifier_job(
@@ -632,7 +816,8 @@ impl Application {
         let stderr_artifact_hash =
             self.register_verifier_output(&running, "stderr", &stderr, worker)?;
         let report = VerifierExecutionReport {
-            schema_version: "verifier_execution_report/1".to_owned(),
+            schema_version: crate::domain::verifier::VERIFIER_EXECUTION_REPORT_SCHEMA_VERSION
+                .to_owned(),
             job_id: running.job_id.clone(),
             environment_hash: running.request.environment_hash.clone(),
             module_artifact_hash: running.request.module_artifact_hash.clone(),
@@ -649,6 +834,7 @@ impl Application {
             network_isolation_enforced: false,
             authoritative: false,
         };
+        report.validate()?;
         let report_value = serde_json::to_value(&report).map_err(|error| {
             AppError::new(
                 "MCL_VERIFIER_RESULT_INVALID",

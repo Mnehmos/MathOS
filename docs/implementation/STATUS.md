@@ -125,14 +125,19 @@ Active branch: `feat/spec-driven-rust-rebuild`.
 - Evidence now has a closed `evidence/1` Rust contract and committed JSON Schema with exhaustive evidence kinds, explicit result and authority classes, exact subject version, producing run or job, artifact set, environment, identity, supersession, and staleness fields.
 - Evidence payload identity is deterministic and rejects unsorted or malformed artifact sets, missing provenance, malformed references, and inconsistent staleness metadata.
 - Migration 0009 adds content identity and provenance projections to the evidence table. Database triggers reject subject/version mismatch, update, and deletion.
-- This evidence foundation does not yet create records from verifier attempts. No authoritative evidence or mathematical status exists.
+- `mcl verify promote-diagnostic` is the only public evidence-creation path. It derives a closed payload from an exact formalization and completed verifier job rather than accepting caller-authored evidence fields.
+- Diagnostic promotion requires exact agreement on formalization object and version, environment, module, declaration, job, execution report, and complete diagnostic artifact closure.
+- The execution report is re-read from CAS, hash-checked, schema-validated, and required to carry private verifier provenance for the exact job before evidence can persist.
+- Public artifact ingestion can no longer claim verifier, generator, importer, or migration provenance. Those identities belong only to their controlled application paths.
+- Evidence creation is deterministic and actor-attributed. Exact retries return the same record, reads survive restart, and projection corruption is detected by recomputing identity and comparing every stored field.
+- CLI integration covers dry-run non-mutation, exact promotion, retrieval, deterministic listing, retry, cross-object versions, mismatched formalizations, forged report provenance, corrupted CAS bytes, and unchanged mathematical status.
+- Diagnostic elaboration remains structurally non-authoritative. No authoritative evidence or mathematical status exists.
 
 These items establish only part of the product foundation and Phase 2 trace model. They do not establish any mathematical claim, Lean proof authority, complete MCP mutation surface, pilot, portable release, or 1.0 acceptance result.
 
 ## Active work
 
-- Persist and retrieve immutable diagnostic evidence through an application-controlled promotion path.
-- Require exact agreement among formalization, job, environment, module, report, and CAS artifacts.
+- Publish the exact diagnostic-evidence tree and require fresh Linux and Windows CI before closing issue #18.
 - Keep authority and mathematical status impossible while proof-closure policy is absent.
 
 ## Next highest-priority criteria
@@ -158,7 +163,7 @@ Observed validation evidence for this update:
 
 - formatting passed;
 - warnings-denied Clippy passed;
-- 67 Rust unit tests passed;
+- 69 Rust unit tests passed;
 - 9 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
 - 39 legacy Python regression tests passed;
 - patch whitespace validation passed.

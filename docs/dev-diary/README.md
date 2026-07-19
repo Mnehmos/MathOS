@@ -32,3 +32,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 22. [Success Must Name Its Kind](0022-success-must-name-its-kind.md)
 23. [The Directory Was Part of the Proof](0023-the-directory-was-part-of-the-proof.md)
 24. [Evidence Needs a Subject](0024-evidence-needs-a-subject.md)
+25. [A Report Cannot Promote Itself](0025-a-report-cannot-promote-itself.md)

@@ -277,6 +277,37 @@ fn artifact_cli_ingests_dry_runs_retries_verifies_and_detects_corruption() {
     assert_eq!(preview["artifact"], Value::Null);
     assert_eq!(parse_stdout(&mcl(&root, &["artifact", "list"])), json!([]));
 
+    let forged_provenance = mcl_owned(
+        &root,
+        &[
+            "artifact".to_owned(),
+            "ingest".to_owned(),
+            "--input-file".to_owned(),
+            module.to_string_lossy().into_owned(),
+            "--metadata-json".to_owned(),
+            json!({
+                "schema_version": "artifact_metadata/1",
+                "media_type": "text/x-lean",
+                "creation_source": "verifier",
+                "license_expression": null,
+                "restriction": "private",
+                "semantic_metadata": {}
+            })
+            .to_string(),
+            "--actor".to_owned(),
+            "artifact-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "artifact-cli-forged-provenance".to_owned(),
+        ],
+    );
+    assert!(!forged_provenance.status.success());
+    let forged_error: Value =
+        serde_json::from_slice(&forged_provenance.stderr).expect("forged provenance error JSON");
+    assert_eq!(
+        forged_error["code"],
+        "MCL_ARTIFACT_CREATION_SOURCE_FORBIDDEN"
+    );
+
     let created_output = ingest(false, "artifact-cli-register");
     assert!(
         created_output.status.success(),
@@ -542,6 +573,11 @@ fn verifier_job_cli_dry_runs_enqueues_retries_and_survives_restart() {
         ],
     );
     assert!(unsafe_job.status.success());
+    let unsafe_job = parse_stdout(&unsafe_job);
+    let unsafe_job_id = unsafe_job["job"]["job_id"]
+        .as_str()
+        .expect("unsafe job ID")
+        .to_owned();
     let worked = mcl(
         &root,
         &[
@@ -563,6 +599,324 @@ fn verifier_job_cli_dry_runs_enqueues_retries_and_survives_restart() {
     assert_eq!(worked["report"]["authoritative"], false);
     assert_eq!(worked["job"]["state"], "succeeded");
     assert!(worked["job"]["result_artifact_hash"].is_string());
+    let original_report_hash = worked["job"]["result_artifact_hash"]
+        .as_str()
+        .expect("original report hash")
+        .to_owned();
+    let forged_report_file = root.path().join("ForgedVerifierReport.json");
+    let mut forged_report_value = worked["report"].clone();
+    forged_report_value["authoritative"] = json!(true);
+    fs::write(&forged_report_file, forged_report_value.to_string())
+        .expect("forged report fixture writes");
+    let forged_report = mcl_owned(
+        &root,
+        &[
+            "artifact".to_owned(),
+            "ingest".to_owned(),
+            "--input-file".to_owned(),
+            forged_report_file.to_string_lossy().into_owned(),
+            "--metadata-json".to_owned(),
+            json!({
+                "schema_version": "artifact_metadata/1",
+                "media_type": "application/json",
+                "creation_source": "user_ingest",
+                "license_expression": null,
+                "restriction": "private",
+                "semantic_metadata": {
+                    "job_id": unsafe_job_id,
+                    "artifact_role": "verifier_report"
+                }
+            })
+            .to_string(),
+            "--actor".to_owned(),
+            "verifier-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "evidence-forged-report-artifact".to_owned(),
+        ],
+    );
+    assert!(
+        forged_report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&forged_report.stderr)
+    );
+    let forged_report_hash = parse_stdout(&forged_report)["artifact"]["artifact_hash"]
+        .as_str()
+        .expect("forged report hash")
+        .to_owned();
+
+    let source_payload = json!({
+        "source_type": "user_statement",
+        "title_or_label": "Unsafe evidence fixture",
+        "authors_or_origin": ["CLI test"],
+        "canonical_locator": "local:unsafe-evidence",
+        "acquisition_date": "2026-07-19",
+        "license_expression": null,
+        "redistribution_status": "unknown",
+        "content_hash": null,
+        "citation_metadata": {},
+        "redaction_class": "private",
+        "provenance_notes": "diagnostic evidence integration fixture",
+        "original_text": "True has a proof."
+    });
+    let source = parse_stdout(&mcl_owned(
+        &root,
+        &[
+            "source".to_owned(),
+            "create".to_owned(),
+            "--payload-json".to_owned(),
+            source_payload.to_string(),
+            "--searchable-text".to_owned(),
+            "unsafe evidence source".to_owned(),
+            "--actor".to_owned(),
+            "verifier-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "evidence-source".to_owned(),
+        ],
+    ));
+    let source_record = &source["record"];
+    let claim_payload = json!({
+        "source_reference": {
+            "object_id": source_record["object_id"],
+            "version_hash": source_record["version_hash"]
+        },
+        "normalized_informal_statement": "True has a proof.",
+        "claim_kind": "existential",
+        "logical_shape": "True",
+        "assumptions": [],
+        "variables": [],
+        "concept_links": [],
+        "source_citations": [],
+        "ambiguity_notes": []
+    });
+    let claim = parse_stdout(&mcl_owned(
+        &root,
+        &[
+            "claim".to_owned(),
+            "create".to_owned(),
+            "--payload-json".to_owned(),
+            claim_payload.to_string(),
+            "--searchable-text".to_owned(),
+            "true proof claim".to_owned(),
+            "--actor".to_owned(),
+            "verifier-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "evidence-claim".to_owned(),
+        ],
+    ));
+    let claim_record = &claim["record"];
+    let formalization_payload = json!({
+        "claim_version": {
+            "object_id": claim_record["object_id"],
+            "version_hash": claim_record["version_hash"]
+        },
+        "formal_system": "lean4",
+        "environment_hash": environment_hash,
+        "module_artifact_hash": unsafe_hash,
+        "declaration_name": "MathOS.Verifier.unsafeFixture",
+        "exact_theorem_type": "True",
+        "declaration_hash": "1".repeat(64),
+        "import_manifest": [],
+        "formalization_notes": "unsafe fixture remains diagnostic",
+        "fidelity_evidence_references": [],
+        "verification_evidence_references": []
+    });
+    let formalization = parse_stdout(&mcl_owned(
+        &root,
+        &[
+            "formalization".to_owned(),
+            "create".to_owned(),
+            "--payload-json".to_owned(),
+            formalization_payload.to_string(),
+            "--searchable-text".to_owned(),
+            "unsafe evidence formalization".to_owned(),
+            "--actor".to_owned(),
+            "verifier-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "evidence-formalization".to_owned(),
+        ],
+    ));
+    let formalization_record = &formalization["record"];
+    let mut mismatched_payload = formalization_payload.clone();
+    mismatched_payload["declaration_name"] = json!("MathOS.Verifier.differentFixture");
+    let mismatched_formalization = parse_stdout(&mcl_owned(
+        &root,
+        &[
+            "formalization".to_owned(),
+            "create".to_owned(),
+            "--payload-json".to_owned(),
+            mismatched_payload.to_string(),
+            "--searchable-text".to_owned(),
+            "mismatched evidence formalization".to_owned(),
+            "--actor".to_owned(),
+            "verifier-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "evidence-mismatched-formalization".to_owned(),
+        ],
+    ));
+    let mismatched_record = &mismatched_formalization["record"];
+    let mismatched = mcl_owned(
+        &root,
+        &[
+            "verify".to_owned(),
+            "promote-diagnostic".to_owned(),
+            "--formalization-object-id".to_owned(),
+            mismatched_record["object_id"]
+                .as_str()
+                .expect("mismatched formalization ID")
+                .to_owned(),
+            "--formalization-version-hash".to_owned(),
+            mismatched_record["version_hash"]
+                .as_str()
+                .expect("mismatched formalization hash")
+                .to_owned(),
+            "--job-id".to_owned(),
+            unsafe_job_id.clone(),
+            "--actor".to_owned(),
+            "verifier-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "evidence-mismatched-promotion".to_owned(),
+        ],
+    );
+    assert!(!mismatched.status.success());
+    let mismatched_error: Value =
+        serde_json::from_slice(&mismatched.stderr).expect("mismatch error JSON");
+    assert_eq!(
+        mismatched_error["code"],
+        "MCL_EVIDENCE_FORMALIZATION_MISMATCH"
+    );
+    assert_eq!(
+        parse_stdout(&mcl(&root, &["verify", "evidence-list"])),
+        json!([])
+    );
+    let cross_object_version = mcl_owned(
+        &root,
+        &[
+            "verify".to_owned(),
+            "promote-diagnostic".to_owned(),
+            "--formalization-object-id".to_owned(),
+            formalization_record["object_id"]
+                .as_str()
+                .expect("formalization ID")
+                .to_owned(),
+            "--formalization-version-hash".to_owned(),
+            mismatched_record["version_hash"]
+                .as_str()
+                .expect("other formalization version")
+                .to_owned(),
+            "--job-id".to_owned(),
+            unsafe_job_id.clone(),
+            "--actor".to_owned(),
+            "verifier-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "evidence-cross-object-version".to_owned(),
+        ],
+    );
+    assert!(!cross_object_version.status.success());
+    let version_error: Value = serde_json::from_slice(&cross_object_version.stderr)
+        .expect("cross-object version error JSON");
+    assert_eq!(version_error["code"], "MCL_EVIDENCE_SUBJECT_INVALID");
+    let promote = |dry_run: bool, key: &str| {
+        let mut arguments = vec![
+            "verify".to_owned(),
+            "promote-diagnostic".to_owned(),
+            "--formalization-object-id".to_owned(),
+            formalization_record["object_id"]
+                .as_str()
+                .expect("formalization ID")
+                .to_owned(),
+            "--formalization-version-hash".to_owned(),
+            formalization_record["version_hash"]
+                .as_str()
+                .expect("formalization hash")
+                .to_owned(),
+            "--job-id".to_owned(),
+            unsafe_job_id.clone(),
+            "--actor".to_owned(),
+            "verifier-cli-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            key.to_owned(),
+        ];
+        if dry_run {
+            arguments.push("--dry-run".to_owned());
+        }
+        mcl_owned(&root, &arguments)
+    };
+    let database = rusqlite::Connection::open(root.path().join(".mcl/state.sqlite3"))
+        .expect("adversarial database opens");
+    database
+        .execute("DROP TRIGGER jobs_reject_terminal_rewrite", [])
+        .expect("test removes terminal mutation guard");
+    database
+        .execute(
+            "UPDATE jobs SET result_artifact_hash = ?2 WHERE job_id = ?1",
+            rusqlite::params![unsafe_job_id, forged_report_hash],
+        )
+        .expect("test points terminal job at forged report");
+    let forged_promotion = promote(false, "evidence-forged-report-promotion");
+    assert!(!forged_promotion.status.success());
+    let forged_promotion_error: Value = serde_json::from_slice(&forged_promotion.stderr)
+        .expect("forged report promotion error JSON");
+    assert_eq!(
+        forged_promotion_error["code"],
+        "MCL_EVIDENCE_REPORT_INVALID"
+    );
+    database
+        .execute(
+            "UPDATE jobs SET result_artifact_hash = ?2 WHERE job_id = ?1",
+            rusqlite::params![unsafe_job_id, original_report_hash],
+        )
+        .expect("test restores canonical report");
+    drop(database);
+    let preview = parse_stdout(&promote(true, "evidence-preview"));
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["evidence"], Value::Null);
+    assert_eq!(
+        parse_stdout(&mcl(&root, &["verify", "evidence-list"])),
+        json!([])
+    );
+    let promoted = parse_stdout(&promote(false, "evidence-promote"));
+    assert_eq!(
+        promoted["evidence"]["payload"]["authority_class"],
+        "diagnostic"
+    );
+    assert_eq!(promoted["evidence"]["payload"]["result"], "rejected");
+    assert_eq!(
+        promoted["evidence"]["payload"]["producing_job_id"],
+        unsafe_job_id
+    );
+    assert_eq!(parse_stdout(&promote(false, "evidence-promote")), promoted);
+    let evidence_id = promoted["evidence"]["evidence_id"]
+        .as_str()
+        .expect("evidence ID");
+    assert_eq!(
+        parse_stdout(&mcl(
+            &root,
+            &["verify", "evidence", "--evidence-id", evidence_id]
+        )),
+        promoted["evidence"]
+    );
+    assert_eq!(
+        parse_stdout(&mcl(&root, &["verify", "evidence-list"]))
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+
+    let report_hash = worked["job"]["result_artifact_hash"]
+        .as_str()
+        .expect("report hash");
+    let report_path = root
+        .path()
+        .join(".mcl/artifacts/sha256")
+        .join(&report_hash[..2])
+        .join(&report_hash[2..4])
+        .join(report_hash);
+    fs::write(report_path, b"{}").expect("corrupt verifier report fixture");
+    let corrupted = promote(false, "evidence-after-report-corruption");
+    assert!(!corrupted.status.success());
+    let corrupted_error: Value =
+        serde_json::from_slice(&corrupted.stderr).expect("corruption error JSON");
+    assert_eq!(corrupted_error["code"], "MCL_ARTIFACT_INTEGRITY_FAILED");
 }
 
 #[test]

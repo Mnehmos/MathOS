@@ -75,4 +75,4 @@ The local profile does not enforce a memory limit or network namespace, and its 
 
 Durability and controlled execution solve scheduling and process ambiguity, not mathematics. A queued, running, failed, or succeeded job is not authoritative evidence. An `elaborated` report says only that the observed Lean binary accepted the controlled driver. A `rejected` report does not disprove a source claim. Operational job success says only that an attempt completed and its immutable report was committed.
 
-Every local execution report is permanently marked `authoritative: false`. Authority still requires exact proof evidence, dependency closure, hole and unsafe scans, axiom audit, fidelity review, and publication policy. Issue #17 therefore remains open after contained execution.
+Every local execution report is permanently marked `authoritative: false`. Authority still requires exact proof evidence, dependency closure, hole and unsafe scans, axiom audit, fidelity review, and publication policy. Contained execution closed issue #17 without claiming any of those later controls.

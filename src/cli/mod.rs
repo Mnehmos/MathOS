@@ -167,6 +167,9 @@ enum VerifyAction {
     Check(VerifyCheckOptions),
     Status(VerifyStatusOptions),
     List(VerifyListOptions),
+    PromoteDiagnostic(VerifyPromoteDiagnosticOptions),
+    Evidence(VerifyEvidenceOptions),
+    EvidenceList(VerifyListOptions),
 }
 
 #[derive(Debug, Args)]
@@ -197,6 +200,27 @@ struct VerifyStatusOptions {
 struct VerifyListOptions {
     #[arg(long, default_value_t = 20)]
     limit: usize,
+}
+
+#[derive(Debug, Args)]
+struct VerifyPromoteDiagnosticOptions {
+    #[arg(long)]
+    formalization_object_id: String,
+
+    #[arg(long)]
+    formalization_version_hash: String,
+
+    #[arg(long)]
+    job_id: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct VerifyEvidenceOptions {
+    #[arg(long)]
+    evidence_id: String,
 }
 
 #[derive(Debug, Args)]
@@ -507,6 +531,23 @@ fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<Cli
             .expect("verifier job is serializable"),
         VerifyAction::List(options) => to_value(application.list_verifier_jobs(options.limit)?)
             .expect("verifier job list is serializable"),
+        VerifyAction::PromoteDiagnostic(options) => {
+            to_value(application.promote_verifier_diagnostic(
+                &options.formalization_object_id,
+                &options.formalization_version_hash,
+                &options.job_id,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("evidence promotion outcome is serializable")
+        }
+        VerifyAction::Evidence(options) => {
+            to_value(application.get_evidence(&options.evidence_id)?)
+                .expect("evidence is serializable")
+        }
+        VerifyAction::EvidenceList(options) => to_value(application.list_evidence(options.limit)?)
+            .expect("evidence list is serializable"),
     };
     Ok(CliOutcome {
         value,
