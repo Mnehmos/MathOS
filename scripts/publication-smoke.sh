@@ -32,11 +32,15 @@ tree_sha="$(git rev-parse HEAD^{tree})"
 toolchain="$(tr -d '\r\n' < lean-toolchain)"
 lean_path="$(elan which lean)"
 bwrap_version="$(/usr/bin/bwrap --version)"
+runner_uid="$(id -u)"
+runner_gid="$(id -g)"
 
-if ! /usr/bin/bwrap \
+if ! sudo /usr/bin/bwrap \
   --unshare-all \
   --die-with-parent \
   --new-session \
+  --uid "$runner_uid" \
+  --gid "$runner_gid" \
   --ro-bind / / \
   --proc /proc \
   --dev /dev \
