@@ -133,14 +133,16 @@ Emergency exceptions must be documented in the pull request with scope, reason, 
 
 ## Definition of done
 
+For Class 0 documentation-only changes, executable Red and Green requirements are not applicable unless executable examples or generated behavior change. Accurate references, formatting checks when available, and consistency with current behavior and policy take their place.
+
 A change is done only when:
 
 - Acceptance criteria are explicit
-- The relevant test failed first for the expected reason
-- The implementation passes the new test
-- Affected suites pass
-- Required independent verification passes
-- Failure paths and boundary cases are covered
+- For executable changes, the relevant test failed first for the expected reason
+- For executable changes, the implementation passes the new test
+- Affected checks and suites pass when applicable
+- Required independent verification passes when applicable
+- Failure paths and boundary cases are covered when applicable
 - Documentation matches behavior
 - Provenance and licensing are recorded
 - No flaky or ignored test is used to claim success
