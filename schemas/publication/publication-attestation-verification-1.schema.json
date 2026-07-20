@@ -21,8 +21,8 @@
     "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "predicate_type": {"const": "https://slsa.dev/provenance/v1"},
     "self_hosted_runners_denied": {"const": true},
-    "verified_attestation_count": {"type": "integer", "minimum": 1},
-    "verified_timestamp_count": {"type": "integer", "minimum": 1},
+    "verified_attestation_count": {"const": 1},
+    "verified_timestamp_count": {"type": "integer", "minimum": 1, "maximum": 8},
     "authoritative": {"const": false}
   }
 }

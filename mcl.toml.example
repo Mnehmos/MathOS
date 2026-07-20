@@ -8,3 +8,8 @@ lean_command = "lean"
 timeout_seconds = 120
 max_output_bytes = 1048576
 concurrency = 1
+
+[publication_verifier]
+gh_command = "gh"
+timeout_seconds = 120
+max_output_bytes = 1048576

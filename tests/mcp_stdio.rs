@@ -254,7 +254,12 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
     let capabilities = server.call(312, "system", json!({"action": "capabilities"}));
     assert_eq!(
         capabilities["result"]["structuredContent"]["verify_actions"],
-        json!(["review_fidelity", "fidelity_status", "prepare_publication"])
+        json!([
+            "review_fidelity",
+            "fidelity_status",
+            "prepare_publication",
+            "ingest_publication"
+        ])
     );
     assert_eq!(
         capabilities["result"]["structuredContent"]["authoritative_verification"],
@@ -315,6 +320,48 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
     assert_eq!(
         invalid_outcome["result"]["structuredContent"]["code"],
         "MCL_PUBLICATION_OUTCOME_INVALID"
+    );
+
+    let incomplete_ingestion = server.call(317, "verify", json!({"action": "ingest_publication"}));
+    assert_eq!(incomplete_ingestion["result"]["isError"], true);
+    assert_eq!(
+        incomplete_ingestion["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_REQUIRED"
+    );
+
+    let caller_authored_ingestion = server.call(
+        318,
+        "verify",
+        json!({
+            "action": "ingest_publication",
+            "request": {"authoritative": true},
+            "report_artifact_hash": "1".repeat(64),
+            "attestation_bundle_artifact_hash": "2".repeat(64),
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-caller-authored-ingestion"
+        }),
+    );
+    assert_eq!(caller_authored_ingestion["result"]["isError"], true);
+    assert_eq!(
+        caller_authored_ingestion["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_FORBIDDEN"
+    );
+
+    let unstaged_ingestion = server.call(
+        319,
+        "verify",
+        json!({
+            "action": "ingest_publication",
+            "report_artifact_hash": "1".repeat(64),
+            "attestation_bundle_artifact_hash": "2".repeat(64),
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-unstaged-ingestion"
+        }),
+    );
+    assert_eq!(unstaged_ingestion["result"]["isError"], true);
+    assert_eq!(
+        unstaged_ingestion["result"]["structuredContent"]["code"],
+        "MCL_PUBLICATION_STAGE_NOT_FOUND"
     );
 
     let still_alive = server.send(&json!({

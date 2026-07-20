@@ -66,15 +66,14 @@ bundle_hash="$(sha256sum "$bundle" | cut -d ' ' -f 1)"
 raw_hash="$(sha256sum "$raw_verification" | cut -d ' ' -f 1)"
 
 if ! jq -e --arg report_hash "$report_hash" --arg predicate_type "$predicate_type" '
-  type == "array" and length > 0 and
+  type == "array" and length == 1 and
   all(.[];
     .verificationResult.statement.predicateType == $predicate_type
   ) and
-  any(.[].verificationResult.statement.subject[]?;
-    .digest.sha256 == $report_hash
-  ) and
+  (.[0].verificationResult.statement.subject | type == "array" and length == 1) and
+  .[0].verificationResult.statement.subject[0].digest.sha256 == $report_hash and
   all(.[];
-    (.verificationResult.verifiedTimestamps | type == "array" and length > 0)
+    (.verificationResult.verifiedTimestamps | type == "array" and length >= 1 and length <= 8)
   )
 ' "$raw_verification" >/dev/null; then
   printf 'publication attestation policy rejected verified output\n' >&2
@@ -106,7 +105,7 @@ jq -n \
 jq -e '
   .schema_version == "publication_attestation_verification/1" and
   .self_hosted_runners_denied == true and
-  .verified_attestation_count > 0 and
-  .verified_timestamp_count > 0 and
+  .verified_attestation_count == 1 and
+  (.verified_timestamp_count >= 1 and .verified_timestamp_count <= 8) and
   .authoritative == false
 ' "$verification_record" >/dev/null

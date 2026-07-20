@@ -105,7 +105,7 @@ fn init_creates_real_storage_and_health_passes() {
         String::from_utf8_lossy(&initialized.stderr)
     );
     let value = parse_stdout(&initialized);
-    assert_eq!(value["migration_version"], 9);
+    assert_eq!(value["migration_version"], 10);
     assert_eq!(value["journal_mode"], "wal");
     assert!(root.path().join("mcl.toml").is_file());
     assert!(root.path().join(".mcl/state.sqlite3").is_file());
@@ -1453,6 +1453,63 @@ fn publication_candidate_cli_bounds_workflow_json_inputs() {
         .expect("oversized publication report");
     fs::write(root.path().join("retained-closure.json"), b"{}")
         .expect("retained closure placeholder");
+    fs::write(root.path().join("attestation.json"), b"{}").expect("attestation placeholder");
+
+    let outside = TempDir::new().expect("outside publication root");
+    let outside_report = outside.path().join("outside-report.json");
+    fs::write(&outside_report, b"{}").expect("outside publication report");
+    let unsafe_stage = mcl_owned(
+        &root,
+        &[
+            "verify".to_owned(),
+            "stage-publication-candidate".to_owned(),
+            "--report-file".to_owned(),
+            outside_report.to_string_lossy().into_owned(),
+            "--retained-closure-file".to_owned(),
+            "retained-closure.json".to_owned(),
+            "--retained-root".to_owned(),
+            ".".to_owned(),
+            "--attestation-bundle-file".to_owned(),
+            "attestation.json".to_owned(),
+            "--actor".to_owned(),
+            "publication-candidate-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "unsafe-publication-stage".to_owned(),
+        ],
+    );
+    assert!(!unsafe_stage.status.success());
+    let error: Value =
+        serde_json::from_slice(&unsafe_stage.stderr).expect("unsafe stage error JSON");
+    assert_eq!(error["code"], "MCL_PUBLICATION_CANDIDATE_INPUT_UNSAFE");
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outside_report, root.path().join("linked-report.json"))
+            .expect("publication report symlink");
+        let linked_stage = mcl(
+            &root,
+            &[
+                "verify",
+                "stage-publication-candidate",
+                "--report-file",
+                "linked-report.json",
+                "--retained-closure-file",
+                "retained-closure.json",
+                "--retained-root",
+                ".",
+                "--attestation-bundle-file",
+                "attestation.json",
+                "--actor",
+                "publication-candidate-test",
+                "--idempotency-key",
+                "linked-publication-stage",
+            ],
+        );
+        assert!(!linked_stage.status.success());
+        let error: Value =
+            serde_json::from_slice(&linked_stage.stderr).expect("linked stage error JSON");
+        assert_eq!(error["code"], "MCL_PUBLICATION_CANDIDATE_INPUT_UNSAFE");
+    }
 
     let output = mcl(
         &root,
@@ -1470,4 +1527,23 @@ fn publication_candidate_cli_bounds_workflow_json_inputs() {
     assert!(!output.status.success());
     let error: Value = serde_json::from_slice(&output.stderr).expect("candidate error JSON");
     assert_eq!(error["code"], "MCL_PUBLICATION_CANDIDATE_INPUT_TOO_LARGE");
+
+    let unstaged = mcl(
+        &root,
+        &[
+            "verify",
+            "ingest-publication",
+            "--report-artifact-hash",
+            &"1".repeat(64),
+            "--attestation-bundle-artifact-hash",
+            &"2".repeat(64),
+            "--actor",
+            "publication-candidate-test",
+            "--idempotency-key",
+            "unstaged-publication-ingestion",
+        ],
+    );
+    assert!(!unstaged.status.success());
+    let error: Value = serde_json::from_slice(&unstaged.stderr).expect("ingestion error JSON");
+    assert_eq!(error["code"], "MCL_PUBLICATION_STAGE_NOT_FOUND");
 }

@@ -113,6 +113,82 @@ jobs:
           export PUBLICATION_SOURCE_TREE_SHA
           PUBLICATION_SOURCE_TREE_SHA="$(git rev-parse 'HEAD^{tree}')"
           bash scripts/publication-candidate.sh "${RUNNER_TEMP}/publication-candidate-simulated-main"
+      - name: Exercise staged-CAS ingestion barrier without authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="${RUNNER_TEMP}/publication-candidate-simulated-main"
+          bundle="${candidate}/simulated-attestation.json"
+          jq -cS -n '{mediaType:"application/vnd.dev.sigstore.bundle.v0.3+json",verificationMaterial:{},dsseEnvelope:{}}' \
+            | tr -d '\n' >"${bundle}"
+          report_hash="$(sha256sum "${candidate}/publication-report.json" | cut -d ' ' -f 1)"
+          bundle_hash="$(sha256sum "${bundle}" | cut -d ' ' -f 1)"
+          stage_args=(
+            --root "${candidate}" --json verify stage-publication-candidate
+            --report-file publication-report.json
+            --retained-closure-file publication-retained-closure.json
+            --retained-root .
+            --attestation-bundle-file simulated-attestation.json
+            --actor simulated-ci
+            --idempotency-key "simulated-stage:${report_hash}:${bundle_hash}"
+          )
+          target/debug/mcl "${stage_args[@]}" --dry-run >"${RUNNER_TEMP}/stage-dry-run.json"
+          jq -e '.dry_run == true and .stage == null and .authoritative == false' \
+            "${RUNNER_TEMP}/stage-dry-run.json" >/dev/null
+          target/debug/mcl "${stage_args[@]}" >"${RUNNER_TEMP}/stage.json"
+          target/debug/mcl "${stage_args[@]}" >"${RUNNER_TEMP}/stage-retry.json"
+          cmp "${RUNNER_TEMP}/stage.json" "${RUNNER_TEMP}/stage-retry.json"
+          jq -e '.dry_run == false and .stage.stage.authoritative == false and .authoritative == false' \
+            "${RUNNER_TEMP}/stage.json" >/dev/null
+          report_cas="${candidate}/.mcl/artifacts/sha256/${report_hash:0:2}/${report_hash:2:2}/${report_hash}"
+          report_backup="${RUNNER_TEMP}/staged-report.backup"
+          mv "${report_cas}" "${report_backup}"
+          if target/debug/mcl --root "${candidate}" --json verify ingest-publication \
+            --report-artifact-hash "${report_hash}" \
+            --attestation-bundle-artifact-hash "${bundle_hash}" \
+            --actor simulated-ci \
+            --idempotency-key "simulated-ingestion-missing:${report_hash}:${bundle_hash}" \
+            >"${RUNNER_TEMP}/unexpected-missing-ingestion.json" \
+            2>"${RUNNER_TEMP}/expected-missing-ingestion-error.json"; then
+            echo "candidate with a missing staged report crossed the ingestion boundary" >&2
+            exit 1
+          fi
+          jq -e '.code == "MCL_PUBLICATION_STAGE_MEMBER_MISSING"' \
+            "${RUNNER_TEMP}/expected-missing-ingestion-error.json" >/dev/null
+          mv "${report_backup}" "${report_cas}"
+          cp "${report_cas}" "${report_backup}"
+          printf 'altered staged report' >"${report_cas}"
+          if target/debug/mcl --root "${candidate}" --json verify ingest-publication \
+            --report-artifact-hash "${report_hash}" \
+            --attestation-bundle-artifact-hash "${bundle_hash}" \
+            --actor simulated-ci \
+            --idempotency-key "simulated-ingestion-altered:${report_hash}:${bundle_hash}" \
+            >"${RUNNER_TEMP}/unexpected-altered-ingestion.json" \
+            2>"${RUNNER_TEMP}/expected-altered-ingestion-error.json"; then
+            echo "candidate with an altered staged report crossed the ingestion boundary" >&2
+            exit 1
+          fi
+          jq -e '.code == "MCL_PUBLICATION_STAGE_MEMBER_MISMATCH"' \
+            "${RUNNER_TEMP}/expected-altered-ingestion-error.json" >/dev/null
+          mv "${report_backup}" "${report_cas}"
+          fake_bin="${RUNNER_TEMP}/unpinned-publication-verifier"
+          mkdir -p "${fake_bin}"
+          printf '#!/usr/bin/env sh\necho unpinned verifier must never execute >&2\nexit 97\n' >"${fake_bin}/gh"
+          chmod 500 "${fake_bin}/gh"
+          if PATH="${fake_bin}:${PATH}" target/debug/mcl --root "${candidate}" --json verify ingest-publication \
+            --report-artifact-hash "${report_hash}" \
+            --attestation-bundle-artifact-hash "${bundle_hash}" \
+            --actor simulated-ci \
+            --idempotency-key "simulated-ingestion-unpinned:${report_hash}:${bundle_hash}" \
+            >"${RUNNER_TEMP}/unexpected-ingestion.json" \
+            2>"${RUNNER_TEMP}/expected-ingestion-error.json"; then
+            echo "unpinned verifier crossed the ingestion boundary" >&2
+            exit 1
+          fi
+          jq -e '.code == "MCL_PUBLICATION_VERIFIER_PIN_MISMATCH"' \
+            "${RUNNER_TEMP}/expected-ingestion-error.json" >/dev/null
+          target/debug/mcl --root "${candidate}" --json doctor \
+            | jq -e '.healthy == true and ([.checks[] | select(.name == "artifact_inventory" and .healthy == true)] | length) == 1' >/dev/null
       - name: Retain a failed simulated candidate attempt
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

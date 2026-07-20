@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -21,11 +23,12 @@ use crate::domain::{
     EvidenceSnapshot, FidelityReviewHistoryEntry, FidelityReviewReport, FidelityReviewRequest,
     FidelityStatus, FidelityStatusSnapshot, FidelityVerdict, GraphTraversalHit,
     GraphTraversalRequest, LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditReport,
-    LeanAuditRequest, PublicationOutcome, PublicationReport, PublicationRequest,
-    PublicationRetainedArtifactRole, PublicationRetainedClosure, RecordDraft, RecordKind,
-    RecordSnapshot, RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
-    VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
-    VerifierJobSnapshot, VerifierJobState,
+    LeanAuditRequest, PublicationAttestationVerification, PublicationIngestionReceiptSnapshot,
+    PublicationOutcome, PublicationReport, PublicationRequest, PublicationRetainedArtifactRole,
+    PublicationRetainedClosure, PublicationStage, PublicationStageArtifact,
+    PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot, RunChainReport,
+    RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot, VerifierExecutionClassification,
+    VerifierExecutionReport, VerifierJobRequest, VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
 use crate::store::Store;
@@ -34,6 +37,7 @@ const DOCTOR_CANARY: &[u8] = b"mcl doctor artifact integrity canary v1";
 const MAX_RETAINED_JSON_BYTES: usize = 1_048_576;
 const MAX_RETAINED_LEAN_BYTES: usize = 1_048_576;
 const MAX_RETAINED_LOG_BYTES: usize = 16 * 1_048_576;
+const MAX_ATTESTATION_BUNDLE_BYTES: usize = 512 * 1_024;
 
 #[derive(Debug, Serialize)]
 pub struct Check {
@@ -156,6 +160,25 @@ pub struct PublicationCandidateValidationOutcome {
 }
 
 #[derive(Debug, Serialize)]
+pub struct PublicationStageOutcome {
+    pub dry_run: bool,
+    pub proposed_stage_hash: String,
+    pub report_artifact_hash: String,
+    pub retained_closure_artifact_hash: String,
+    pub attestation_bundle_artifact_hash: String,
+    pub stage: Option<PublicationStageSnapshot>,
+    pub authoritative: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PublicationIngestionOutcome {
+    pub dry_run: bool,
+    pub proposed_receipt_hash: String,
+    pub verification: PublicationAttestationVerification,
+    pub receipt: Option<PublicationIngestionReceiptSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct FidelityReviewOutcome {
     pub dry_run: bool,
     pub proposed_report_artifact_hash: String,
@@ -168,6 +191,7 @@ pub struct Application {
     store: Store,
     artifacts: ArtifactStore,
     verifier_command: String,
+    publication_verifier: crate::config::PublicationVerifierConfig,
     workspace_root: PathBuf,
 }
 
@@ -199,6 +223,7 @@ impl Application {
             store: Store::open(&config.database)?,
             artifacts: ArtifactStore::open(&config.artifacts)?,
             verifier_command: config.verifier.lean_command.clone(),
+            publication_verifier: config.publication_verifier.clone(),
             workspace_root,
         })
     }
@@ -392,7 +417,7 @@ impl Application {
             let inventory = ArtifactStore::open(&config.artifacts).and_then(|artifacts| {
                 let scan = artifacts.scan()?;
                 let registered = Store::open(&config.database)?
-                    .all_artifact_hashes()?
+                    .all_registered_cas_hashes()?
                     .into_iter()
                     .collect::<BTreeSet<_>>();
                 let canary_hash = format!("{:x}", Sha256::digest(DOCTOR_CANARY));
@@ -1694,6 +1719,412 @@ impl Application {
             &candidate.retained_closure,
             &retained_files,
         )?;
+        self.validate_publication_candidate_against_current_store(&candidate, &retained_files)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn stage_publication_candidate(
+        &mut self,
+        report_bytes: &[u8],
+        retained_closure_bytes: &[u8],
+        retained_root: &Path,
+        attestation_bundle_bytes: &[u8],
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<PublicationStageOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        if attestation_bundle_bytes.is_empty()
+            || attestation_bundle_bytes.len() > MAX_ATTESTATION_BUNDLE_BYTES
+        {
+            return Err(publication_ingestion_error(
+                "MCL_PUBLICATION_BUNDLE_INVALID",
+                "attestation bundle is empty or exceeds the 512 KiB staging bound",
+                "Stage one bounded Sigstore JSON bundle emitted for the exact candidate report.",
+            ));
+        }
+        let bundle_value: Value =
+            serde_json::from_slice(attestation_bundle_bytes).map_err(|error| {
+                publication_ingestion_error(
+                    "MCL_PUBLICATION_BUNDLE_INVALID",
+                    format!("attestation bundle is not valid JSON: {error}"),
+                    "Stage the exact Sigstore JSON bundle emitted by the protected workflow.",
+                )
+            })?;
+        validate_sigstore_bundle_shape(&bundle_value)?;
+
+        let candidate =
+            validate_publication_candidate_documents(report_bytes, retained_closure_bytes)?;
+        let retained_files =
+            read_retained_publication_files(retained_root, &candidate.retained_closure)?;
+        validate_retained_publication_semantics(
+            &candidate.report,
+            &candidate.retained_closure,
+            &retained_files,
+        )?;
+
+        let attestation_bundle_artifact_hash =
+            format!("{:x}", Sha256::digest(attestation_bundle_bytes));
+        let retained_artifacts = candidate
+            .retained_closure
+            .artifacts
+            .iter()
+            .map(|entry| {
+                Ok(PublicationStageArtifact {
+                    role: entry.role,
+                    path: entry.path.clone(),
+                    identity_hash: entry.identity_hash.clone(),
+                    artifact_hash: entry.artifact_hash.clone(),
+                    byte_size: retained_files.get(entry.role)?.len() as u64,
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+        let stage = PublicationStage {
+            schema_version: crate::domain::publication::PUBLICATION_STAGE_SCHEMA_VERSION.to_owned(),
+            report_artifact_hash: candidate.report_content_hash.clone(),
+            report_byte_size: report_bytes.len() as u64,
+            retained_closure_artifact_hash: candidate.retained_closure_hash.clone(),
+            retained_closure_byte_size: retained_closure_bytes.len() as u64,
+            attestation_bundle_artifact_hash: attestation_bundle_artifact_hash.clone(),
+            attestation_bundle_byte_size: attestation_bundle_bytes.len() as u64,
+            retained_artifacts,
+            authoritative: false,
+        };
+        stage.validate()?;
+        let proposed_stage_hash = stage.stage_hash()?;
+        let snapshot = if dry_run {
+            None
+        } else {
+            ensure_staged_hash(
+                &self.artifacts,
+                report_bytes,
+                &stage.report_artifact_hash,
+                "publication report",
+            )?;
+            ensure_staged_hash(
+                &self.artifacts,
+                retained_closure_bytes,
+                &stage.retained_closure_artifact_hash,
+                "publication retained closure",
+            )?;
+            ensure_staged_hash(
+                &self.artifacts,
+                attestation_bundle_bytes,
+                &stage.attestation_bundle_artifact_hash,
+                "publication attestation bundle",
+            )?;
+            for entry in &stage.retained_artifacts {
+                ensure_staged_hash(
+                    &self.artifacts,
+                    retained_files.get(entry.role)?,
+                    &entry.artifact_hash,
+                    entry.role.as_str(),
+                )?;
+            }
+            Some(
+                self.store
+                    .register_publication_stage(&stage, actor, idempotency_key)?,
+            )
+        };
+        Ok(PublicationStageOutcome {
+            dry_run,
+            proposed_stage_hash,
+            report_artifact_hash: stage.report_artifact_hash,
+            retained_closure_artifact_hash: stage.retained_closure_artifact_hash,
+            attestation_bundle_artifact_hash,
+            stage: snapshot,
+            authoritative: false,
+        })
+    }
+
+    pub fn ingest_publication(
+        &mut self,
+        report_artifact_hash: &str,
+        attestation_bundle_artifact_hash: &str,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<PublicationIngestionOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let stage = self
+            .store
+            .get_publication_stage(report_artifact_hash, attestation_bundle_artifact_hash)?;
+        let report_bytes = self.read_staged_publication_bytes(
+            &stage.stage.report_artifact_hash,
+            stage.stage.report_byte_size,
+            "publication report",
+        )?;
+        let retained_closure_bytes = self.read_staged_publication_bytes(
+            &stage.stage.retained_closure_artifact_hash,
+            stage.stage.retained_closure_byte_size,
+            "publication retained closure",
+        )?;
+        let attestation_bundle_bytes = self.read_staged_publication_bytes(
+            &stage.stage.attestation_bundle_artifact_hash,
+            stage.stage.attestation_bundle_byte_size,
+            "publication attestation bundle",
+        )?;
+        let bundle_value: Value =
+            serde_json::from_slice(&attestation_bundle_bytes).map_err(|error| {
+                publication_ingestion_error(
+                    "MCL_PUBLICATION_BUNDLE_INVALID",
+                    format!("staged attestation bundle is not valid JSON: {error}"),
+                    "Quarantine the stage and restage the exact protected-workflow bundle.",
+                )
+            })?;
+        validate_sigstore_bundle_shape(&bundle_value)?;
+        let candidate =
+            validate_publication_candidate_documents(&report_bytes, &retained_closure_bytes)?;
+        if candidate.report_content_hash != stage.stage.report_artifact_hash
+            || candidate.retained_closure_hash != stage.stage.retained_closure_artifact_hash
+        {
+            return Err(publication_ingestion_error(
+                "MCL_PUBLICATION_STAGE_MISMATCH",
+                "staged report or retained closure no longer matches its registered identity",
+                "Quarantine the altered stage and restage the exact protected candidate.",
+            ));
+        }
+        let retained_files =
+            self.read_staged_publication_members(&stage, &candidate.retained_closure)?;
+        validate_retained_publication_semantics(
+            &candidate.report,
+            &candidate.retained_closure,
+            &retained_files,
+        )?;
+        self.validate_publication_candidate_against_current_store(&candidate, &retained_files)?;
+
+        let policy = crate::domain::publication::committed_publication_policy()?;
+        if !dry_run {
+            let idempotent = self.store.publication_ingestion_idempotency_result(
+                &stage.stage_hash,
+                actor,
+                idempotency_key,
+            )?;
+            let existing = match idempotent {
+                Some(existing) => Some(existing),
+                None => match self
+                    .store
+                    .get_publication_ingestion_receipt_for_stage(&stage.stage_hash)
+                {
+                    Ok(existing) => Some(existing),
+                    Err(error) if error.code == "MCL_PUBLICATION_RECEIPT_NOT_FOUND" => None,
+                    Err(error) => return Err(error),
+                },
+            };
+            if let Some(existing) = existing {
+                let raw = self.read_staged_publication_bytes(
+                    &existing.verification.raw_verification_hash,
+                    existing.raw_verification_byte_size,
+                    "raw publication attestation verification",
+                )?;
+                let stored_receipt = self.read_staged_publication_bytes(
+                    &existing.receipt_hash,
+                    existing.receipt_byte_size,
+                    "publication attestation receipt",
+                )?;
+                validate_persisted_publication_receipt(
+                    &existing,
+                    &raw,
+                    &stored_receipt,
+                    &bundle_value,
+                    &candidate.report,
+                    &policy,
+                )?;
+                let registered = self.store.register_publication_ingestion_receipt(
+                    &stage.stage_hash,
+                    &candidate.report.request.subject,
+                    &existing.verification,
+                    existing.raw_verification_byte_size,
+                    existing.receipt_byte_size,
+                    actor,
+                    idempotency_key,
+                )?;
+                return Ok(PublicationIngestionOutcome {
+                    dry_run: false,
+                    proposed_receipt_hash: registered.receipt_hash.clone(),
+                    verification: registered.verification.clone(),
+                    receipt: Some(registered),
+                });
+            }
+        }
+        let resolved_verifier_path =
+            resolve_publication_verifier(&self.publication_verifier.gh_command)?;
+        let verifier_binary_sha256 = sha256_file(&resolved_verifier_path)?;
+        if verifier_binary_sha256 != policy.attestation_verifier_binary_sha256 {
+            return Err(publication_ingestion_error(
+                "MCL_PUBLICATION_VERIFIER_PIN_MISMATCH",
+                "resolved gh verifier binary does not match the committed SHA-256 pin",
+                "Install the exact publication-policy gh binary before ingesting an attestation.",
+            ));
+        }
+        let workspace = tempfile::Builder::new()
+            .prefix("mcl-publication-attestation-")
+            .tempdir_in(&self.workspace_root)
+            .map_err(|error| AppError::io("create publication attestation workspace", error))?;
+        let verifier_path = workspace
+            .path()
+            .join(if cfg!(windows) { "gh.exe" } else { "gh" });
+        fs::copy(&resolved_verifier_path, &verifier_path)
+            .map_err(|error| AppError::io("isolate pinned publication verifier", error))?;
+        if sha256_file(&verifier_path)? != verifier_binary_sha256 {
+            return Err(publication_ingestion_error(
+                "MCL_PUBLICATION_VERIFIER_PIN_MISMATCH",
+                "gh verifier changed while it was copied into the private execution workspace",
+                "Quarantine the verifier host and rerun on a clean protected runner.",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&verifier_path, fs::Permissions::from_mode(0o500))
+                .map_err(|error| AppError::io("lock isolated publication verifier", error))?;
+        }
+        #[cfg(windows)]
+        {
+            let mut permissions = fs::metadata(&verifier_path)
+                .map_err(|error| AppError::io("inspect isolated publication verifier", error))?
+                .permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&verifier_path, permissions)
+                .map_err(|error| AppError::io("lock isolated publication verifier", error))?;
+        }
+        let verifier_version = verify_publication_gh_version(
+            &verifier_path,
+            &policy.attestation_verifier_version,
+            workspace.path(),
+        )?;
+        let report_path = self.artifacts.materialize(
+            &stage.stage.report_artifact_hash,
+            workspace.path(),
+            "publication-report.json",
+        )?;
+        let bundle_path = self.artifacts.materialize(
+            &stage.stage.attestation_bundle_artifact_hash,
+            workspace.path(),
+            "attestation.json",
+        )?;
+        let arguments = publication_attestation_arguments(
+            &report_path,
+            &bundle_path,
+            &candidate.report,
+            &policy,
+        );
+        let capture = crate::verifier::run_bounded_external(
+            &verifier_path,
+            &arguments,
+            workspace.path(),
+            Duration::from_secs(self.publication_verifier.timeout_seconds),
+            self.publication_verifier.max_output_bytes as u64,
+            &[],
+            "MCL_PUBLICATION_VERIFIER_LAUNCH_FAILED",
+            "pinned GitHub attestation verifier",
+        )?;
+        if capture.timed_out
+            || capture.output_limit_exceeded
+            || capture.exit_code != Some(0)
+            || !capture.stderr.is_empty()
+        {
+            return Err(publication_ingestion_error(
+                "MCL_PUBLICATION_ATTESTATION_REJECTED",
+                format!(
+                    "pinned gh verification failed (exit={:?}, timed_out={}, output_limit_exceeded={}, stderr_bytes={})",
+                    capture.exit_code,
+                    capture.timed_out,
+                    capture.output_limit_exceeded,
+                    capture.stderr.len()
+                ),
+                "Inspect the staged hashes and protected provenance; never bypass failed attestation verification.",
+            ));
+        }
+        if sha256_file(&verifier_path)? != verifier_binary_sha256 {
+            return Err(publication_ingestion_error(
+                "MCL_PUBLICATION_VERIFIER_PIN_MISMATCH",
+                "gh verifier binary changed during attestation verification",
+                "Quarantine the verifier host and rerun on a clean protected runner.",
+            ));
+        }
+        let parsed = crate::publication_attestation::validate_gh_attestation_output(
+            &capture.stdout,
+            &bundle_value,
+            &candidate.report,
+            &policy,
+        )?;
+        self.validate_publication_candidate_against_current_store(&candidate, &retained_files)?;
+        let raw_verification_hash = format!("{:x}", Sha256::digest(&capture.stdout));
+        let verification = PublicationAttestationVerification {
+            schema_version:
+                crate::domain::publication::PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION
+                    .to_owned(),
+            report_content_hash: candidate.report_content_hash,
+            report_artifact_hash: stage.stage.report_artifact_hash.clone(),
+            attestation_bundle_hash: stage.stage.attestation_bundle_artifact_hash.clone(),
+            raw_verification_hash: raw_verification_hash.clone(),
+            verifier_name: "gh".to_owned(),
+            verifier_version,
+            verifier_binary_sha256,
+            repository: policy.repository.clone(),
+            signer_workflow: format!("{}/{}", policy.repository, policy.workflow_path),
+            certificate_identity: format!(
+                "https://github.com/{}/{}@{}",
+                policy.repository, policy.workflow_path, policy.required_source_ref
+            ),
+            source_ref: policy.required_source_ref.clone(),
+            source_commit_sha: candidate.report.request.source_commit_sha.clone(),
+            predicate_type: policy.attestation_predicate_type.clone(),
+            self_hosted_runners_denied: true,
+            verified_attestation_count: parsed.verified_attestation_count,
+            verified_timestamp_count: parsed.verified_timestamp_count,
+            authoritative: false,
+        };
+        verification.validate(&candidate.report, &policy)?;
+        let receipt_bytes =
+            canonical_json(&serde_json::to_value(&verification).map_err(|error| {
+                publication_ingestion_error(
+                    "MCL_PUBLICATION_RECEIPT_INVALID",
+                    error.to_string(),
+                    "Report this deterministic publication receipt serialization defect.",
+                )
+            })?)?;
+        let proposed_receipt_hash = format!("{:x}", Sha256::digest(&receipt_bytes));
+        let receipt = if dry_run {
+            None
+        } else {
+            ensure_staged_hash(
+                &self.artifacts,
+                &capture.stdout,
+                &raw_verification_hash,
+                "raw publication attestation verification",
+            )?;
+            ensure_staged_hash(
+                &self.artifacts,
+                &receipt_bytes,
+                &proposed_receipt_hash,
+                "publication attestation receipt",
+            )?;
+            Some(self.store.register_publication_ingestion_receipt(
+                &stage.stage_hash,
+                &candidate.report.request.subject,
+                &verification,
+                capture.stdout.len() as u64,
+                receipt_bytes.len() as u64,
+                actor,
+                idempotency_key,
+            )?)
+        };
+        Ok(PublicationIngestionOutcome {
+            dry_run,
+            proposed_receipt_hash,
+            verification,
+            receipt,
+        })
+    }
+
+    fn validate_publication_candidate_against_current_store(
+        &mut self,
+        candidate: &ValidatedPublicationCandidateDocuments,
+        retained_files: &RetainedPublicationFiles,
+    ) -> Result<PublicationCandidateValidationOutcome, AppError> {
         let request = candidate.report.request.clone();
         let rederived = self.prepare_publication_request(
             &request.subject,
@@ -1718,7 +2149,7 @@ impl Application {
                 "Regenerate the candidate from the current formalization head and its exact accepted evidence closure.",
             ));
         }
-        validate_retained_store_snapshots(&self.store, &request, &retained_files)?;
+        validate_retained_store_snapshots(&self.store, &request, retained_files)?;
         self.verify_artifact(&candidate.request_hash)
             .map_err(|error| {
                 publication_candidate_error(
@@ -1732,13 +2163,87 @@ impl Application {
             })?;
 
         Ok(PublicationCandidateValidationOutcome {
-            request_hash: candidate.request_hash,
+            request_hash: candidate.request_hash.clone(),
             report_content_hash: candidate.report_content_hash.clone(),
-            report_artifact_hash: candidate.report_content_hash,
+            report_artifact_hash: candidate.report_content_hash.clone(),
             retained_closure_hash: candidate.retained_closure_hash.clone(),
-            retained_closure_artifact_hash: candidate.retained_closure_hash,
+            retained_closure_artifact_hash: candidate.retained_closure_hash.clone(),
             authoritative: false,
         })
+    }
+
+    fn read_staged_publication_bytes(
+        &self,
+        hash: &str,
+        expected_size: u64,
+        label: &str,
+    ) -> Result<Vec<u8>, AppError> {
+        let bytes = self.artifacts.read(hash).map_err(|error| {
+            if error.code == "MCL_IO_ERROR" {
+                publication_ingestion_error(
+                    "MCL_PUBLICATION_STAGE_MEMBER_MISSING",
+                    format!("staged {label} {hash} is unavailable: {}", error.message),
+                    "Restore the exact staged CAS object or restage the protected candidate.",
+                )
+            } else {
+                publication_ingestion_error(
+                    "MCL_PUBLICATION_STAGE_MEMBER_MISMATCH",
+                    format!(
+                        "staged {label} {hash} failed CAS validation: {}",
+                        error.message
+                    ),
+                    "Quarantine the altered stage and restage the exact protected candidate.",
+                )
+            }
+        })?;
+        if bytes.len() as u64 != expected_size {
+            return Err(publication_ingestion_error(
+                "MCL_PUBLICATION_STAGE_MEMBER_MISMATCH",
+                format!("staged {label} size does not match its immutable registration"),
+                "Quarantine the altered stage and restage the protected candidate.",
+            ));
+        }
+        Ok(bytes)
+    }
+
+    fn read_staged_publication_members(
+        &self,
+        stage: &PublicationStageSnapshot,
+        closure: &PublicationRetainedClosure,
+    ) -> Result<RetainedPublicationFiles, AppError> {
+        if stage.stage.retained_artifacts.len() != closure.artifacts.len() {
+            return Err(publication_ingestion_error(
+                "MCL_PUBLICATION_STAGE_MISMATCH",
+                "staged member registration does not match the retained closure",
+                "Quarantine the stage and restage the exact protected candidate.",
+            ));
+        }
+        let mut bytes_by_role = BTreeMap::new();
+        for (staged, retained) in stage
+            .stage
+            .retained_artifacts
+            .iter()
+            .zip(&closure.artifacts)
+        {
+            if staged.role != retained.role
+                || staged.path != retained.path
+                || staged.identity_hash != retained.identity_hash
+                || staged.artifact_hash != retained.artifact_hash
+            {
+                return Err(publication_ingestion_error(
+                    "MCL_PUBLICATION_STAGE_MISMATCH",
+                    "staged member registration differs from the canonical retained closure",
+                    "Quarantine the stage and restage the exact protected candidate.",
+                ));
+            }
+            let bytes = self.read_staged_publication_bytes(
+                &staged.artifact_hash,
+                staged.byte_size,
+                staged.role.as_str(),
+            )?;
+            bytes_by_role.insert(staged.role, bytes);
+        }
+        Ok(RetainedPublicationFiles { bytes_by_role })
     }
 
     pub fn work_one_verifier_job(
@@ -3565,6 +4070,228 @@ fn publication_candidate_error(
     AppError::new(code, message, false, corrective_action)
 }
 
+fn publication_ingestion_error(
+    code: &'static str,
+    message: impl Into<String>,
+    corrective_action: impl Into<String>,
+) -> AppError {
+    AppError::new(code, message, false, corrective_action)
+}
+
+fn ensure_staged_hash(
+    artifacts: &ArtifactStore,
+    bytes: &[u8],
+    expected_hash: &str,
+    label: &str,
+) -> Result<(), AppError> {
+    let observed = artifacts.put(bytes)?;
+    if observed != expected_hash {
+        return Err(publication_ingestion_error(
+            "MCL_PUBLICATION_STAGE_HASH_MISMATCH",
+            format!("staged {label} hashed to {observed}, expected {expected_hash}"),
+            "Quarantine the candidate and restage the exact retained bytes.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sigstore_bundle_shape(bundle: &Value) -> Result<(), AppError> {
+    let Some(object) = bundle.as_object() else {
+        return Err(publication_ingestion_error(
+            "MCL_PUBLICATION_BUNDLE_INVALID",
+            "Sigstore bundle must be one JSON object",
+            "Stage one v0.3 Sigstore JSON bundle for the exact report.",
+        ));
+    };
+    let keys = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    let expected = ["dsseEnvelope", "mediaType", "verificationMaterial"]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    if keys != expected
+        || object.get("mediaType").and_then(Value::as_str)
+            != Some("application/vnd.dev.sigstore.bundle.v0.3+json")
+        || object
+            .get("verificationMaterial")
+            .is_none_or(Value::is_null)
+        || object.get("dsseEnvelope").is_none_or(Value::is_null)
+    {
+        return Err(publication_ingestion_error(
+            "MCL_PUBLICATION_BUNDLE_INVALID",
+            "Sigstore bundle does not match the closed v0.3 JSON envelope",
+            "Stage the exact JSON bundle emitted by actions/attest for the candidate report.",
+        ));
+    }
+    Ok(())
+}
+
+fn publication_attestation_arguments(
+    report_path: &Path,
+    bundle_path: &Path,
+    report: &PublicationReport,
+    policy: &crate::domain::PublicationPolicy,
+) -> Vec<OsString> {
+    let certificate_identity = format!(
+        "https://github.com/{}/{}@{}",
+        policy.repository, policy.workflow_path, policy.required_source_ref
+    );
+    vec![
+        OsString::from("attestation"),
+        OsString::from("verify"),
+        report_path.as_os_str().to_owned(),
+        OsString::from("--repo"),
+        OsString::from(&policy.repository),
+        OsString::from("--bundle"),
+        bundle_path.as_os_str().to_owned(),
+        OsString::from("--cert-identity"),
+        OsString::from(certificate_identity),
+        OsString::from("--source-ref"),
+        OsString::from(&policy.required_source_ref),
+        OsString::from("--source-digest"),
+        OsString::from(&report.request.source_commit_sha),
+        OsString::from("--signer-digest"),
+        OsString::from(&report.request.source_commit_sha),
+        OsString::from("--predicate-type"),
+        OsString::from(&policy.attestation_predicate_type),
+        OsString::from("--deny-self-hosted-runners"),
+        OsString::from("--format"),
+        OsString::from("json"),
+    ]
+}
+
+fn validate_persisted_publication_receipt(
+    receipt: &PublicationIngestionReceiptSnapshot,
+    raw_verification: &[u8],
+    stored_receipt: &[u8],
+    bundle: &Value,
+    report: &PublicationReport,
+    policy: &crate::domain::PublicationPolicy,
+) -> Result<(), AppError> {
+    receipt.verification.validate(report, policy)?;
+    let parsed = crate::publication_attestation::validate_gh_attestation_output(
+        raw_verification,
+        bundle,
+        report,
+        policy,
+    )?;
+    let receipt_bytes = canonical_json(&serde_json::to_value(&receipt.verification).map_err(
+        |error| {
+            publication_ingestion_error(
+                "MCL_PUBLICATION_RECEIPT_INVALID",
+                error.to_string(),
+                "Quarantine the stored receipt and restore verified publication state.",
+            )
+        },
+    )?)?;
+    if parsed.verified_attestation_count != receipt.verification.verified_attestation_count
+        || parsed.verified_timestamp_count != receipt.verification.verified_timestamp_count
+        || raw_verification.len() as u64 != receipt.raw_verification_byte_size
+        || stored_receipt != receipt_bytes
+        || format!("{:x}", Sha256::digest(&receipt_bytes)) != receipt.receipt_hash
+    {
+        return Err(publication_ingestion_error(
+            "MCL_PUBLICATION_RECEIPT_INVALID",
+            "persisted publication receipt CAS closure is incomplete, altered, or disagrees with the closed verifier output",
+            "Quarantine the receipt and restore the exact raw verification and canonical receipt bytes.",
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_publication_verifier(command: &str) -> Result<PathBuf, AppError> {
+    if !matches!(command, "gh" | "gh.exe") {
+        return Err(publication_ingestion_error(
+            "MCL_PUBLICATION_VERIFIER_REJECTED",
+            "publication attestation verifier command is not allowlisted",
+            "Configure only gh or gh.exe; the resolved binary must also match the policy hash.",
+        ));
+    }
+    let path = std::env::var_os("PATH").ok_or_else(|| {
+        publication_ingestion_error(
+            "MCL_PUBLICATION_VERIFIER_UNAVAILABLE",
+            "PATH is unavailable while resolving the pinned gh verifier",
+            "Install the exact pinned gh binary on the protected runner PATH.",
+        )
+    })?;
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join(command);
+        let Ok(metadata) = fs::metadata(&candidate) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let resolved = candidate
+            .canonicalize()
+            .map_err(|error| AppError::io("canonicalize publication verifier", error))?;
+        if fs::metadata(&resolved).is_ok_and(|metadata| metadata.is_file()) {
+            return Ok(resolved);
+        }
+    }
+    Err(publication_ingestion_error(
+        "MCL_PUBLICATION_VERIFIER_UNAVAILABLE",
+        format!("allowlisted publication verifier `{command}` was not found on PATH"),
+        "Install the exact policy-pinned gh binary on the protected runner PATH.",
+    ))
+}
+
+fn sha256_file(path: &Path) -> Result<String, AppError> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| AppError::io("open publication verifier binary", error))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1_024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| AppError::io("hash publication verifier binary", error))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn verify_publication_gh_version(
+    verifier_path: &Path,
+    expected_version: &str,
+    workspace: &Path,
+) -> Result<String, AppError> {
+    let capture = crate::verifier::run_bounded_external(
+        verifier_path,
+        &[OsString::from("--version")],
+        workspace,
+        Duration::from_secs(30),
+        8_192,
+        &[],
+        "MCL_PUBLICATION_VERIFIER_LAUNCH_FAILED",
+        "pinned GitHub attestation verifier",
+    )?;
+    let stdout = String::from_utf8(capture.stdout).map_err(|error| {
+        publication_ingestion_error(
+            "MCL_PUBLICATION_VERIFIER_VERSION_MISMATCH",
+            format!("gh version output is not UTF-8: {error}"),
+            "Install the exact policy-pinned gh release.",
+        )
+    })?;
+    let expected_prefix = format!("gh version {expected_version} (");
+    if capture.timed_out
+        || capture.output_limit_exceeded
+        || capture.exit_code != Some(0)
+        || !capture.stderr.is_empty()
+        || !stdout
+            .lines()
+            .next()
+            .is_some_and(|line| line.starts_with(&expected_prefix))
+    {
+        return Err(publication_ingestion_error(
+            "MCL_PUBLICATION_VERIFIER_VERSION_MISMATCH",
+            format!("resolved gh verifier does not report exact version {expected_version}"),
+            "Install the exact policy-pinned gh release before ingesting publication evidence.",
+        ));
+    }
+    Ok(expected_version.to_owned())
+}
+
 fn validate_attribution(actor: &str, idempotency_key: &str) -> Result<(), AppError> {
     if actor.trim().is_empty() || idempotency_key.trim().is_empty() {
         return Err(AppError::new(
@@ -3834,6 +4561,112 @@ mod tests {
         assert_eq!(
             validated.retained_closure_hash,
             format!("{:x}", Sha256::digest(&closure_bytes))
+        );
+    }
+
+    #[test]
+    fn publication_attestation_arguments_are_closed_and_request_bound() {
+        let (report, _) = candidate_documents();
+        let policy = crate::domain::publication::committed_publication_policy()
+            .expect("committed publication policy");
+        let report_path = Path::new("isolated/publication-report.json");
+        let bundle_path = Path::new("isolated/attestation.json");
+
+        assert_eq!(
+            publication_attestation_arguments(report_path, bundle_path, &report, &policy),
+            vec![
+                OsString::from("attestation"),
+                OsString::from("verify"),
+                report_path.as_os_str().to_owned(),
+                OsString::from("--repo"),
+                OsString::from("Mnehmos/MathOS"),
+                OsString::from("--bundle"),
+                bundle_path.as_os_str().to_owned(),
+                OsString::from("--cert-identity"),
+                OsString::from(
+                    "https://github.com/Mnehmos/MathOS/.github/workflows/publication.yml@refs/heads/main"
+                ),
+                OsString::from("--source-ref"),
+                OsString::from("refs/heads/main"),
+                OsString::from("--source-digest"),
+                OsString::from("1".repeat(40)),
+                OsString::from("--signer-digest"),
+                OsString::from("1".repeat(40)),
+                OsString::from("--predicate-type"),
+                OsString::from("https://slsa.dev/provenance/v1"),
+                OsString::from("--deny-self-hosted-runners"),
+                OsString::from("--format"),
+                OsString::from("json"),
+            ]
+        );
+    }
+
+    #[test]
+    fn persisted_publication_receipt_retry_reparses_raw_verifier_output() {
+        let (report, _) = candidate_documents();
+        let policy = crate::domain::publication::committed_publication_policy()
+            .expect("committed publication policy");
+        let bundle = json!({
+            "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+            "verificationMaterial": {},
+            "dsseEnvelope": {},
+        });
+        let bundle_bytes = canonical_json(&bundle).expect("bundle canonicalizes");
+        let raw_verification = b"{}";
+        let report_hash = report.report_hash(&policy).expect("report hash");
+        let verification = PublicationAttestationVerification {
+            schema_version:
+                crate::domain::publication::PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION
+                    .to_owned(),
+            report_content_hash: report_hash.clone(),
+            report_artifact_hash: report_hash,
+            attestation_bundle_hash: format!("{:x}", Sha256::digest(&bundle_bytes)),
+            raw_verification_hash: format!("{:x}", Sha256::digest(raw_verification)),
+            verifier_name: "gh".to_owned(),
+            verifier_version: policy.attestation_verifier_version.clone(),
+            verifier_binary_sha256: policy.attestation_verifier_binary_sha256.clone(),
+            repository: policy.repository.clone(),
+            signer_workflow: format!("{}/{}", policy.repository, policy.workflow_path),
+            certificate_identity: format!(
+                "https://github.com/{}/{}@{}",
+                policy.repository, policy.workflow_path, policy.required_source_ref
+            ),
+            source_ref: policy.required_source_ref.clone(),
+            source_commit_sha: report.request.source_commit_sha.clone(),
+            predicate_type: policy.attestation_predicate_type.clone(),
+            self_hosted_runners_denied: true,
+            verified_attestation_count: 1,
+            verified_timestamp_count: 1,
+            authoritative: false,
+        };
+        verification
+            .validate(&report, &policy)
+            .expect("synthetic receipt shape is valid before raw replay");
+        let receipt_bytes =
+            canonical_json(&serde_json::to_value(&verification).expect("verification serializes"))
+                .expect("verification canonicalizes");
+        let receipt = PublicationIngestionReceiptSnapshot {
+            receipt_hash: format!("{:x}", Sha256::digest(&receipt_bytes)),
+            stage_hash: "9".repeat(64),
+            verification,
+            raw_verification_byte_size: raw_verification.len() as u64,
+            receipt_byte_size: receipt_bytes.len() as u64,
+            created_at: 1,
+            created_by: "publication-test".to_owned(),
+        };
+
+        assert_eq!(
+            validate_persisted_publication_receipt(
+                &receipt,
+                raw_verification,
+                &receipt_bytes,
+                &bundle,
+                &report,
+                &policy,
+            )
+            .expect_err("retry must not trust the shaped receipt without replaying raw output")
+            .code,
+            "MCL_PUBLICATION_ATTESTATION_INVALID"
         );
     }
 

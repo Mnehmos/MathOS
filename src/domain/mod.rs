@@ -37,9 +37,11 @@ pub use fidelity::{
     FidelityVerdict,
 };
 pub use publication::{
-    PublicationAttestationVerification, PublicationClassification, PublicationOutcome,
-    PublicationPolicy, PublicationReport, PublicationRequest, PublicationRetainedArtifactRole,
-    PublicationRetainedClosure, PublicationRetainedClosureEntry, PublicationRunnerEnvironment,
+    PublicationAttestationVerification, PublicationClassification,
+    PublicationIngestionReceiptSnapshot, PublicationOutcome, PublicationPolicy, PublicationReport,
+    PublicationRequest, PublicationRetainedArtifactRole, PublicationRetainedClosure,
+    PublicationRetainedClosureEntry, PublicationRunnerEnvironment, PublicationStage,
+    PublicationStageArtifact, PublicationStageSnapshot,
 };
 pub use verifier::{
     VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,

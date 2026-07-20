@@ -34,7 +34,7 @@ PR [#23](https://github.com/Mnehmos/MathOS/pull/23) passed all five checks in ru
 
 PR [#26](https://github.com/Mnehmos/MathOS/pull/26) corrected the attestation policy's `jq` object iteration. All five PR checks passed in run `29709569292` on exact tree `e5b0bcbf4eacf9cb402d87b04b5dc9b0431134f2`, and the PR merged as `6b4a0f22d3498a4cb0c8dab744da7f9a09993fd8`.
 
-Active branch: `main`; issue #21 continues with controlled ingestion of a real publication closure.
+Active branch: `feat/issue-21-publication-ingestion`; issue #21 continues with controlled ingestion of a real publication closure.
 
 ## Completed criteria with evidence
 
@@ -192,11 +192,13 @@ These items establish only part of the product foundation and Phase 2 trace mode
 - PR #32 renamed only that internal constant and merged as `fc9116492a60fd891bbb1a175096002c8ab504a4`, tree `5dc109a29888c7ac34e67cdd6fb84454947133e5`. Main CI run `29716676603` passed all five jobs. Protected publication run `29716676599`, job `88271222144`, then completed candidate construction, attestation, independent challenge, and unconditional retention. Artifact `8450846116` has GitHub archive digest `1e0ecbf1ca9250494e164ffe8fe093e4b2a99ca4aa34bcaa1126c9a698ff26e6`.
 - Downloaded inspection of that first exact protected candidate verified all 25 sorted fixed-path roles and every member byte hash. The canonical request, retained closure, publication report, retained validator result, and attempt summary hashes are `9f32d3eca940100b92f6ceb91e975fb859f99c1cf97fb98ae859e6cd79419103`, `ff67bc6f101681ff5c8345c763036ca1c07caed4eec714ba8c35f5017a5c28e3`, `12f0aaca0f6e9a16c242205da24f53fadc08ba9177cff6e039ec394c50ee1012`, `1d5adfc932ffa566f859c45caba62d97443e80ee1a3eb4532f792e5ca69362c0`, and `503c86845b6e0a78fa3712b9cf999f78203c15df2550356e3965a12944740ea5`.
 - Inspection also confirmed exact source commit, tree, run, and attempt binding; clean checkout; empty declared imports; only pinned `/opt/lib/lean/Init.olean` in protected dependency output; no axioms in both local and protected audits; seven intact retained CAS objects; and passed rebuild, dependency, and axiom execution records. The candidate Sigstore bundle, raw pinned-`gh` verification, and constrained verification-record hashes are `a23d190fdaffe7e87fc98747b32525f96f199aa05f5431cba39548b38207a84e`, `1e6063a8ca1ef58476992d8691f702cc39d547ce94d82ebf90a848eef75d549a`, and `93871363affcfcc6a36d954577779de5791752d2951340c90f77df095c81ce3a`. The certificate binds the exact protected workflow, `main`, merge commit, push event, and GitHub-hosted runner; its subject matches the report and its verified Rekor timestamp is `2026-07-20T04:22:41Z`. Every candidate, attempt, validation, and verification record remains `authoritative:false`.
+- The controlled-ingestion slice now adds an immutable `publication_stage/1` quarantine contract, exact 25-role staged CAS closure, hash-only shared CLI/MCP ingestion request, a closed parser for pinned GitHub CLI attestation output, and an immutable `publication_attestation_verification/1` receipt. Retry reparses raw retained output, idempotency binds the logical stage and actor, and the final immediate transaction rechecks the exact current formalization head. Missing or altered staged CAS, stale-head finalization, retry-key rebinding, unknown verifier fields, multi-result output, wrong subjects, wrong certificate/run bindings, invalid timestamps, unpinned binaries, timeout, output overflow, stderr, and caller-authored verification records fail closed. The verifier runs from a separately hash-checked private copy. All stage and receipt records remain `authoritative:false`; protected merged-tree evidence is still pending.
+- The committed GitHub CLI executable hash is specifically the official Linux amd64 2.96.0 binary. Protected Ubuntu is the only production ingestion platform in this slice. Windows can stage and exercise rejection behavior but cannot ingest with `gh.exe` until a separate reviewed platform pin exists.
 
 ## Next highest-priority criteria
 
-1. Implement controlled application ingestion that revalidates the downloaded closure and attestation before creating any authority.
-2. Create authoritative exact proof/refutation evidence only from that verified retained closure, never from caller-authored reports.
+1. Land the controlled-ingestion slice through protected review and audit the exact retained stage, raw verifier output, and non-authoritative receipt from the merged `main` workflow.
+2. Create authoritative exact proof/refutation evidence only through an atomic application gate that fully replays a current receipt, requires a `passed` report, and never trusts receipt-table presence or caller-authored reports.
 3. Derive mathematical status only from exact current proof and fidelity evidence.
 4. Complete Pilot A through the real interfaces only after both authority and fidelity controls exist.
 
@@ -210,7 +212,7 @@ PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PA
 PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo test --workspace --all-targets
 MCL_RUN_LEAN_INTEGRATION=1 PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo test --test lean_worker -- --nocapture
 PYTHONPATH=src PYTHONWARNINGS=error::ResourceWarning python -m unittest discover -s tests -v
-bash -n scripts/publication-candidate.sh scripts/publication-smoke.sh scripts/publication-attestation-verify.sh
+bash -n scripts/publication-candidate.sh scripts/publication-smoke.sh scripts/publication-attestation-verify.sh scripts/publication-ingest.sh
 go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color=false
 git diff --check
 ```
@@ -218,7 +220,8 @@ git diff --check
 Observed validation evidence for this update:
 
 - Home workstation: Windows 10.0.19045, PowerShell 5.1.19041.6456, Rust 1.97.1, Python 3.12.10, GitHub CLI 2.70.0, GNU Bash 5.2.21 through WSL, and Lean 4.32.0 `x86_64-w64-windows-gnu`.
-- Formatting, warnings-denied Clippy across all targets and features, all 102 default Rust tests, the opt-in real Lean 4.32 lifecycle, all 39 legacy Python regressions, Bash syntax, Actionlint 1.7.12, YAML parsing, CLI help surfaces, and patch whitespace validation passed for the retained-closure and protected-candidate slice.
+- Formatting, warnings-denied Clippy across all targets and features, all 114 default Rust test cases, the previously evidenced opt-in real Lean 4.32 lifecycle, all 39 legacy Python regressions, Bash syntax for the new ingestion wrapper, Actionlint 1.7.12, and patch whitespace validation pass for the controlled-ingestion slice.
+- A real Windows CLI playtest staged protected run `29716676599`'s exact report (`12f0aaca0f6e9a16c242205da24f53fadc08ba9177cff6e039ec394c50ee1012`), bundle (`a23d190fdaffe7e87fc98747b32525f96f199aa05f5431cba39548b38207a84e`), and all 25 retained roles as stage `65569142db500d44480ab879d4799d6103450c584e90d923ecc881a55e013d2d`. Dry-run created no stage, exact retry output was byte-stable, missing and altered report CAS bytes failed as `MCL_PUBLICATION_STAGE_MEMBER_MISSING` and `MCL_PUBLICATION_STAGE_MEMBER_MISMATCH`, restored `doctor` was healthy, and fresh-store ingestion failed `MCL_RECORD_NOT_FOUND` rather than importing caller snapshots or reaching the platform-pinned verifier.
 - The corrected policy passed against retained artifact `8448611307`; independent report-digest, predicate, empty-timestamp, and empty-attestation mutations all failed closed.
 - `mcl init`, `mcl health`, and `mcl doctor` passed against a fresh Windows instance. Doctor observed the exact pinned Lean 4.32.0 toolchain and honestly reports the local profile.
 - PR #29 corrected the Windows-specific Lean platform expectation and temporary-database cleanup assumptions. Main CI run `29709993224` and publication run `29709993225` passed after that repair.
