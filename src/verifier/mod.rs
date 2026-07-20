@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -223,13 +224,13 @@ pub fn execute_lean(
     })
 }
 
-struct ProcessCapture {
-    exit_code: Option<i32>,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    duration_milliseconds: u64,
-    timed_out: bool,
-    output_limit_exceeded: bool,
+pub(crate) struct ProcessCapture {
+    pub exit_code: Option<i32>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub duration_milliseconds: u64,
+    pub timed_out: bool,
+    pub output_limit_exceeded: bool,
 }
 
 fn run_bounded_process(
@@ -239,6 +240,33 @@ fn run_bounded_process(
     timeout: Duration,
     max_output_bytes: u64,
     elan_toolchain: Option<&str>,
+) -> Result<ProcessCapture, AppError> {
+    let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+    let extra_environment = elan_toolchain
+        .map(|toolchain| vec![("ELAN_TOOLCHAIN", toolchain)])
+        .unwrap_or_default();
+    run_bounded_external(
+        Path::new(executable),
+        &arguments,
+        workspace,
+        timeout,
+        max_output_bytes,
+        &extra_environment,
+        "MCL_VERIFIER_LAUNCH_FAILED",
+        "allowlisted Lean executable",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_bounded_external(
+    executable: &Path,
+    arguments: &[OsString],
+    workspace: &Path,
+    timeout: Duration,
+    max_output_bytes: u64,
+    extra_environment: &[(&str, &str)],
+    launch_error_code: &'static str,
+    executable_label: &'static str,
 ) -> Result<ProcessCapture, AppError> {
     let mut command = Command::new(executable);
     command
@@ -257,15 +285,15 @@ fn run_bounded_process(
     if let Some(system_root) = std::env::var_os("SystemRoot") {
         command.env("SystemRoot", system_root);
     }
-    if let Some(elan_toolchain) = elan_toolchain {
-        command.env("ELAN_TOOLCHAIN", elan_toolchain);
+    for (name, value) in extra_environment {
+        command.env(name, value);
     }
     let mut child = command.spawn().map_err(|error| {
         AppError::new(
-            "MCL_VERIFIER_LAUNCH_FAILED",
-            format!("could not launch allowlisted Lean executable: {error}"),
+            launch_error_code,
+            format!("could not launch {executable_label}: {error}"),
             true,
-            "Install the exact pinned Lean toolchain and ensure it is available on PATH.",
+            format!("Install the exact pinned {executable_label} and ensure it is executable."),
         )
     })?;
     let stdout = child.stdout.take().expect("piped stdout");
@@ -280,7 +308,7 @@ fn run_bounded_process(
     let status = loop {
         if let Some(status) = child
             .try_wait()
-            .map_err(|error| AppError::io("poll Lean process", error))?
+            .map_err(|error| AppError::io("poll bounded process", error))?
         {
             break status;
         }
@@ -289,20 +317,20 @@ fn run_bounded_process(
             let _ = child.kill();
             break child
                 .wait()
-                .map_err(|error| AppError::io("reap timed-out Lean process", error))?;
+                .map_err(|error| AppError::io("reap timed-out bounded process", error))?;
         }
         if exceeded.load(Ordering::Relaxed) {
             let _ = child.kill();
             break child
                 .wait()
-                .map_err(|error| AppError::io("reap output-limited Lean process", error))?;
+                .map_err(|error| AppError::io("reap output-limited bounded process", error))?;
         }
         thread::sleep(Duration::from_millis(10));
     };
     let stdout = stdout_thread.join().map_err(|_| {
         AppError::new(
             "MCL_VERIFIER_CAPTURE_FAILED",
-            "Lean stdout capture thread panicked",
+            "bounded stdout capture thread panicked",
             true,
             "Retry the job and inspect worker health if it repeats.",
         )
@@ -310,7 +338,7 @@ fn run_bounded_process(
     let stderr = stderr_thread.join().map_err(|_| {
         AppError::new(
             "MCL_VERIFIER_CAPTURE_FAILED",
-            "Lean stderr capture thread panicked",
+            "bounded stderr capture thread panicked",
             true,
             "Retry the job and inspect worker health if it repeats.",
         )
@@ -337,7 +365,7 @@ fn capture_stream<R: Read + Send + 'static>(
         loop {
             let read = reader
                 .read(&mut buffer)
-                .map_err(|error| AppError::io("capture Lean process output", error))?;
+                .map_err(|error| AppError::io("capture bounded process output", error))?;
             if read == 0 {
                 break;
             }

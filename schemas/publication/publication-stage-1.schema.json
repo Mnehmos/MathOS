@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/publication/stage/1",
+  "title": "MathOS Publication Stage v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_artifact_hash",
+    "report_byte_size",
+    "retained_closure_artifact_hash",
+    "retained_closure_byte_size",
+    "attestation_bundle_artifact_hash",
+    "attestation_bundle_byte_size",
+    "retained_artifacts",
+    "authoritative"
+  ],
+  "properties": {
+    "schema_version": { "const": "publication_stage/1" },
+    "report_artifact_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "report_byte_size": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+    "retained_closure_artifact_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "retained_closure_byte_size": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+    "attestation_bundle_artifact_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "attestation_bundle_byte_size": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+    "retained_artifacts": {
+      "type": "array",
+      "minItems": 25,
+      "maxItems": 25,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "path", "identity_hash", "artifact_hash", "byte_size"],
+        "properties": {
+          "role": {
+            "enum": [
+              "audit_job",
+              "audit_policy",
+              "audit_report",
+              "audit_stderr",
+              "audit_stdout",
+              "axiom_audit_evidence",
+              "claim_version",
+              "diagnostic_evidence",
+              "environment_manifest",
+              "formalization_version",
+              "lean_module",
+              "proof_closure_evidence",
+              "protected_audit_stderr",
+              "protected_audit_stdout",
+              "protected_dependency_stderr",
+              "protected_dependency_stdout",
+              "protected_stderr",
+              "protected_stdout",
+              "publication_policy",
+              "publication_request",
+              "source_version",
+              "verifier_job",
+              "verifier_report",
+              "verifier_stderr",
+              "verifier_stdout"
+            ]
+          },
+          "path": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "identity_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "artifact_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "byte_size": { "type": "integer", "minimum": 0, "maximum": 16777216 }
+        }
+      }
+    },
+    "authoritative": { "const": false }
+  }
+}

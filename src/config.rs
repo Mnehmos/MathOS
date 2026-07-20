@@ -12,6 +12,7 @@ pub struct ConfigFile {
     pub database: PathBuf,
     pub artifacts: PathBuf,
     pub verifier: VerifierConfig,
+    pub publication_verifier: PublicationVerifierConfig,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -23,6 +24,14 @@ pub struct VerifierConfig {
     pub concurrency: usize,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PublicationVerifierConfig {
+    pub gh_command: String,
+    pub timeout_seconds: u64,
+    pub max_output_bytes: usize,
+}
+
 impl Default for ConfigFile {
     fn default() -> Self {
         Self {
@@ -30,6 +39,21 @@ impl Default for ConfigFile {
             database: PathBuf::from("state.sqlite3"),
             artifacts: PathBuf::from("artifacts"),
             verifier: VerifierConfig::default(),
+            publication_verifier: PublicationVerifierConfig::default(),
+        }
+    }
+}
+
+impl Default for PublicationVerifierConfig {
+    fn default() -> Self {
+        Self {
+            gh_command: if cfg!(windows) {
+                "gh.exe".to_owned()
+            } else {
+                "gh".to_owned()
+            },
+            timeout_seconds: 120,
+            max_output_bytes: 1_048_576,
         }
     }
 }
@@ -53,6 +77,7 @@ pub struct ResolvedConfig {
     pub database: PathBuf,
     pub artifacts: PathBuf,
     pub verifier: VerifierConfig,
+    pub publication_verifier: PublicationVerifierConfig,
 }
 
 impl ResolvedConfig {
@@ -96,6 +121,19 @@ impl ResolvedConfig {
                 "Install Lean on PATH and set verifier.lean_command to the platform name.",
             ));
         }
+        if !matches!(
+            file.publication_verifier.gh_command.as_str(),
+            "gh" | "gh.exe"
+        ) || !(1..=600).contains(&file.publication_verifier.timeout_seconds)
+            || !(1..=16 * 1_048_576).contains(&file.publication_verifier.max_output_bytes)
+        {
+            return Err(AppError::new(
+                "MCL_CONFIG_INVALID",
+                "publication verifier must use allowlisted gh/gh.exe with bounded time and output",
+                false,
+                "Use gh (or gh.exe), a timeout from 1 to 600 seconds, and an output bound no larger than 16 MiB.",
+            ));
+        }
         let data_dir = safe_join(&root, &file.data_dir)?;
         let database = safe_join(&root, &file.data_dir.join(&file.database))?;
         let artifacts = safe_join(&root, &file.data_dir.join(&file.artifacts))?;
@@ -106,6 +144,7 @@ impl ResolvedConfig {
             database,
             artifacts,
             verifier: file.verifier,
+            publication_verifier: file.publication_verifier,
         })
     }
 

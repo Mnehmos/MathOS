@@ -181,6 +181,8 @@ enum VerifyAction {
     FidelityStatus(FidelityStatusOptions),
     PreparePublication(VerifyPreparePublicationOptions),
     ValidatePublicationCandidate(VerifyValidatePublicationCandidateOptions),
+    StagePublicationCandidate(VerifyStagePublicationCandidateOptions),
+    IngestPublication(VerifyIngestPublicationOptions),
 }
 
 #[derive(Debug, Args)]
@@ -310,6 +312,36 @@ struct VerifyValidatePublicationCandidateOptions {
 
     #[arg(long)]
     retained_root: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct VerifyStagePublicationCandidateOptions {
+    #[arg(long)]
+    report_file: PathBuf,
+
+    #[arg(long)]
+    retained_closure_file: PathBuf,
+
+    #[arg(long)]
+    retained_root: PathBuf,
+
+    #[arg(long)]
+    attestation_bundle_file: PathBuf,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct VerifyIngestPublicationOptions {
+    #[arg(long)]
+    report_artifact_hash: String,
+
+    #[arg(long)]
+    attestation_bundle_artifact_hash: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -751,6 +783,42 @@ fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<Cli
             )?)
             .expect("publication candidate validation outcome is serializable")
         }
+        VerifyAction::StagePublicationCandidate(options) => {
+            let report_bytes = read_publication_candidate_file(
+                config,
+                &options.report_file,
+                "publication report",
+            )?;
+            let retained_closure_bytes = read_publication_candidate_file(
+                config,
+                &options.retained_closure_file,
+                "publication retained closure",
+            )?;
+            let attestation_bundle_bytes = read_publication_candidate_file(
+                config,
+                &options.attestation_bundle_file,
+                "publication attestation bundle",
+            )?;
+            let retained_root = resolve_publication_retained_root(config, &options.retained_root)?;
+            to_value(application.stage_publication_candidate(
+                &report_bytes,
+                &retained_closure_bytes,
+                &retained_root,
+                &attestation_bundle_bytes,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("publication stage outcome is serializable")
+        }
+        VerifyAction::IngestPublication(options) => to_value(application.ingest_publication(
+            &options.report_artifact_hash,
+            &options.attestation_bundle_artifact_hash,
+            &options.mutation.actor,
+            &options.mutation.idempotency_key,
+            options.mutation.dry_run,
+        )?)
+        .expect("publication ingestion outcome is serializable"),
     };
     Ok(CliOutcome {
         value,

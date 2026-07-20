@@ -11,10 +11,13 @@ pub const PUBLICATION_POLICY_SCHEMA_VERSION: &str = "publication_policy/1";
 pub const PUBLICATION_REQUEST_SCHEMA_VERSION: &str = "publication_request/1";
 pub const PUBLICATION_RETAINED_CLOSURE_SCHEMA_VERSION: &str = "publication_retained_closure/1";
 pub const PUBLICATION_REPORT_SCHEMA_VERSION: &str = "publication_report/1";
+pub const PUBLICATION_STAGE_SCHEMA_VERSION: &str = "publication_stage/1";
 pub const PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION: &str =
     "publication_attestation_verification/1";
+pub const MAX_PUBLICATION_VERIFIED_TIMESTAMPS: u32 = 8;
 const MAX_AXIOMS: usize = 256;
 const MAX_ARTIFACTS: usize = 256;
+const MAX_STAGE_INPUT_BYTES: u64 = 16 * 1_048_576;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +25,8 @@ pub struct PublicationPolicy {
     pub schema_version: String,
     pub policy_name: String,
     pub repository: String,
+    pub repository_id: u64,
+    pub repository_owner_id: u64,
     pub workflow_path: String,
     pub required_source_ref: String,
     pub required_runner_environment: PublicationRunnerEnvironment,
@@ -268,6 +273,38 @@ pub struct PublicationReport {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct PublicationStageArtifact {
+    pub role: PublicationRetainedArtifactRole,
+    pub path: String,
+    pub identity_hash: String,
+    pub artifact_hash: String,
+    pub byte_size: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationStage {
+    pub schema_version: String,
+    pub report_artifact_hash: String,
+    pub report_byte_size: u64,
+    pub retained_closure_artifact_hash: String,
+    pub retained_closure_byte_size: u64,
+    pub attestation_bundle_artifact_hash: String,
+    pub attestation_bundle_byte_size: u64,
+    pub retained_artifacts: Vec<PublicationStageArtifact>,
+    pub authoritative: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicationStageSnapshot {
+    pub stage_hash: String,
+    pub stage: PublicationStage,
+    pub created_at: i64,
+    pub created_by: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PublicationAttestationVerification {
     pub schema_version: String,
     pub report_content_hash: String,
@@ -289,11 +326,24 @@ pub struct PublicationAttestationVerification {
     pub authoritative: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicationIngestionReceiptSnapshot {
+    pub receipt_hash: String,
+    pub stage_hash: String,
+    pub verification: PublicationAttestationVerification,
+    pub raw_verification_byte_size: u64,
+    pub receipt_byte_size: u64,
+    pub created_at: i64,
+    pub created_by: String,
+}
+
 impl PublicationPolicy {
     pub fn validate(&self) -> Result<(), AppError> {
         if self.schema_version != PUBLICATION_POLICY_SCHEMA_VERSION
             || !is_identifier(&self.policy_name, 128)
             || !is_repository(&self.repository)
+            || self.repository_id != 1_305_399_818
+            || self.repository_owner_id != 193_347_153
             || !is_workflow_path(&self.workflow_path)
             || !self.required_source_ref.starts_with("refs/heads/")
             || !is_lean_toolchain(&self.required_lean_toolchain)
@@ -515,6 +565,50 @@ impl PublicationReport {
     }
 }
 
+impl PublicationStage {
+    pub fn validate(&self) -> Result<(), AppError> {
+        let exact_roles = self.retained_artifacts.len()
+            == PublicationRetainedArtifactRole::ALL.len()
+            && self
+                .retained_artifacts
+                .iter()
+                .zip(PublicationRetainedArtifactRole::ALL)
+                .all(|(entry, role)| entry.role == role);
+        let valid_artifacts = self.retained_artifacts.iter().all(|entry| {
+            entry.path == entry.role.expected_path()
+                && is_hash(&entry.identity_hash)
+                && is_hash(&entry.artifact_hash)
+                && entry.byte_size <= MAX_STAGE_INPUT_BYTES
+        });
+        if self.schema_version != PUBLICATION_STAGE_SCHEMA_VERSION
+            || !is_hash(&self.report_artifact_hash)
+            || self.report_byte_size == 0
+            || self.report_byte_size > MAX_STAGE_INPUT_BYTES
+            || !is_hash(&self.retained_closure_artifact_hash)
+            || self.retained_closure_byte_size == 0
+            || self.retained_closure_byte_size > MAX_STAGE_INPUT_BYTES
+            || !is_hash(&self.attestation_bundle_artifact_hash)
+            || self.attestation_bundle_byte_size == 0
+            || self.attestation_bundle_byte_size > MAX_STAGE_INPUT_BYTES
+            || !exact_roles
+            || !valid_artifacts
+            || self.authoritative
+        {
+            return Err(publication_error(
+                "MCL_PUBLICATION_STAGE_INVALID",
+                "publication stage does not register one closed bounded non-authoritative candidate",
+                "Stage the exact canonical report, closure, fixed retained members, and Sigstore bundle.",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn stage_hash(&self) -> Result<String, AppError> {
+        self.validate()?;
+        hash_serializable(self, "MCL_PUBLICATION_STAGE_INVALID")
+    }
+}
+
 impl PublicationAttestationVerification {
     pub fn validate(
         &self,
@@ -529,7 +623,7 @@ impl PublicationAttestationVerification {
         let expected_signer_workflow = format!("{}/{}", policy.repository, policy.workflow_path);
         if self.schema_version != PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION
             || self.report_content_hash != report.report_hash(policy)?
-            || !is_hash(&self.report_artifact_hash)
+            || self.report_artifact_hash != self.report_content_hash
             || !is_hash(&self.attestation_bundle_hash)
             || !is_hash(&self.raw_verification_hash)
             || self.verifier_name != "gh"
@@ -542,8 +636,8 @@ impl PublicationAttestationVerification {
             || self.source_commit_sha != report.request.source_commit_sha
             || self.predicate_type != policy.attestation_predicate_type
             || !self.self_hosted_runners_denied
-            || self.verified_attestation_count == 0
-            || self.verified_timestamp_count == 0
+            || self.verified_attestation_count != 1
+            || !(1..=MAX_PUBLICATION_VERIFIED_TIMESTAMPS).contains(&self.verified_timestamp_count)
             || self.authoritative
         {
             return Err(publication_error(
@@ -554,6 +648,44 @@ impl PublicationAttestationVerification {
         }
         Ok(())
     }
+}
+
+pub fn publication_stage_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://mnehmos.ai/mathos/schemas/publication/stage/1",
+        "title": "MathOS Publication Stage v1",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema_version", "report_artifact_hash", "report_byte_size", "retained_closure_artifact_hash", "retained_closure_byte_size", "attestation_bundle_artifact_hash", "attestation_bundle_byte_size", "retained_artifacts", "authoritative"],
+        "properties": {
+            "schema_version": {"const": PUBLICATION_STAGE_SCHEMA_VERSION},
+            "report_artifact_hash": hash_schema(64),
+            "report_byte_size": {"type": "integer", "minimum": 1, "maximum": MAX_STAGE_INPUT_BYTES},
+            "retained_closure_artifact_hash": hash_schema(64),
+            "retained_closure_byte_size": {"type": "integer", "minimum": 1, "maximum": MAX_STAGE_INPUT_BYTES},
+            "attestation_bundle_artifact_hash": hash_schema(64),
+            "attestation_bundle_byte_size": {"type": "integer", "minimum": 1, "maximum": MAX_STAGE_INPUT_BYTES},
+            "retained_artifacts": {
+                "type": "array",
+                "minItems": PublicationRetainedArtifactRole::ALL.len(),
+                "maxItems": PublicationRetainedArtifactRole::ALL.len(),
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["role", "path", "identity_hash", "artifact_hash", "byte_size"],
+                    "properties": {
+                        "role": {"enum": PublicationRetainedArtifactRole::ALL.map(PublicationRetainedArtifactRole::as_str)},
+                        "path": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "identity_hash": hash_schema(64),
+                        "artifact_hash": hash_schema(64),
+                        "byte_size": {"type": "integer", "minimum": 0, "maximum": MAX_STAGE_INPUT_BYTES}
+                    }
+                }
+            },
+            "authoritative": {"const": false}
+        }
+    })
 }
 
 pub fn committed_publication_policy() -> Result<PublicationPolicy, AppError> {
@@ -578,11 +710,13 @@ pub fn publication_policy_schema() -> Value {
         "title": "MathOS Publication Policy v1",
         "type": "object",
         "additionalProperties": false,
-        "required": ["schema_version", "policy_name", "repository", "workflow_path", "required_source_ref", "required_runner_environment", "required_lean_toolchain", "allowed_axioms", "requires_clean_checkout", "requires_dependency_closure", "requires_network_isolation", "requires_memory_limit", "attestation_predicate_type", "attestation_action_sha", "artifact_upload_action_sha", "attestation_verifier_version", "attestation_verifier_archive_sha256", "attestation_verifier_binary_sha256"],
+        "required": ["schema_version", "policy_name", "repository", "repository_id", "repository_owner_id", "workflow_path", "required_source_ref", "required_runner_environment", "required_lean_toolchain", "allowed_axioms", "requires_clean_checkout", "requires_dependency_closure", "requires_network_isolation", "requires_memory_limit", "attestation_predicate_type", "attestation_action_sha", "artifact_upload_action_sha", "attestation_verifier_version", "attestation_verifier_archive_sha256", "attestation_verifier_binary_sha256"],
         "properties": {
             "schema_version": {"const": PUBLICATION_POLICY_SCHEMA_VERSION},
             "policy_name": {"type": "string", "minLength": 1, "maxLength": 128},
             "repository": {"const": "Mnehmos/MathOS"},
+            "repository_id": {"const": 1_305_399_818_u64},
+            "repository_owner_id": {"const": 193_347_153_u64},
             "workflow_path": {"const": ".github/workflows/publication.yml"},
             "required_source_ref": {"const": "refs/heads/main"},
             "required_runner_environment": {"const": "github_hosted"},
@@ -747,8 +881,8 @@ pub fn publication_attestation_verification_schema() -> Value {
             "source_commit_sha": hash_schema(40),
             "predicate_type": {"const": "https://slsa.dev/provenance/v1"},
             "self_hosted_runners_denied": {"const": true},
-            "verified_attestation_count": {"type": "integer", "minimum": 1},
-            "verified_timestamp_count": {"type": "integer", "minimum": 1},
+            "verified_attestation_count": {"const": 1},
+            "verified_timestamp_count": {"type": "integer", "minimum": 1, "maximum": MAX_PUBLICATION_VERIFIED_TIMESTAMPS},
             "authoritative": {"const": false}
         }
     })
@@ -1148,14 +1282,68 @@ mod tests {
         }
     }
 
+    fn publication_stage() -> PublicationStage {
+        let request = request();
+        let closure = retained_closure(&request);
+        PublicationStage {
+            schema_version: PUBLICATION_STAGE_SCHEMA_VERSION.to_owned(),
+            report_artifact_hash: "1".repeat(64),
+            report_byte_size: 1_024,
+            retained_closure_artifact_hash: closure.closure_hash(&request).expect("closure hash"),
+            retained_closure_byte_size: 2_048,
+            attestation_bundle_artifact_hash: "2".repeat(64),
+            attestation_bundle_byte_size: 4_096,
+            retained_artifacts: closure
+                .artifacts
+                .into_iter()
+                .map(|entry| PublicationStageArtifact {
+                    role: entry.role,
+                    path: entry.path,
+                    identity_hash: entry.identity_hash,
+                    artifact_hash: entry.artifact_hash,
+                    byte_size: 0,
+                })
+                .collect(),
+            authoritative: false,
+        }
+    }
+
+    #[test]
+    fn publication_stage_is_closed_bounded_and_non_authoritative() {
+        let stage = publication_stage();
+        stage.validate().expect("closed stage");
+        assert_eq!(stage.stage_hash().expect("stage hash").len(), 64);
+
+        let mut authoritative = stage.clone();
+        authoritative.authoritative = true;
+        assert_eq!(
+            authoritative
+                .validate()
+                .expect_err("stage cannot assert authority")
+                .code,
+            "MCL_PUBLICATION_STAGE_INVALID"
+        );
+
+        let mut missing = stage;
+        missing.retained_artifacts.pop();
+        assert_eq!(
+            missing
+                .validate()
+                .expect_err("stage must retain every role")
+                .code,
+            "MCL_PUBLICATION_STAGE_INVALID"
+        );
+    }
+
     fn attestation_verification(
         report: &PublicationReport,
         policy: &PublicationPolicy,
     ) -> PublicationAttestationVerification {
+        let report_hash = report.report_hash(policy).expect("report hash");
         PublicationAttestationVerification {
             schema_version: PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION.to_owned(),
-            report_content_hash: report.report_hash(policy).expect("report hash"),
-            report_artifact_hash: "3".repeat(64),
+            report_content_hash: report_hash.clone(),
+            report_artifact_hash: report_hash,
             attestation_bundle_hash: "4".repeat(64),
             raw_verification_hash: "5".repeat(64),
             verifier_name: "gh".to_owned(),
@@ -1253,7 +1441,9 @@ mod tests {
             |value: &mut PublicationAttestationVerification| {
                 value.verifier_binary_sha256 = "7".repeat(64)
             },
+            |value: &mut PublicationAttestationVerification| value.verified_attestation_count = 2,
             |value: &mut PublicationAttestationVerification| value.verified_timestamp_count = 0,
+            |value: &mut PublicationAttestationVerification| value.verified_timestamp_count = 9,
         ] {
             let mut altered = verification.clone();
             corrupt(&mut altered);
@@ -1285,6 +1475,10 @@ mod tests {
             "../../schemas/publication/publication-report-1.schema.json"
         ))
         .expect("report schema");
+        let stage_value: Value = serde_json::from_str(include_str!(
+            "../../schemas/publication/publication-stage-1.schema.json"
+        ))
+        .expect("stage schema");
         let attestation_value: Value = serde_json::from_str(include_str!(
             "../../schemas/publication/publication-attestation-verification-1.schema.json"
         ))
@@ -1296,6 +1490,7 @@ mod tests {
             publication_retained_closure_schema()
         );
         assert_eq!(report_value, publication_report_schema());
+        assert_eq!(stage_value, publication_stage_schema());
         assert_eq!(
             attestation_value,
             publication_attestation_verification_schema()

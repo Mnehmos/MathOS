@@ -1,8 +1,8 @@
 # Publication Proof Authority
 
-MathOS publication authority is a two-stage boundary.
+MathOS publication authority is a staged boundary.
 
-First, a protected clean-checkout workflow produces a candidate report. Second, a separate ingestion path verifies cryptographic provenance for the exact report bytes before it may create authoritative proof or refutation evidence.
+First, a protected clean-checkout workflow produces a candidate report. A quarantine path then registers the exact report, retained closure, and Sigstore bundle in content-addressed storage without granting canonical artifact provenance. A separate ingestion path verifies current canonical state and cryptographic provenance for those exact hashes. Only a later atomic evidence gate may create authoritative proof or refutation evidence.
 
 ## Candidate stage
 
@@ -95,10 +95,52 @@ The protected workflow attests the exact candidate report digest using GitHub OI
 
 MathOS must parse the verifier output and match it to the report and committed policy. Process success by itself is insufficient.
 
+### Quarantine staging
+
+The filesystem-facing staging surface is CLI-only:
+
+```text
+mcl verify stage-publication-candidate \
+  --report-file <canonical-report> \
+  --retained-closure-file <canonical-closure> \
+  --retained-root <contained-candidate-root> \
+  --attestation-bundle-file <sigstore-json-bundle> \
+  --actor <identity> \
+  --idempotency-key <stable-key>
+```
+
+Staging requires contained regular files, rejects symbolic-link and traversal substitutions, bounds every input, validates the canonical report and fixed 25-role closure, and atomically records one immutable `publication_stage/1`. The physical bytes use the existing content-addressed store, including exact zero-byte log members. Stage registration is publication-scoped quarantine metadata, not canonical `artifact` provenance, and is always `authoritative: false`. CAS writes that precede a failed database transaction remain harmless unregistered orphans; retry rehashes and reuses them.
+
+Staging an archive in a fresh instance does not import its record, evidence, or job snapshots as canonical state. Ingestion still requires those exact identities to exist and be current in the Store. This prevents a downloaded archive from declaring its own currentness.
+
+### Controlled ingestion
+
+The shared CLI operation is:
+
+```text
+mcl verify ingest-publication \
+  --report-artifact-hash <sha256> \
+  --attestation-bundle-artifact-hash <sha256> \
+  --actor <identity> \
+  --idempotency-key <stable-key>
+```
+
+MCP exposes the same application operation as `verify.ingest_publication`. Neither interface accepts report JSON, closure paths, a verifier executable, verifier arguments, a verification record, or any authority field.
+
+The application resolves the unique immutable stage, rehashes the report, closure, bundle, and every retained member, repeats all semantic candidate validation, and re-derives the publication request against the current canonical Store. It then resolves only the configured `gh`/`gh.exe` name, requires the committed version and executable SHA-256, copies those verified bytes into a fresh private execution workspace, rehashes the copy before and after execution, materializes controlled `.json` inputs, and invokes fixed typed arguments for repository, certificate identity, ref, source and signer digests, SLSA predicate, and self-hosted-runner denial. Standard input is null; time and combined output are bounded; a nonzero exit, timeout, output overflow, or unexpected standard error fails closed.
+
+The current policy pins the official Linux amd64 GitHub CLI 2.96.0 executable. Production ingestion is therefore intentionally limited to the protected GitHub-hosted Ubuntu workflow. Windows can exercise staging and rejection behavior, but `gh.exe` cannot satisfy the Linux binary hash and must fail with `MCL_PUBLICATION_VERIFIER_PIN_MISMATCH`. Supporting another operating system or architecture requires a separately reviewed platform-specific executable pin and policy contract; command-name compatibility alone is insufficient.
+
+The pinned verifier output must be exactly one result. Closed parsing requires the echoed registered bundle; certificate-bound workflow, repository and owner names plus their policy-pinned immutable GitHub numeric IDs, ref, commit, runner, trigger, and run URI; repeated verified identity; exactly one report subject and source dependency; matching SLSA workflow/build/run data; and one to eight verified timestamps including Rekor. Unknown trust-layer fields, key-signed results without the required certificate, multi-result output, missing optional verifier fields, `CurrentTime`, altered subjects, recreated repository or owner identities, or inconsistent predicate data are rejected.
+
+Successful ingestion retains the exact raw verifier output and canonical `publication_attestation_verification/1` attestation-verification record in CAS. One final Store transaction then rechecks that the request's exact formalization is still the current head and writes both the separate immutable SQLite ingestion receipt (`PublicationIngestionReceiptSnapshot` in `publication_ingestion_receipts`) and the logical stage/actor idempotency result. Retry after restart reparses the stored raw output against the exact staged report and bundle, revalidates its CAS closure, repeats the atomic currentness check, and returns the stored ingestion receipt without depending on a new network challenge. The stage, attestation-verification record, and ingestion receipt all remain explicitly non-authoritative.
+
+The canonical CAS attestation-verification record and its SQLite ingestion receipt prove only that the constrained verifier accepted the exact staged provenance. Neither means the report classification is `passed`, and neither establishes mathematical truth. The future authority gate must use the application-level replay path, require a `passed` report plus current fidelity and publication controls, and atomically create the typed evidence; it must never infer authority from receipt-table presence or a Store shape check alone.
+
 ## Current implementation state
 
-The closed policy, request, retained-closure, candidate-report, and attestation-verification contracts are implemented. The shared application, CLI, and MCP request-preparation paths derive and retain a non-authoritative request from exact current local evidence without accepting caller-authored JSON. The protected `main` workflow retains the earlier boundary smoke and additionally produces, application-validates, attests, independently challenges, and retains a real `publication_report/1` and its complete exact closure. Pull-request CI exercises the same candidate producer without attestation or authority.
+The closed policy, request, retained-closure, candidate-report, quarantine-stage, and attestation-verification contracts are implemented. The shared application, CLI, and MCP request-preparation paths derive and retain a non-authoritative request from exact current local evidence without accepting caller-authored JSON. The protected `main` workflow retains the earlier boundary smoke and additionally produces, application-validates, attests, independently challenges, stages, ingests, and retains a real `publication_report/1`, its complete exact closure, raw verifier output, canonical CAS attestation-verification record, and separate immutable non-authoritative SQLite ingestion receipt. Pull-request CI exercises the same candidate producer and quarantine persistence, but its deliberately synthetic bundle cannot cross the ingestion boundary.
 
-The attestation-verification record is still non-authoritative. It can establish that exact retained report bytes were signed by the constrained protected workflow and witnessed by the configured transparency system. Canonical proof authority still requires controlled ingestion that revalidates the downloaded closure and attestation together, followed by a new authoritative evidence record produced only by that application path rather than accepted from caller JSON.
+The attestation-verification record and SQLite ingestion receipt are still non-authoritative. Together they can establish that exact retained report bytes were signed by the constrained protected workflow and witnessed by the configured transparency system. Canonical proof authority still requires the next atomic Store gate to replay a complete current ingestion receipt and its CAS record, then create a new authoritative evidence record only through that application path rather than from caller JSON.
 
 No authoritative proof or refutation evidence exists yet. No mathematical claim status is derived.

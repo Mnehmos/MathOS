@@ -17,8 +17,10 @@ use crate::domain::{
     ArtifactCreationSource, ArtifactMediaType, ArtifactMetadata, ArtifactRestriction,
     ArtifactSnapshot, EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest, EnvironmentSnapshot,
     EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult, EvidenceSnapshot,
-    LeanAuditJobSnapshot, LeanAuditRequest, PublicationRequest, RecordDraft, RecordKind,
-    RecordSnapshot, VerifierJobRequest, VerifierJobSnapshot, VerifierJobState,
+    LeanAuditJobSnapshot, LeanAuditRequest, PublicationAttestationVerification,
+    PublicationIngestionReceiptSnapshot, PublicationRequest, PublicationStage,
+    PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot, VerifierJobRequest,
+    VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
 
@@ -34,6 +36,10 @@ const MIGRATION_0006: &str = include_str!("../../migrations/0006_environment_inv
 const MIGRATION_0007: &str = include_str!("../../migrations/0007_artifact_invariants.sql");
 const MIGRATION_0008: &str = include_str!("../../migrations/0008_verifier_jobs.sql");
 const MIGRATION_0009: &str = include_str!("../../migrations/0009_evidence_invariants.sql");
+const MIGRATION_0010: &str = include_str!("../../migrations/0010_publication_ingestion.sql");
+const MAX_PUBLICATION_INPUT_BYTES: u64 = 16 * 1_048_576;
+const MAX_REGISTERED_CAS_HASHES: usize = 100_000;
+const PUBLICATION_INGESTION_OPERATION: &str = "publication.ingestion_receipt.register";
 const REQUIRED_TABLES: &[&str] = &[
     "artifacts",
     "edges",
@@ -44,6 +50,8 @@ const REQUIRED_TABLES: &[&str] = &[
     "record_versions",
     "records",
     "releases",
+    "publication_ingestion_receipts",
+    "publication_stages",
     "run_events",
     "runs",
     "schema_migrations",
@@ -261,6 +269,24 @@ impl Store {
                     params![9_i64, "evidence invariants"],
                 )
                 .map_err(|error| AppError::database("record migration 0009", error))?;
+        }
+        let migration_0010_applied: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 10)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::database("inspect migration 0010", error))?;
+        if !migration_0010_applied {
+            transaction
+                .execute_batch(MIGRATION_0010)
+                .map_err(|error| AppError::database("apply migration 0010", error))?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, unixepoch())",
+                    params![10_i64, "publication ingestion"],
+                )
+                .map_err(|error| AppError::database("record migration 0010", error))?;
         }
         transaction
             .commit()
@@ -585,26 +611,7 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| AppError::database("start artifact registration", error))?;
         if let Some(subject) = required_current_subject {
-            let current = transaction
-                .query_row(
-                    "SELECT record_type, head_version_hash FROM records WHERE object_id = ?1 AND tombstoned = 0",
-                    [&subject.object_id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-                )
-                .optional()
-                .map_err(|error| {
-                    AppError::database("validate publication request subject head", error)
-                })?;
-            if current.as_ref().is_none_or(|(kind, head)| {
-                kind != "formalization" || head.as_deref() != Some(subject.version_hash.as_str())
-            }) {
-                return Err(AppError::new(
-                    "MCL_PUBLICATION_SUBJECT_STALE",
-                    "publication subject is no longer the current canonical formalization version",
-                    false,
-                    "Select the current formalization head and reproduce its exact diagnostic and audit evidence.",
-                ));
-            }
+            validate_current_publication_subject(&transaction, subject)?;
         }
         if let Some(existing) =
             read_idempotent_result(&transaction, operation, idempotency_key, &input_hash)?
@@ -744,6 +751,388 @@ impl Store {
             ));
         }
         Ok(hashes)
+    }
+
+    pub fn register_publication_stage(
+        &mut self,
+        stage: &PublicationStage,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<PublicationStageSnapshot, AppError> {
+        const OPERATION: &str = "publication.stage.register";
+
+        validate_mutation_inputs(actor, idempotency_key)?;
+        validate_publication_actor(actor)?;
+        stage.validate()?;
+        let stage_hash = stage.stage_hash()?;
+        let stage_value = serde_json::to_value(stage).map_err(|error| {
+            AppError::new(
+                "MCL_PUBLICATION_STAGE_INVALID",
+                error.to_string(),
+                false,
+                "Report this deterministic publication-stage serialization defect.",
+            )
+        })?;
+        let stage_json = canonical_string(&stage_value)?;
+        let input_hash = value_hash(&json!({
+            "operation": OPERATION,
+            "stage": stage_value,
+            "actor": actor,
+        }))?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start publication stage registration", error))?;
+
+        if let Some(existing) = read_idempotent_result::<PublicationStageSnapshot>(
+            &transaction,
+            OPERATION,
+            idempotency_key,
+            &input_hash,
+        )? {
+            let stored = read_publication_stage(&transaction, &existing.stage_hash)?;
+            if existing != stored
+                || stored.stage != stage.clone()
+                || stored.stage_hash != stage_hash
+            {
+                return Err(publication_stage_integrity_error(
+                    "stored idempotency result disagrees with the immutable publication stage",
+                ));
+            }
+            return Ok(stored);
+        }
+
+        let existing_stage_hash = transaction
+            .query_row(
+                "SELECT stage_hash FROM publication_stages WHERE (report_artifact_hash = ?1 AND attestation_bundle_artifact_hash = ?2) OR stage_hash = ?3 ORDER BY stage_hash LIMIT 1",
+                params![
+                    stage.report_artifact_hash,
+                    stage.attestation_bundle_artifact_hash,
+                    stage_hash,
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| AppError::database("find publication stage", error))?;
+        if let Some(existing_stage_hash) = existing_stage_hash {
+            let existing = read_publication_stage(&transaction, &existing_stage_hash)?;
+            if existing.stage_hash != stage_hash || existing.stage != stage.clone() {
+                return Err(AppError::new(
+                    "MCL_PUBLICATION_STAGE_CONFLICT",
+                    "the report and attestation bundle are already bound to a different publication stage",
+                    false,
+                    "Use the exact originally staged bytes or investigate the conflicting publication input.",
+                ));
+            }
+            write_idempotent_result(
+                &transaction,
+                OPERATION,
+                idempotency_key,
+                &input_hash,
+                &existing,
+            )?;
+            transaction.commit().map_err(|error| {
+                AppError::database("commit matching publication stage registration", error)
+            })?;
+            return Ok(existing);
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO publication_stages(stage_hash, schema_version, report_artifact_hash, report_byte_size, retained_closure_artifact_hash, retained_closure_byte_size, attestation_bundle_artifact_hash, attestation_bundle_byte_size, retained_artifact_count, stage_json, authoritative, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, unixepoch(), ?11)",
+                params![
+                    stage_hash,
+                    stage.schema_version,
+                    stage.report_artifact_hash,
+                    stage.report_byte_size as i64,
+                    stage.retained_closure_artifact_hash,
+                    stage.retained_closure_byte_size as i64,
+                    stage.attestation_bundle_artifact_hash,
+                    stage.attestation_bundle_byte_size as i64,
+                    stage.retained_artifacts.len() as i64,
+                    stage_json,
+                    actor,
+                ],
+            )
+            .map_err(|error| AppError::database("insert publication stage", error))?;
+        let snapshot = read_publication_stage(&transaction, &stage_hash)?;
+        write_idempotent_result(
+            &transaction,
+            OPERATION,
+            idempotency_key,
+            &input_hash,
+            &snapshot,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit publication stage registration", error))?;
+        Ok(snapshot)
+    }
+
+    pub fn get_publication_stage(
+        &self,
+        report_artifact_hash: &str,
+        attestation_bundle_artifact_hash: &str,
+    ) -> Result<PublicationStageSnapshot, AppError> {
+        validate_hash(report_artifact_hash, "publication report artifact")?;
+        validate_hash(
+            attestation_bundle_artifact_hash,
+            "publication attestation bundle artifact",
+        )?;
+        let stage_hash = self
+            .connection
+            .query_row(
+                "SELECT stage_hash FROM publication_stages WHERE report_artifact_hash = ?1 AND attestation_bundle_artifact_hash = ?2",
+                params![report_artifact_hash, attestation_bundle_artifact_hash],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| AppError::database("find publication stage", error))?
+            .ok_or_else(|| publication_stage_not_found(report_artifact_hash, attestation_bundle_artifact_hash))?;
+        read_publication_stage(&self.connection, &stage_hash)
+    }
+
+    pub fn publication_ingestion_idempotency_result(
+        &self,
+        stage_hash: &str,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<PublicationIngestionReceiptSnapshot>, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        validate_publication_actor(actor)?;
+        validate_hash(stage_hash, "publication stage")?;
+        let input_hash = publication_ingestion_input_hash(stage_hash, actor)?;
+        let stage = read_publication_stage(&self.connection, stage_hash)?;
+        let Some(existing) = read_idempotent_result::<PublicationIngestionReceiptSnapshot>(
+            &self.connection,
+            PUBLICATION_INGESTION_OPERATION,
+            idempotency_key,
+            &input_hash,
+        )?
+        else {
+            return Ok(None);
+        };
+        let stored = read_publication_ingestion_receipt(&self.connection, &existing.receipt_hash)?;
+        validate_publication_receipt_binding(&stage, &stored.verification)?;
+        if existing != stored || stored.stage_hash != stage_hash {
+            return Err(publication_receipt_integrity_error(
+                "stored idempotency result disagrees with the immutable ingestion receipt",
+            ));
+        }
+        Ok(Some(stored))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_publication_ingestion_receipt(
+        &mut self,
+        stage_hash: &str,
+        current_subject: &ExactVersionReference,
+        verification: &PublicationAttestationVerification,
+        raw_verification_byte_size: u64,
+        receipt_byte_size: u64,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<PublicationIngestionReceiptSnapshot, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        validate_publication_actor(actor)?;
+        validate_hash(stage_hash, "publication stage")?;
+        validate_hash(&current_subject.version_hash, "publication subject version")?;
+        Uuid::parse_str(&current_subject.object_id).map_err(|_| {
+            AppError::new(
+                "MCL_PUBLICATION_SUBJECT_INVALID",
+                "publication subject object identity is not a UUID",
+                false,
+                "Use the exact publication request subject produced by the canonical store.",
+            )
+        })?;
+        validate_publication_attestation_shape(verification)?;
+        validate_publication_input_size(
+            raw_verification_byte_size,
+            "raw attestation verification",
+        )?;
+        validate_publication_input_size(receipt_byte_size, "attestation verification receipt")?;
+        let verification_value = serde_json::to_value(verification).map_err(|error| {
+            AppError::new(
+                "MCL_PUBLICATION_ATTESTATION_INVALID",
+                error.to_string(),
+                false,
+                "Report this deterministic attestation-verification serialization defect.",
+            )
+        })?;
+        let verification_json = canonical_string(&verification_value)?;
+        let computed_receipt_byte_size = u64::try_from(verification_json.len()).map_err(|_| {
+            AppError::new(
+                "MCL_PUBLICATION_RECEIPT_INVALID",
+                "canonical attestation verification size cannot be represented",
+                false,
+                "Report this deterministic receipt-size defect.",
+            )
+        })?;
+        if receipt_byte_size != computed_receipt_byte_size {
+            return Err(AppError::new(
+                "MCL_PUBLICATION_RECEIPT_INVALID",
+                format!(
+                    "declared receipt size {receipt_byte_size} does not match canonical verification size {computed_receipt_byte_size}"
+                ),
+                false,
+                "Use the exact canonical attestation verification bytes.",
+            ));
+        }
+        let receipt_hash = value_hash(&verification_value)?;
+        let input_hash = publication_ingestion_input_hash(stage_hash, actor)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start publication receipt registration", error))?;
+        let stage = read_publication_stage(&transaction, stage_hash)?;
+        validate_current_publication_subject(&transaction, current_subject)?;
+        validate_publication_receipt_binding(&stage, verification)?;
+
+        if let Some(existing) = read_idempotent_result::<PublicationIngestionReceiptSnapshot>(
+            &transaction,
+            PUBLICATION_INGESTION_OPERATION,
+            idempotency_key,
+            &input_hash,
+        )? {
+            let stored = read_publication_ingestion_receipt(&transaction, &existing.receipt_hash)?;
+            if existing != stored
+                || stored.receipt_hash != receipt_hash
+                || stored.stage_hash != stage_hash
+                || stored.verification != verification.clone()
+                || stored.raw_verification_byte_size != raw_verification_byte_size
+                || stored.receipt_byte_size != receipt_byte_size
+            {
+                return Err(publication_receipt_integrity_error(
+                    "stored idempotency result disagrees with the immutable ingestion receipt",
+                ));
+            }
+            return Ok(stored);
+        }
+
+        let existing_receipt_hash = transaction
+            .query_row(
+                "SELECT receipt_hash FROM publication_ingestion_receipts WHERE stage_hash = ?1 OR receipt_hash = ?2 ORDER BY receipt_hash LIMIT 1",
+                params![stage_hash, receipt_hash],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| AppError::database("find publication ingestion receipt", error))?;
+        if let Some(existing_receipt_hash) = existing_receipt_hash {
+            let existing =
+                read_publication_ingestion_receipt(&transaction, &existing_receipt_hash)?;
+            if existing.receipt_hash != receipt_hash
+                || existing.stage_hash != stage_hash
+                || existing.verification != verification.clone()
+                || existing.raw_verification_byte_size != raw_verification_byte_size
+                || existing.receipt_byte_size != receipt_byte_size
+            {
+                return Err(AppError::new(
+                    "MCL_PUBLICATION_RECEIPT_CONFLICT",
+                    "the publication stage already has a different ingestion receipt",
+                    false,
+                    "Use the exact original verified inputs or investigate the conflicting ingestion attempt.",
+                ));
+            }
+            write_idempotent_result(
+                &transaction,
+                PUBLICATION_INGESTION_OPERATION,
+                idempotency_key,
+                &input_hash,
+                &existing,
+            )?;
+            transaction.commit().map_err(|error| {
+                AppError::database("commit matching publication receipt registration", error)
+            })?;
+            return Ok(existing);
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO publication_ingestion_receipts(receipt_hash, schema_version, stage_hash, report_artifact_hash, attestation_bundle_artifact_hash, raw_verification_hash, raw_verification_byte_size, receipt_byte_size, verification_json, authoritative, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, unixepoch(), ?10)",
+                params![
+                    receipt_hash,
+                    verification.schema_version,
+                    stage_hash,
+                    verification.report_artifact_hash,
+                    verification.attestation_bundle_hash,
+                    verification.raw_verification_hash,
+                    raw_verification_byte_size as i64,
+                    receipt_byte_size as i64,
+                    verification_json,
+                    actor,
+                ],
+            )
+            .map_err(|error| AppError::database("insert publication ingestion receipt", error))?;
+        let snapshot = read_publication_ingestion_receipt(&transaction, &receipt_hash)?;
+        write_idempotent_result(
+            &transaction,
+            PUBLICATION_INGESTION_OPERATION,
+            idempotency_key,
+            &input_hash,
+            &snapshot,
+        )?;
+        transaction.commit().map_err(|error| {
+            AppError::database("commit publication receipt registration", error)
+        })?;
+        Ok(snapshot)
+    }
+
+    pub fn get_publication_ingestion_receipt_for_stage(
+        &self,
+        stage_hash: &str,
+    ) -> Result<PublicationIngestionReceiptSnapshot, AppError> {
+        validate_hash(stage_hash, "publication stage")?;
+        let receipt_hash = self
+            .connection
+            .query_row(
+                "SELECT receipt_hash FROM publication_ingestion_receipts WHERE stage_hash = ?1",
+                [stage_hash],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| AppError::database("find publication ingestion receipt", error))?
+            .ok_or_else(|| publication_receipt_not_found(stage_hash))?;
+        read_publication_ingestion_receipt(&self.connection, &receipt_hash)
+    }
+
+    pub fn all_registered_cas_hashes(&self) -> Result<Vec<String>, AppError> {
+        let mut hashes = self
+            .all_artifact_hashes()?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        ensure_registered_cas_bound(hashes.len())?;
+
+        let stage_hashes = read_bounded_hash_column(
+            &self.connection,
+            "SELECT stage_hash FROM publication_stages ORDER BY stage_hash LIMIT ?1",
+            "inventory publication stages",
+        )?;
+        for stage_hash in stage_hashes {
+            let stage = read_publication_stage(&self.connection, &stage_hash)?.stage;
+            hashes.insert(stage.report_artifact_hash);
+            hashes.insert(stage.retained_closure_artifact_hash);
+            hashes.insert(stage.attestation_bundle_artifact_hash);
+            hashes.extend(
+                stage
+                    .retained_artifacts
+                    .into_iter()
+                    .map(|artifact| artifact.artifact_hash),
+            );
+            ensure_registered_cas_bound(hashes.len())?;
+        }
+
+        let receipt_hashes = read_bounded_hash_column(
+            &self.connection,
+            "SELECT receipt_hash FROM publication_ingestion_receipts ORDER BY receipt_hash LIMIT ?1",
+            "inventory publication ingestion receipts",
+        )?;
+        for receipt_hash in receipt_hashes {
+            let receipt = read_publication_ingestion_receipt(&self.connection, &receipt_hash)?;
+            hashes.insert(receipt.receipt_hash);
+            hashes.insert(receipt.verification.raw_verification_hash);
+            ensure_registered_cas_bound(hashes.len())?;
+        }
+        Ok(hashes.into_iter().collect())
     }
 
     pub fn enqueue_verifier_job(
@@ -2205,6 +2594,173 @@ fn validate_hash(hash: &str, label: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn validate_publication_actor(actor: &str) -> Result<(), AppError> {
+    if actor.chars().count() > 256 {
+        return Err(AppError::new(
+            "MCL_ATTRIBUTION_INVALID",
+            "publication actor attribution exceeds 256 characters",
+            false,
+            "Use a short stable actor identity.",
+        ));
+    }
+    Ok(())
+}
+
+fn publication_ingestion_input_hash(stage_hash: &str, actor: &str) -> Result<String, AppError> {
+    value_hash(&json!({
+        "operation": PUBLICATION_INGESTION_OPERATION,
+        "stage_hash": stage_hash,
+        "actor": actor,
+    }))
+}
+
+fn validate_current_publication_subject(
+    connection: &Connection,
+    subject: &ExactVersionReference,
+) -> Result<(), AppError> {
+    let current = connection
+        .query_row(
+            "SELECT record_type, head_version_hash FROM records WHERE object_id = ?1 AND tombstoned = 0",
+            [&subject.object_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()
+        .map_err(|error| AppError::database("validate publication subject head", error))?;
+    if current.as_ref().is_none_or(|(kind, head)| {
+        kind != "formalization" || head.as_deref() != Some(subject.version_hash.as_str())
+    }) {
+        return Err(AppError::new(
+            "MCL_PUBLICATION_SUBJECT_STALE",
+            "publication subject is no longer the current canonical formalization version",
+            false,
+            "Select the current formalization head and reproduce its exact diagnostic and audit evidence.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_publication_input_size(byte_size: u64, label: &str) -> Result<(), AppError> {
+    if byte_size == 0 || byte_size > MAX_PUBLICATION_INPUT_BYTES {
+        return Err(AppError::new(
+            "MCL_PUBLICATION_INPUT_SIZE_INVALID",
+            format!("{label} must contain between 1 and {MAX_PUBLICATION_INPUT_BYTES} bytes"),
+            false,
+            "Use the exact bounded retained publication input.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_publication_attestation_shape(
+    verification: &PublicationAttestationVerification,
+) -> Result<(), AppError> {
+    use crate::domain::publication::PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION;
+
+    let policy = crate::domain::publication::committed_publication_policy()?;
+    let expected_signer_workflow = format!("{}/{}", policy.repository, policy.workflow_path);
+    let expected_certificate_identity = format!(
+        "https://github.com/{}/{}@{}",
+        policy.repository, policy.workflow_path, policy.required_source_ref
+    );
+    if verification.schema_version != PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION
+        || !is_lower_hex(&verification.report_content_hash, 64)
+        || verification.report_artifact_hash != verification.report_content_hash
+        || !is_lower_hex(&verification.attestation_bundle_hash, 64)
+        || !is_lower_hex(&verification.raw_verification_hash, 64)
+        || verification.verifier_name != "gh"
+        || verification.verifier_version != policy.attestation_verifier_version
+        || verification.verifier_binary_sha256 != policy.attestation_verifier_binary_sha256
+        || verification.repository != policy.repository
+        || verification.signer_workflow != expected_signer_workflow
+        || verification.certificate_identity != expected_certificate_identity
+        || verification.source_ref != policy.required_source_ref
+        || !is_lower_hex(&verification.source_commit_sha, 40)
+        || verification.predicate_type != policy.attestation_predicate_type
+        || !verification.self_hosted_runners_denied
+        || verification.verified_attestation_count != 1
+        || !(1..=crate::domain::publication::MAX_PUBLICATION_VERIFIED_TIMESTAMPS)
+            .contains(&verification.verified_timestamp_count)
+        || verification.authoritative
+    {
+        return Err(AppError::new(
+            "MCL_PUBLICATION_ATTESTATION_INVALID",
+            "attestation verification does not satisfy the closed publication receipt shape",
+            false,
+            "Use the fully validated record produced from the pinned verifier and committed publication policy.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_publication_receipt_binding(
+    stage: &PublicationStageSnapshot,
+    verification: &PublicationAttestationVerification,
+) -> Result<(), AppError> {
+    if stage.stage.authoritative
+        || verification.authoritative
+        || stage.stage.report_artifact_hash != verification.report_artifact_hash
+        || stage.stage.report_artifact_hash != verification.report_content_hash
+        || stage.stage.attestation_bundle_artifact_hash != verification.attestation_bundle_hash
+    {
+        return Err(AppError::new(
+            "MCL_PUBLICATION_RECEIPT_BINDING_INVALID",
+            "attestation verification does not bind the exact non-authoritative publication stage",
+            false,
+            "Verify the exact staged report and Sigstore bundle before recording ingestion.",
+        ));
+    }
+    Ok(())
+}
+
+fn is_lower_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn canonical_string(value: &Value) -> Result<String, AppError> {
+    String::from_utf8(canonical_json(value)?).map_err(|error| {
+        AppError::new(
+            "MCL_CANONICAL_JSON_INVALID",
+            error.to_string(),
+            false,
+            "Report this canonical JSON encoding defect.",
+        )
+    })
+}
+
+fn ensure_registered_cas_bound(count: usize) -> Result<(), AppError> {
+    if count > MAX_REGISTERED_CAS_HASHES {
+        return Err(AppError::new(
+            "MCL_CAS_SCAN_LIMIT",
+            "registered CAS inventory exceeded its reviewed bound",
+            false,
+            "Inspect storage growth before increasing the CAS inventory policy.",
+        ));
+    }
+    Ok(())
+}
+
+fn read_bounded_hash_column(
+    connection: &Connection,
+    query: &str,
+    context: &'static str,
+) -> Result<Vec<String>, AppError> {
+    let mut statement = connection
+        .prepare(query)
+        .map_err(|error| AppError::database(context, error))?;
+    let hashes = statement
+        .query_map([(MAX_REGISTERED_CAS_HASHES + 1) as i64], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| AppError::database(context, error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| AppError::database(context, error))?;
+    ensure_registered_cas_bound(hashes.len())?;
+    Ok(hashes)
+}
+
 fn validate_uuid(value: &str, label: &str) -> Result<(), AppError> {
     let parsed = Uuid::parse_str(value).map_err(|_| {
         AppError::new(
@@ -3280,6 +3836,296 @@ fn read_audit_job(connection: &Connection, job_id: &str) -> Result<LeanAuditJobS
     })
 }
 
+fn read_publication_stage(
+    connection: &Connection,
+    stage_hash: &str,
+) -> Result<PublicationStageSnapshot, AppError> {
+    let row = connection
+        .query_row(
+            "SELECT schema_version, report_artifact_hash, report_byte_size, retained_closure_artifact_hash, retained_closure_byte_size, attestation_bundle_artifact_hash, attestation_bundle_byte_size, retained_artifact_count, stage_json, authoritative, created_at, created_by FROM publication_stages WHERE stage_hash = ?1",
+            [stage_hash],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, String>(11)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| AppError::database("read publication stage", error))?;
+    let Some((
+        stored_schema_version,
+        stored_report_artifact_hash,
+        stored_report_byte_size,
+        stored_retained_closure_artifact_hash,
+        stored_retained_closure_byte_size,
+        stored_attestation_bundle_artifact_hash,
+        stored_attestation_bundle_byte_size,
+        stored_retained_artifact_count,
+        stage_json,
+        stored_authoritative,
+        created_at,
+        created_by,
+    )) = row
+    else {
+        return Err(AppError::new(
+            "MCL_PUBLICATION_STAGE_NOT_FOUND",
+            format!("publication stage {stage_hash} is not registered"),
+            false,
+            "Stage and verify the exact retained publication candidate first.",
+        ));
+    };
+    let stage: PublicationStage = serde_json::from_str(&stage_json).map_err(|error| {
+        publication_stage_integrity_error(format!(
+            "stored publication stage JSON is invalid: {error}"
+        ))
+    })?;
+    stage.validate().map_err(|error| {
+        publication_stage_integrity_error(format!(
+            "stored publication stage fails validation: {error}"
+        ))
+    })?;
+    let stage_value = serde_json::to_value(&stage).map_err(|error| {
+        publication_stage_integrity_error(format!(
+            "stored publication stage cannot be serialized: {error}"
+        ))
+    })?;
+    let canonical_stage_json = canonical_string(&stage_value).map_err(|error| {
+        publication_stage_integrity_error(format!(
+            "stored publication stage cannot be canonicalized: {error}"
+        ))
+    })?;
+    let computed_stage_hash = stage.stage_hash().map_err(|error| {
+        publication_stage_integrity_error(format!(
+            "stored publication stage identity cannot be recomputed: {error}"
+        ))
+    })?;
+    let report_byte_size = u64::try_from(stored_report_byte_size).map_err(|_| {
+        publication_stage_integrity_error("stored publication report byte size is negative")
+    })?;
+    let retained_closure_byte_size =
+        u64::try_from(stored_retained_closure_byte_size).map_err(|_| {
+            publication_stage_integrity_error(
+                "stored retained publication closure byte size is negative",
+            )
+        })?;
+    let attestation_bundle_byte_size =
+        u64::try_from(stored_attestation_bundle_byte_size).map_err(|_| {
+            publication_stage_integrity_error(
+                "stored publication attestation bundle byte size is negative",
+            )
+        })?;
+    let retained_artifact_count =
+        usize::try_from(stored_retained_artifact_count).map_err(|_| {
+            publication_stage_integrity_error("stored retained artifact count is negative")
+        })?;
+    if !is_lower_hex(stage_hash, 64)
+        || computed_stage_hash != stage_hash
+        || stage_json != canonical_stage_json
+        || stored_schema_version != stage.schema_version
+        || stored_report_artifact_hash != stage.report_artifact_hash
+        || report_byte_size != stage.report_byte_size
+        || stored_retained_closure_artifact_hash != stage.retained_closure_artifact_hash
+        || retained_closure_byte_size != stage.retained_closure_byte_size
+        || stored_attestation_bundle_artifact_hash != stage.attestation_bundle_artifact_hash
+        || attestation_bundle_byte_size != stage.attestation_bundle_byte_size
+        || retained_artifact_count != stage.retained_artifacts.len()
+        || stored_authoritative != 0
+        || stage.authoritative
+        || created_by.trim().is_empty()
+        || created_by.chars().count() > 256
+    {
+        return Err(publication_stage_integrity_error(format!(
+            "stored publication stage projections disagree for {stage_hash}"
+        )));
+    }
+    Ok(PublicationStageSnapshot {
+        stage_hash: stage_hash.to_owned(),
+        stage,
+        created_at,
+        created_by,
+    })
+}
+
+fn read_publication_ingestion_receipt(
+    connection: &Connection,
+    receipt_hash: &str,
+) -> Result<PublicationIngestionReceiptSnapshot, AppError> {
+    let row = connection
+        .query_row(
+            "SELECT schema_version, stage_hash, report_artifact_hash, attestation_bundle_artifact_hash, raw_verification_hash, raw_verification_byte_size, receipt_byte_size, verification_json, authoritative, created_at, created_by FROM publication_ingestion_receipts WHERE receipt_hash = ?1",
+            [receipt_hash],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, String>(10)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| AppError::database("read publication ingestion receipt", error))?;
+    let Some((
+        stored_schema_version,
+        stage_hash,
+        stored_report_artifact_hash,
+        stored_attestation_bundle_artifact_hash,
+        stored_raw_verification_hash,
+        stored_raw_verification_byte_size,
+        stored_receipt_byte_size,
+        verification_json,
+        stored_authoritative,
+        created_at,
+        created_by,
+    )) = row
+    else {
+        return Err(publication_receipt_not_found(receipt_hash));
+    };
+    let verification: PublicationAttestationVerification = serde_json::from_str(&verification_json)
+        .map_err(|error| {
+            publication_receipt_integrity_error(format!(
+                "stored attestation verification JSON is invalid: {error}"
+            ))
+        })?;
+    validate_publication_attestation_shape(&verification).map_err(|error| {
+        publication_receipt_integrity_error(format!(
+            "stored attestation verification fails validation: {error}"
+        ))
+    })?;
+    let verification_value = serde_json::to_value(&verification).map_err(|error| {
+        publication_receipt_integrity_error(format!(
+            "stored attestation verification cannot be serialized: {error}"
+        ))
+    })?;
+    let canonical_verification_json = canonical_string(&verification_value).map_err(|error| {
+        publication_receipt_integrity_error(format!(
+            "stored attestation verification cannot be canonicalized: {error}"
+        ))
+    })?;
+    let computed_receipt_hash = value_hash(&verification_value).map_err(|error| {
+        publication_receipt_integrity_error(format!(
+            "stored ingestion receipt identity cannot be recomputed: {error}"
+        ))
+    })?;
+    let raw_verification_byte_size =
+        u64::try_from(stored_raw_verification_byte_size).map_err(|_| {
+            publication_receipt_integrity_error(
+                "stored raw attestation verification byte size is negative",
+            )
+        })?;
+    let receipt_byte_size = u64::try_from(stored_receipt_byte_size).map_err(|_| {
+        publication_receipt_integrity_error("stored ingestion receipt byte size is negative")
+    })?;
+    let canonical_receipt_byte_size =
+        u64::try_from(canonical_verification_json.len()).map_err(|_| {
+            publication_receipt_integrity_error(
+                "canonical stored ingestion receipt byte size cannot be represented",
+            )
+        })?;
+    validate_publication_input_size(
+        raw_verification_byte_size,
+        "stored raw attestation verification",
+    )
+    .map_err(|error| publication_receipt_integrity_error(error.to_string()))?;
+    validate_publication_input_size(receipt_byte_size, "stored ingestion receipt")
+        .map_err(|error| publication_receipt_integrity_error(error.to_string()))?;
+    if !is_lower_hex(receipt_hash, 64)
+        || computed_receipt_hash != receipt_hash
+        || verification_json != canonical_verification_json
+        || receipt_byte_size != canonical_receipt_byte_size
+        || stored_schema_version != verification.schema_version
+        || stored_report_artifact_hash != verification.report_artifact_hash
+        || stored_attestation_bundle_artifact_hash != verification.attestation_bundle_hash
+        || stored_raw_verification_hash != verification.raw_verification_hash
+        || stored_authoritative != 0
+        || verification.authoritative
+        || created_by.trim().is_empty()
+        || created_by.chars().count() > 256
+    {
+        return Err(publication_receipt_integrity_error(format!(
+            "stored publication ingestion receipt projections disagree for {receipt_hash}"
+        )));
+    }
+    let stage = read_publication_stage(connection, &stage_hash).map_err(|error| {
+        publication_receipt_integrity_error(format!(
+            "stored ingestion receipt references an invalid stage: {error}"
+        ))
+    })?;
+    validate_publication_receipt_binding(&stage, &verification).map_err(|error| {
+        publication_receipt_integrity_error(format!(
+            "stored ingestion receipt binding is invalid: {error}"
+        ))
+    })?;
+    Ok(PublicationIngestionReceiptSnapshot {
+        receipt_hash: receipt_hash.to_owned(),
+        stage_hash,
+        verification,
+        raw_verification_byte_size,
+        receipt_byte_size,
+        created_at,
+        created_by,
+    })
+}
+
+fn publication_stage_not_found(
+    report_artifact_hash: &str,
+    attestation_bundle_artifact_hash: &str,
+) -> AppError {
+    AppError::new(
+        "MCL_PUBLICATION_STAGE_NOT_FOUND",
+        format!(
+            "publication report {report_artifact_hash} and bundle {attestation_bundle_artifact_hash} are not staged"
+        ),
+        false,
+        "Stage the exact retained publication candidate before ingestion.",
+    )
+}
+
+fn publication_receipt_not_found(identity: &str) -> AppError {
+    AppError::new(
+        "MCL_PUBLICATION_RECEIPT_NOT_FOUND",
+        format!("publication ingestion receipt for {identity} is not registered"),
+        false,
+        "Complete controlled publication ingestion or use its exact receipt identity.",
+    )
+}
+
+fn publication_stage_integrity_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_PUBLICATION_STAGE_INTEGRITY_FAILED",
+        message,
+        false,
+        "Quarantine the database and restore a verified backup.",
+    )
+}
+
+fn publication_receipt_integrity_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_PUBLICATION_RECEIPT_INTEGRITY_FAILED",
+        message,
+        false,
+        "Quarantine the database and restore a verified backup.",
+    )
+}
+
 fn read_artifact(
     connection: &Connection,
     artifact_hash: &str,
@@ -3578,6 +4424,7 @@ mod tests {
 
     use super::*;
     use crate::domain::schemas::ExactVersionReference;
+    use crate::domain::{PublicationRetainedArtifactRole, PublicationStageArtifact};
 
     #[test]
     fn migration_produces_wal_database_with_fts5() {
@@ -3586,7 +4433,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("migration succeeds");
 
-        assert_eq!(store.migration_version().expect("migration version"), 9);
+        assert_eq!(store.migration_version().expect("migration version"), 10);
         assert_eq!(store.journal_mode().expect("journal mode"), "wal");
         assert_eq!(store.integrity_check().expect("integrity"), "ok");
         store.schema_check().expect("required schema exists");
@@ -3600,7 +4447,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("first migration succeeds");
         store.migrate().expect("second migration succeeds");
-        assert_eq!(store.migration_version().expect("migration version"), 9);
+        assert_eq!(store.migration_version().expect("migration version"), 10);
     }
 
     #[test]
@@ -3632,7 +4479,7 @@ mod tests {
         assert_eq!(store.migration_version().expect("legacy version"), 7);
 
         store.migrate().expect("forward migration succeeds");
-        assert_eq!(store.migration_version().expect("current version"), 9);
+        assert_eq!(store.migration_version().expect("current version"), 10);
         assert!(
             store
                 .connection
@@ -3663,6 +4510,476 @@ mod tests {
                 )
                 .expect("verifier job input column")
         );
+    }
+
+    #[test]
+    fn publication_stage_and_receipt_are_immutable_idempotent_cas_roots() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let (current_subject, _) =
+            current_publication_subject(&mut store, "publication-receipt-current");
+        let canonical_artifact =
+            register_lean_artifact(&mut store, b"canonical", "publication-canonical-artifact");
+        let stage = publication_stage();
+
+        let first_stage = store
+            .register_publication_stage(&stage, "publication-test", "publication-stage-first")
+            .expect("stage registers");
+        let repeated_stage = store
+            .register_publication_stage(&stage, "publication-test", "publication-stage-first")
+            .expect("stage retry succeeds");
+        let alternate_stage_receipt = store
+            .register_publication_stage(&stage, "publication-test", "publication-stage-second")
+            .expect("matching stage gets another idempotency receipt");
+        assert_eq!(first_stage, repeated_stage);
+        assert_eq!(first_stage, alternate_stage_receipt);
+        assert_eq!(
+            first_stage.stage_hash,
+            stage.stage_hash().expect("stage hash")
+        );
+        assert_eq!(
+            store
+                .get_publication_stage(
+                    &stage.report_artifact_hash,
+                    &stage.attestation_bundle_artifact_hash,
+                )
+                .expect("stage reads"),
+            first_stage
+        );
+        let mut conflicting_stage = stage.clone();
+        conflicting_stage.report_byte_size += 1;
+        let conflict = store
+            .register_publication_stage(
+                &conflicting_stage,
+                "publication-test",
+                "publication-stage-conflict",
+            )
+            .expect_err("same report and bundle cannot bind a different stage");
+        assert_eq!(conflict.code, "MCL_PUBLICATION_STAGE_CONFLICT");
+
+        let verification = publication_verification(&stage);
+        let receipt_byte_size =
+            canonical_json(&serde_json::to_value(&verification).expect("verification serializes"))
+                .expect("verification canonicalizes")
+                .len() as u64;
+        let first_receipt = store
+            .register_publication_ingestion_receipt(
+                &first_stage.stage_hash,
+                &current_subject,
+                &verification,
+                123,
+                receipt_byte_size,
+                "publication-test",
+                "publication-receipt-first",
+            )
+            .expect("receipt registers");
+        drop(store);
+        let mut store = Store::open(&database).expect("database reopens");
+        store.migrate().expect("migration remains idempotent");
+        let repeated_receipt = store
+            .register_publication_ingestion_receipt(
+                &first_stage.stage_hash,
+                &current_subject,
+                &verification,
+                123,
+                receipt_byte_size,
+                "publication-test",
+                "publication-receipt-first",
+            )
+            .expect("receipt retry succeeds");
+        assert_eq!(first_receipt, repeated_receipt);
+        assert_eq!(
+            first_receipt.receipt_hash,
+            value_hash(&serde_json::to_value(&verification).expect("verification serializes"))
+                .expect("receipt hash")
+        );
+        assert_eq!(
+            store
+                .get_publication_ingestion_receipt_for_stage(&first_stage.stage_hash)
+                .expect("receipt reads"),
+            first_receipt
+        );
+        let mut conflicting_verification = verification.clone();
+        conflicting_verification.raw_verification_hash = test_hash("different-raw-verification");
+        let conflicting_receipt_byte_size = canonical_json(
+            &serde_json::to_value(&conflicting_verification)
+                .expect("conflicting verification serializes"),
+        )
+        .expect("conflicting verification canonicalizes")
+        .len() as u64;
+        let conflict = store
+            .register_publication_ingestion_receipt(
+                &first_stage.stage_hash,
+                &current_subject,
+                &conflicting_verification,
+                124,
+                conflicting_receipt_byte_size,
+                "publication-test",
+                "publication-receipt-conflict",
+            )
+            .expect_err("one stage cannot bind a different receipt");
+        assert_eq!(conflict.code, "MCL_PUBLICATION_RECEIPT_CONFLICT");
+
+        let hashes = store
+            .all_registered_cas_hashes()
+            .expect("registered CAS roots read");
+        for expected in [
+            canonical_artifact.artifact_hash.as_str(),
+            stage.report_artifact_hash.as_str(),
+            stage.retained_closure_artifact_hash.as_str(),
+            stage.attestation_bundle_artifact_hash.as_str(),
+            verification.raw_verification_hash.as_str(),
+            first_receipt.receipt_hash.as_str(),
+        ] {
+            assert!(
+                hashes.binary_search(&expected.to_owned()).is_ok(),
+                "missing CAS root {expected}"
+            );
+        }
+        for artifact in &stage.retained_artifacts {
+            assert!(
+                hashes.binary_search(&artifact.artifact_hash).is_ok(),
+                "missing retained CAS root {}",
+                artifact.artifact_hash
+            );
+        }
+
+        assert!(
+            store
+                .connection
+                .execute(
+                    "UPDATE publication_stages SET created_by = 'rewritten' WHERE stage_hash = ?1",
+                    [&first_stage.stage_hash],
+                )
+                .is_err(),
+            "publication stage must be immutable"
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "DELETE FROM publication_ingestion_receipts WHERE receipt_hash = ?1",
+                    [&first_receipt.receipt_hash],
+                )
+                .is_err(),
+            "publication receipt must be immutable"
+        );
+
+        store
+            .connection
+            .execute_batch(
+                "DROP TRIGGER publication_stages_reject_update;
+                 DROP TRIGGER publication_ingestion_receipts_reject_update;",
+            )
+            .expect("test bypasses immutable triggers");
+        store
+            .connection
+            .execute(
+                "UPDATE publication_stages SET stage_json = ' ' || stage_json WHERE stage_hash = ?1",
+                [&first_stage.stage_hash],
+            )
+            .expect("test injects noncanonical stage JSON");
+        store
+            .connection
+            .execute(
+                "UPDATE publication_ingestion_receipts SET verification_json = ' ' || verification_json WHERE receipt_hash = ?1",
+                [&first_receipt.receipt_hash],
+            )
+            .expect("test injects noncanonical receipt JSON");
+        assert_eq!(
+            store
+                .get_publication_stage(
+                    &stage.report_artifact_hash,
+                    &stage.attestation_bundle_artifact_hash,
+                )
+                .expect_err("noncanonical stage is rejected")
+                .code,
+            "MCL_PUBLICATION_STAGE_INTEGRITY_FAILED"
+        );
+        assert_eq!(
+            store
+                .get_publication_ingestion_receipt_for_stage(&first_stage.stage_hash)
+                .expect_err("noncanonical receipt is rejected")
+                .code,
+            "MCL_PUBLICATION_RECEIPT_INTEGRITY_FAILED"
+        );
+    }
+
+    #[test]
+    fn publication_receipt_rejects_wrong_size_and_stage_binding() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let (current_subject, _) =
+            current_publication_subject(&mut store, "publication-receipt-invalid");
+        let stage = publication_stage();
+        let snapshot = store
+            .register_publication_stage(&stage, "publication-test", "stage")
+            .expect("stage registers");
+        let verification = publication_verification(&stage);
+        let receipt_byte_size =
+            canonical_json(&serde_json::to_value(&verification).expect("verification serializes"))
+                .expect("verification canonicalizes")
+                .len() as u64;
+
+        let wrong_size = store
+            .register_publication_ingestion_receipt(
+                &snapshot.stage_hash,
+                &current_subject,
+                &verification,
+                1,
+                receipt_byte_size + 1,
+                "publication-test",
+                "wrong-size",
+            )
+            .expect_err("wrong canonical size fails");
+        assert_eq!(wrong_size.code, "MCL_PUBLICATION_RECEIPT_INVALID");
+
+        let mut wrong_bundle = verification;
+        wrong_bundle.attestation_bundle_hash = test_hash("different-bundle");
+        let wrong_bundle_size =
+            canonical_json(&serde_json::to_value(&wrong_bundle).expect("verification serializes"))
+                .expect("verification canonicalizes")
+                .len() as u64;
+        let wrong_binding = store
+            .register_publication_ingestion_receipt(
+                &snapshot.stage_hash,
+                &current_subject,
+                &wrong_bundle,
+                1,
+                wrong_bundle_size,
+                "publication-test",
+                "wrong-binding",
+            )
+            .expect_err("wrong stage binding fails");
+        assert_eq!(
+            wrong_binding.code,
+            "MCL_PUBLICATION_RECEIPT_BINDING_INVALID"
+        );
+    }
+
+    #[test]
+    fn publication_receipt_retry_keys_and_current_subject_fail_closed() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let (current_subject, formalization_draft) =
+            current_publication_subject(&mut store, "publication-receipt-guards");
+
+        let first_stage = publication_stage();
+        let mut second_stage = publication_stage();
+        second_stage.report_artifact_hash = test_hash("publication-report-second");
+        second_stage.attestation_bundle_artifact_hash =
+            test_hash("publication-attestation-bundle-second");
+        let first_stage = store
+            .register_publication_stage(&first_stage, "publication-test", "guard-stage-first")
+            .expect("first stage registers");
+        let second_stage = store
+            .register_publication_stage(&second_stage, "publication-test", "guard-stage-second")
+            .expect("second stage registers");
+        let first_verification = publication_verification(&first_stage.stage);
+        let second_verification = publication_verification(&second_stage.stage);
+        let receipt_size = |verification: &PublicationAttestationVerification| {
+            canonical_json(&serde_json::to_value(verification).expect("verification serializes"))
+                .expect("verification canonicalizes")
+                .len() as u64
+        };
+
+        let first_receipt = store
+            .register_publication_ingestion_receipt(
+                &first_stage.stage_hash,
+                &current_subject,
+                &first_verification,
+                123,
+                receipt_size(&first_verification),
+                "publication-test",
+                "shared-publication-receipt-key",
+            )
+            .expect("first receipt registers");
+        store
+            .register_publication_ingestion_receipt(
+                &second_stage.stage_hash,
+                &current_subject,
+                &second_verification,
+                123,
+                receipt_size(&second_verification),
+                "publication-test",
+                "second-publication-receipt-key",
+            )
+            .expect("second receipt registers");
+        assert_eq!(
+            store
+                .publication_ingestion_idempotency_result(
+                    &first_stage.stage_hash,
+                    "publication-test",
+                    "shared-publication-receipt-key",
+                )
+                .expect("exact receipt retry is found"),
+            Some(first_receipt)
+        );
+        assert_eq!(
+            store
+                .publication_ingestion_idempotency_result(
+                    &second_stage.stage_hash,
+                    "publication-test",
+                    "shared-publication-receipt-key",
+                )
+                .expect_err("a used key cannot be rebound during retry")
+                .code,
+            "MCL_IDEMPOTENCY_CONFLICT"
+        );
+        assert_eq!(
+            store
+                .register_publication_ingestion_receipt(
+                    &second_stage.stage_hash,
+                    &current_subject,
+                    &second_verification,
+                    123,
+                    receipt_size(&second_verification),
+                    "publication-test",
+                    "shared-publication-receipt-key",
+                )
+                .expect_err("registration also rejects the rebound key")
+                .code,
+            "MCL_IDEMPOTENCY_CONFLICT"
+        );
+
+        let mut successor = formalization_draft;
+        successor.payload["formalization_notes"] =
+            json!("state changed after external attestation verification");
+        store
+            .version_record(
+                &current_subject.object_id,
+                &current_subject.version_hash,
+                &successor,
+                "publication-test",
+                "publication-receipt-currentness-race",
+            )
+            .expect("formalization head advances");
+        assert_eq!(
+            store
+                .register_publication_ingestion_receipt(
+                    &first_stage.stage_hash,
+                    &current_subject,
+                    &first_verification,
+                    123,
+                    receipt_size(&first_verification),
+                    "publication-test",
+                    "publication-receipt-after-state-change",
+                )
+                .expect_err("receipt finalization rechecks currentness atomically")
+                .code,
+            "MCL_PUBLICATION_SUBJECT_STALE"
+        );
+    }
+
+    fn publication_stage() -> PublicationStage {
+        PublicationStage {
+            schema_version: crate::domain::publication::PUBLICATION_STAGE_SCHEMA_VERSION.to_owned(),
+            report_artifact_hash: test_hash("publication-report"),
+            report_byte_size: 1_024,
+            retained_closure_artifact_hash: test_hash("publication-retained-closure"),
+            retained_closure_byte_size: 2_048,
+            attestation_bundle_artifact_hash: test_hash("publication-attestation-bundle"),
+            attestation_bundle_byte_size: 4_096,
+            retained_artifacts: PublicationRetainedArtifactRole::ALL
+                .into_iter()
+                .enumerate()
+                .map(|(index, role)| PublicationStageArtifact {
+                    role,
+                    path: role.expected_path().to_owned(),
+                    identity_hash: test_hash(&format!("identity-{index}")),
+                    artifact_hash: test_hash(&format!("artifact-{index}")),
+                    byte_size: index as u64,
+                })
+                .collect(),
+            authoritative: false,
+        }
+    }
+
+    fn publication_verification(stage: &PublicationStage) -> PublicationAttestationVerification {
+        let policy = crate::domain::publication::committed_publication_policy()
+            .expect("committed publication policy");
+        PublicationAttestationVerification {
+            schema_version:
+                crate::domain::publication::PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION
+                    .to_owned(),
+            report_content_hash: stage.report_artifact_hash.clone(),
+            report_artifact_hash: stage.report_artifact_hash.clone(),
+            attestation_bundle_hash: stage.attestation_bundle_artifact_hash.clone(),
+            raw_verification_hash: test_hash("raw-attestation-verification"),
+            verifier_name: "gh".to_owned(),
+            verifier_version: policy.attestation_verifier_version,
+            verifier_binary_sha256: policy.attestation_verifier_binary_sha256,
+            repository: policy.repository.clone(),
+            signer_workflow: format!("{}/{}", policy.repository, policy.workflow_path),
+            certificate_identity: format!(
+                "https://github.com/{}/{}@{}",
+                policy.repository, policy.workflow_path, policy.required_source_ref
+            ),
+            source_ref: policy.required_source_ref,
+            source_commit_sha: "a".repeat(40),
+            predicate_type: policy.attestation_predicate_type,
+            self_hosted_runners_denied: true,
+            verified_attestation_count: 1,
+            verified_timestamp_count: 1,
+            authoritative: false,
+        }
+    }
+
+    fn current_publication_subject(
+        store: &mut Store,
+        label: &str,
+    ) -> (ExactVersionReference, RecordDraft) {
+        let claim_snapshot = store
+            .create_record(
+                &claim(&format!("Publication receipt fixture {label}")),
+                "publication-test",
+                &format!("{label}-claim"),
+            )
+            .expect("publication receipt claim creates");
+        let environment = store
+            .register_environment(
+                &environment_manifest(),
+                "publication-test",
+                &format!("{label}-environment"),
+            )
+            .expect("publication receipt environment registers");
+        let module_source =
+            format!("theorem publicationReceiptFixture : True := by trivial\n-- {label}\n");
+        let module =
+            register_lean_artifact(store, module_source.as_bytes(), &format!("{label}-module"));
+        let mut draft = formalization(
+            &claim_snapshot,
+            "True",
+            &environment.environment_hash,
+            &module.artifact_hash,
+            &[],
+        );
+        draft.payload["claim_polarity"] = json!("claim");
+        draft.payload["declaration_name"] = json!("MathOS.publicationReceiptFixture");
+        let snapshot = store
+            .create_record(
+                &draft,
+                "publication-test",
+                &format!("{label}-formalization"),
+            )
+            .expect("publication receipt formalization creates");
+        (
+            ExactVersionReference {
+                object_id: snapshot.object_id,
+                version_hash: snapshot.version_hash,
+            },
+            draft,
+        )
+    }
+
+    fn test_hash(value: &str) -> String {
+        format!("{:x}", Sha256::digest(value.as_bytes()))
     }
 
     fn environment_manifest() -> EnvironmentManifest {

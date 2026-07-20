@@ -128,6 +128,15 @@ jobs:
             "${RUNNER_TEMP}/publication-candidate/publication-report.json" \
             "${CANDIDATE_BUNDLE_PATH}" \
             "${RUNNER_TEMP}/publication-candidate-attestation-verification"
+      - name: Stage and ingest the exact candidate through MathOS
+        shell: bash
+        env:
+          CANDIDATE_BUNDLE_PATH: ${{ steps.attest_candidate.outputs.bundle-path }}
+        run: |
+          scripts/publication-ingest.sh \
+            "${RUNNER_TEMP}/publication-candidate" \
+            "${CANDIDATE_BUNDLE_PATH}" \
+            "${RUNNER_TEMP}/publication-candidate-ingestion"
       - name: Retain smoke, candidate closure, diagnostics, and Sigstore bundles
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -144,4 +153,5 @@ jobs:
             ${{ runner.temp }}/publication-candidate/publication-retained-closure.json
             ${{ runner.temp }}/publication-candidate/publication-report.json
             ${{ runner.temp }}/publication-candidate-attestation-verification/
+            ${{ runner.temp }}/publication-candidate-ingestion/
             ${{ steps.attest_candidate.outputs.bundle-path }}
