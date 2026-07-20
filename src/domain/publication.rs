@@ -25,6 +25,8 @@ pub struct PublicationPolicy {
     pub schema_version: String,
     pub policy_name: String,
     pub repository: String,
+    pub repository_id: u64,
+    pub repository_owner_id: u64,
     pub workflow_path: String,
     pub required_source_ref: String,
     pub required_runner_environment: PublicationRunnerEnvironment,
@@ -340,6 +342,8 @@ impl PublicationPolicy {
         if self.schema_version != PUBLICATION_POLICY_SCHEMA_VERSION
             || !is_identifier(&self.policy_name, 128)
             || !is_repository(&self.repository)
+            || self.repository_id != 1_305_399_818
+            || self.repository_owner_id != 193_347_153
             || !is_workflow_path(&self.workflow_path)
             || !self.required_source_ref.starts_with("refs/heads/")
             || !is_lean_toolchain(&self.required_lean_toolchain)
@@ -706,11 +710,13 @@ pub fn publication_policy_schema() -> Value {
         "title": "MathOS Publication Policy v1",
         "type": "object",
         "additionalProperties": false,
-        "required": ["schema_version", "policy_name", "repository", "workflow_path", "required_source_ref", "required_runner_environment", "required_lean_toolchain", "allowed_axioms", "requires_clean_checkout", "requires_dependency_closure", "requires_network_isolation", "requires_memory_limit", "attestation_predicate_type", "attestation_action_sha", "artifact_upload_action_sha", "attestation_verifier_version", "attestation_verifier_archive_sha256", "attestation_verifier_binary_sha256"],
+        "required": ["schema_version", "policy_name", "repository", "repository_id", "repository_owner_id", "workflow_path", "required_source_ref", "required_runner_environment", "required_lean_toolchain", "allowed_axioms", "requires_clean_checkout", "requires_dependency_closure", "requires_network_isolation", "requires_memory_limit", "attestation_predicate_type", "attestation_action_sha", "artifact_upload_action_sha", "attestation_verifier_version", "attestation_verifier_archive_sha256", "attestation_verifier_binary_sha256"],
         "properties": {
             "schema_version": {"const": PUBLICATION_POLICY_SCHEMA_VERSION},
             "policy_name": {"type": "string", "minLength": 1, "maxLength": 128},
             "repository": {"const": "Mnehmos/MathOS"},
+            "repository_id": {"const": 1_305_399_818_u64},
+            "repository_owner_id": {"const": 193_347_153_u64},
             "workflow_path": {"const": ".github/workflows/publication.yml"},
             "required_source_ref": {"const": "refs/heads/main"},
             "required_runner_environment": {"const": "github_hosted"},

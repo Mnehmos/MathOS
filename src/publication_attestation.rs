@@ -289,6 +289,8 @@ pub(crate) fn validate_gh_attestation_output(
         report.workflow_run_id, report.workflow_run_attempt
     );
     let dependency_uri = format!("git+{repository_url}@{}", policy.required_source_ref);
+    let repository_identifier = policy.repository_id.to_string();
+    let repository_owner_identifier = policy.repository_owner_id.to_string();
     let verification = result.verification_result;
 
     require(
@@ -325,9 +327,9 @@ pub(crate) fn validate_gh_attestation_output(
         "verified certificate does not bind every source and workflow digest to the report commit",
     )?;
     require(
-        is_decimal_identifier(&certificate.source_repository_identifier)
-            && is_decimal_identifier(&certificate.source_repository_owner_identifier),
-        "verified certificate contains an invalid immutable repository identifier",
+        certificate.source_repository_identifier == repository_identifier
+            && certificate.source_repository_owner_identifier == repository_owner_identifier,
+        "verified certificate does not bind the policy-pinned immutable repository and owner identifiers",
     )?;
     require(
         certificate.github_workflow_trigger == certificate.build_trigger
@@ -464,13 +466,6 @@ fn attestation_error(message: impl Into<String>) -> AppError {
 
 fn is_bounded_text(value: &str, maximum_bytes: usize) -> bool {
     !value.is_empty() && value.len() <= maximum_bytes && !value.chars().any(char::is_control)
-}
-
-fn is_decimal_identifier(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 20
-        && value.bytes().all(|byte| byte.is_ascii_digit())
-        && value.parse::<u64>().is_ok_and(|identifier| identifier > 0)
 }
 
 fn is_rfc3339_utc_timestamp(value: &str) -> bool {
@@ -743,6 +738,20 @@ mod tests {
         wrong_run[0]["verificationResult"]["signature"]["certificate"]["runInvocationURI"] =
             json!("https://github.com/Mnehmos/MathOS/actions/runs/1/attempts/1");
         reject(&wrong_run, &bundle, &report, &policy);
+
+        let mut recreated_repository = valid_output(&report, &policy, &bundle);
+        recreated_repository[0]["verificationResult"]["signature"]["certificate"]["sourceRepositoryIdentifier"] =
+            json!("9999999999");
+        recreated_repository[0]["verificationResult"]["statement"]["predicate"]["buildDefinition"]
+            ["internalParameters"]["github"]["repository_id"] = json!("9999999999");
+        reject(&recreated_repository, &bundle, &report, &policy);
+
+        let mut recreated_owner = valid_output(&report, &policy, &bundle);
+        recreated_owner[0]["verificationResult"]["signature"]["certificate"]["sourceRepositoryOwnerIdentifier"] =
+            json!("9999999999");
+        recreated_owner[0]["verificationResult"]["statement"]["predicate"]["buildDefinition"]["internalParameters"]
+            ["github"]["repository_owner_id"] = json!("9999999999");
+        reject(&recreated_owner, &bundle, &report, &policy);
     }
 
     #[test]

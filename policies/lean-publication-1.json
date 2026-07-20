@@ -2,6 +2,8 @@
   "schema_version": "publication_policy/1",
   "policy_name": "lean_publication_authority",
   "repository": "Mnehmos/MathOS",
+  "repository_id": 1305399818,
+  "repository_owner_id": 193347153,
   "workflow_path": ".github/workflows/publication.yml",
   "required_source_ref": "refs/heads/main",
   "required_runner_environment": "github_hosted",
