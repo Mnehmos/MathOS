@@ -203,7 +203,8 @@ class AdversarialTests(unittest.TestCase):
                 engine.close()
 
     def test_missing_lean_toolchain_fails_closed(self) -> None:
-        result = LeanSubprocessVerifier().verify_file("Unavailable.lean")
+        with patch("mathos.lean.shutil.which", return_value=None):
+            result = LeanSubprocessVerifier().verify_file("Unavailable.lean")
         self.assertEqual(result.outcome, VerificationOutcome.UNKNOWN)
         self.assertEqual(result.details["reason"], "lean_toolchain_unavailable")
 

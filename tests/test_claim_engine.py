@@ -311,11 +311,15 @@ class ClaimEngineTests(unittest.TestCase):
         self.engine.process(claim.claim_id, max_assignments=16)
         self.engine.close()
 
-        with sqlite3.connect(self.db_path) as connection:
+        connection = sqlite3.connect(self.db_path)
+        try:
             connection.execute(
                 "UPDATE events SET payload_json = ? WHERE sequence = 1",
                 ('{"tampered":true}',),
             )
+            connection.commit()
+        finally:
+            connection.close()
 
         self.engine = ClaimEngine.open(self.db_path)
         result = self.engine.verify_provenance()
@@ -330,11 +334,15 @@ class ClaimEngineTests(unittest.TestCase):
         self.engine.process(claim.claim_id, max_assignments=16)
         self.engine.close()
 
-        with sqlite3.connect(self.db_path) as connection:
+        connection = sqlite3.connect(self.db_path)
+        try:
             connection.execute(
                 "UPDATE claims SET status = ? WHERE claim_id = ?",
                 ("unresolved", claim.claim_id),
             )
+            connection.commit()
+        finally:
+            connection.close()
 
         self.engine = ClaimEngine.open(self.db_path)
         result = self.engine.verify_provenance()

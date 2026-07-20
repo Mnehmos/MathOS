@@ -41,19 +41,29 @@ fn pinned_lean_worker_elaborates_real_source_without_granting_authority() {
             "lean-ci-init".to_owned(),
         ],
     );
-    run(
+    let mut environment_manifest: Value =
+        serde_json::from_str(include_str!("../fixtures/environment/lean-4.32-local.json"))
+            .expect("environment fixture JSON");
+    if cfg!(windows) {
+        environment_manifest["platform"] = json!("windows_x86_64");
+    }
+    let environment = run(
         root.path(),
         &[
             "environment".to_owned(),
             "register".to_owned(),
             "--manifest-json".to_owned(),
-            include_str!("../fixtures/environment/lean-4.32-local.json").to_owned(),
+            environment_manifest.to_string(),
             "--actor".to_owned(),
             "lean-ci".to_owned(),
             "--idempotency-key".to_owned(),
             "lean-ci-environment".to_owned(),
         ],
     );
+    let environment_hash = environment["proposed_environment_hash"]
+        .as_str()
+        .expect("environment hash")
+        .to_owned();
     let module = root.path().join("LeanWorkerFixture.lean");
     fs::write(
         &module,
@@ -92,9 +102,7 @@ fn pinned_lean_worker_elaborates_real_source_without_granting_authority() {
             "verify".to_owned(),
             "check".to_owned(),
             "--environment-hash".to_owned(),
-            include_str!("../fixtures/environment/lean-4.32-local.sha256")
-                .trim()
-                .to_owned(),
+            environment_hash.clone(),
             "--module-artifact-hash".to_owned(),
             artifact_hash.to_owned(),
             "--declaration-name".to_owned(),
@@ -118,7 +126,10 @@ fn pinned_lean_worker_elaborates_real_source_without_granting_authority() {
             "3660".to_owned(),
         ],
     );
-    assert_eq!(worked["report"]["classification"], "elaborated");
+    assert_eq!(
+        worked["report"]["classification"], "elaborated",
+        "unexpected worker outcome: {worked:#}"
+    );
     assert_eq!(worked["report"]["authoritative"], false);
     assert_eq!(worked["report"]["network_isolation_enforced"], false);
     assert_eq!(worked["report"]["memory_limit_enforced"], false);
@@ -200,7 +211,7 @@ fn pinned_lean_worker_elaborates_real_source_without_granting_authority() {
                     "version_hash": claim["record"]["version_hash"]
                 },
                 "formal_system": "lean4",
-                "environment_hash": include_str!("../fixtures/environment/lean-4.32-local.sha256").trim(),
+                "environment_hash": environment_hash.clone(),
                 "module_artifact_hash": artifact_hash,
                 "declaration_name": "MathOS.LeanWorker.truth",
                 "exact_theorem_type": "True",
@@ -372,9 +383,7 @@ fn pinned_lean_worker_elaborates_real_source_without_granting_authority() {
             "verify".to_owned(),
             "check".to_owned(),
             "--environment-hash".to_owned(),
-            include_str!("../fixtures/environment/lean-4.32-local.sha256")
-                .trim()
-                .to_owned(),
+            environment_hash.clone(),
             "--module-artifact-hash".to_owned(),
             rejected_artifact["proposed_artifact_hash"]
                 .as_str()
@@ -421,9 +430,7 @@ fn pinned_lean_worker_elaborates_real_source_without_granting_authority() {
                 "verify".to_owned(),
                 "check".to_owned(),
                 "--environment-hash".to_owned(),
-                include_str!("../fixtures/environment/lean-4.32-local.sha256")
-                    .trim()
-                    .to_owned(),
+                environment_hash,
                 "--module-artifact-hash".to_owned(),
                 artifact_hash.to_owned(),
                 "--declaration-name".to_owned(),
