@@ -113,6 +113,18 @@ jobs:
           export PUBLICATION_SOURCE_TREE_SHA
           PUBLICATION_SOURCE_TREE_SHA="$(git rev-parse 'HEAD^{tree}')"
           bash scripts/publication-candidate.sh "${RUNNER_TEMP}/publication-candidate-simulated-main"
+      - name: Retain a failed simulated candidate attempt
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: publication-candidate-failure-${{ github.sha }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/publication-candidate-simulated-main/attempt/
+            ${{ runner.temp }}/publication-candidate-simulated-main/closure/
+            ${{ runner.temp }}/publication-candidate-simulated-main/publication-retained-closure.json
+            ${{ runner.temp }}/publication-candidate-simulated-main/publication-report.json
 
   legacy-python-regression:
     name: Legacy Python regression evidence

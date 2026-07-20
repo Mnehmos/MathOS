@@ -7,7 +7,8 @@ readonly EXIT_INPUT=66
 readonly EXIT_CONTROL=69
 readonly EXIT_EXECUTION=70
 readonly EXIT_VALIDATION=71
-readonly MEMORY_LIMIT_BYTES=4294967296
+readonly MEMORY_LIMIT_BYTES=6442450944
+readonly LEAN_MEMORY_LIMIT_MEGABYTES=4096
 readonly MAX_OUTPUT_BYTES=1048576
 readonly MAX_SAFE_JSON_INTEGER=9007199254740991
 readonly REPOSITORY="Mnehmos/MathOS"
@@ -615,7 +616,7 @@ run_protected_lean() {
     --chdir /mnt \
     /usr/bin/timeout --signal=TERM --kill-after=5s 120s \
     /usr/bin/prlimit --as="$MEMORY_LIMIT_BYTES" --fsize="$MAX_OUTPUT_BYTES" -- \
-    /opt/bin/lean -j 1 "${lean_arguments[@]}" "$input_file" \
+    /opt/bin/lean -M "$LEAN_MEMORY_LIMIT_MEGABYTES" -j 1 "${lean_arguments[@]}" "$input_file" \
     >"$stdout_file" 2>"$stderr_file"; then
     status=0
   else
