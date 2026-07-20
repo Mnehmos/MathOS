@@ -65,12 +65,21 @@ report_content_hash="$(jq -cS . "$report" | tr -d '\n' | sha256sum | cut -d ' ' 
 bundle_hash="$(sha256sum "$bundle" | cut -d ' ' -f 1)"
 raw_hash="$(sha256sum "$raw_verification" | cut -d ' ' -f 1)"
 
-jq -e --arg report_hash "$report_hash" --arg predicate_type "$predicate_type" '
+if ! jq -e --arg report_hash "$report_hash" --arg predicate_type "$predicate_type" '
   type == "array" and length > 0 and
-  all(.[].verificationResult.statement.predicateType == $predicate_type) and
-  any(.[].verificationResult.statement.subject[]?; .digest.sha256 == $report_hash) and
-  all(.[].verificationResult.verifiedTimestamps | type == "array" and length > 0)
-' "$raw_verification" >/dev/null
+  all(.[];
+    .verificationResult.statement.predicateType == $predicate_type
+  ) and
+  any(.[].verificationResult.statement.subject[]?;
+    .digest.sha256 == $report_hash
+  ) and
+  all(.[];
+    (.verificationResult.verifiedTimestamps | type == "array" and length > 0)
+  )
+' "$raw_verification" >/dev/null; then
+  printf 'publication attestation policy rejected verified output\n' >&2
+  exit 71
+fi
 
 attestation_count="$(jq 'length' "$raw_verification")"
 timestamp_count="$(jq '[.[].verificationResult.verifiedTimestamps | length] | add' "$raw_verification")"
