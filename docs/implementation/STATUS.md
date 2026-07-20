@@ -180,13 +180,19 @@ These items establish only part of the product foundation and Phase 2 trace mode
 - Protected run `29708831882` then completed cryptographic verification but exposed incorrect `jq` use of `all` in the final policy query. Failed artifact `8448611307` retained the exact report, bundle, raw verifier JSON, and stderr. PR #26 changed the predicate and timestamp constraints to `all(.[]; condition)`, retained the exact subject-digest check, and made policy rejection preserve diagnostics, emit a stable message, exit `71`, and omit the constrained success record.
 - Protected publication run `29709634846`, job `88251709818`, passed on merge commit `6b4a0f22d3498a4cb0c8dab744da7f9a09993fd8` and tree `e5b0bcbf4eacf9cb402d87b04b5dc9b0431134f2`. Retained artifact `8448739399` has downloaded archive SHA-256 `a379d01a60157f6ad22de4d933e662a044684bc471ec528de6017e34519498af`. The smoke report hash is `15a7a938504f8c57a8693bf57efec7692c1c4270d3325304bae61234fb203021`, canonical report content hash is `c8cbeb76cc2092ed4b537a0686c00f2ce80a5ba8598a5d7d1d744f51eccd3904`, Sigstore bundle hash is `2aa75b909c67fe44f464f1b5d78f8f19c36bab0df1d41ffd4121ea5f445ab7a1`, raw verifier JSON hash is `fc47407047615b97ff25a1790ead1dfe090636202ab8ae779216040018b6cab4`, and constrained record hash is `de1ecfaa304bc403c76752a7fecd0906fe1ea1bfefdc7a94ed54e286e651bc4a`.
 - The retained certificate binds the protected workflow, `refs/heads/main`, exact merge commit, push event, and GitHub-hosted runner. Its subject digest matches the report, its predicate is SLSA provenance v1, and its Rekor timestamp is `2026-07-20T00:33:02Z`. The constrained verification record remains `authoritative: false`; this is infrastructure evidence only.
+- PR #30 merged canonical request preparation as commit `da33431a1061bb3f05db7a7d2473f1fb5b8059f2`, tree `620f2a3060290ffe37fb3051ff604fa4433679af`. Main CI run `29711916515` passed Linux, Windows, real storage, legacy Python, and real Lean jobs. Publication run `29711916501`, job `88257002282`, retained artifact `8449114011` with archive digest `3f8b0567519521a29d302ab6dd4f229c59ce2d823ddbf144db01d07458e0fd31`. Its smoke report, canonical content, Sigstore bundle, raw verifier result, and constrained-record hashes are `b6edcfc92ed622e847444629ce2b38c1f20afb7b9e065bb75a65bdaa69cb3af9`, `43859d5dac0eb406c39b9dfd08862a8b874bf9102de6fec79d1c36b821864778`, `58013a04bb8f10aac04d55402e605fc169c90abf11fcc22211e98fcbba23d759`, `541b74172ae4c12f2ce2b31ce2330917a090214c0f1358a3795fcf15f8d99eb0`, and `afdef248f30dd3b5d26ba7a342b9bba2a1e569a69fcf62145ee722c1cfd4e40a`. Both retained records remain `authoritative: false`.
+- The next issue #21 slice defines `publication_retained_closure/1` as exactly 25 sorted, fixed-path roles covering the request, canonical source/claim/formalization chain, environment, module, policies, evidence, terminal jobs/reports/local logs, and protected rebuild, parser-derived dependency, and axiom-audit logs. Member bytes and semantic identities are separately hashed; the candidate report binds every member hash plus the canonical closure-manifest hash.
+- `mcl verify validate-publication-candidate` is a semantically read-only workflow gate. It rejects noncanonical or oversized JSON, path or symbolic-link substitution, missing or altered member bytes, broken record/evidence/job/report relationships, stale request state, changed CAS objects, undeclared parser-observed dependencies, local or protected axiom-output mismatch, altered retention sets, and any authority assertion. It re-derives the exact request through the same application service, creates no canonical record or artifact, performs no promotion, and returns only `authoritative: false`; opening an instance may still create ordinary operational directories or SQLite WAL files.
+- The protected workflow now refuses an unprotected source ref, constructs a fresh real no-import canonical lifecycle, retains its request-bound local diagnostic environment honestly, and independently rebuilds the exact module and verifier-controlled axiom driver inside the GitHub-hosted Bubblewrap, timeout, and four-gibibyte memory controls. It attests and independently challenges the resulting real `publication_report/1` while retaining the complete closure. Pull-request CI runs the same producer only in an explicit non-attested simulation.
+- Security review found that `main` had no active protection despite the earlier protected-workflow label. A `gh api` branch-protection update now requires pull requests, strict passage of all five CI jobs, resolved conversations, stale-review dismissal, and admin enforcement; force-pushes and deletions are disabled. A live follow-up read reports `protected:true`, and both the workflow and producer independently require GitHub's immutable protected-ref context before generating a candidate.
 
 ## Next highest-priority criteria
 
-1. Feed the prepared canonical request into a real clean-checkout `publication_report/1` and complete retained publication closure.
-2. Create authoritative exact proof/refutation evidence only from the verified retained closure, never from caller-authored reports.
-3. Derive mathematical status only from exact current proof and fidelity evidence.
-4. Complete Pilot A through the real interfaces only after both authority and fidelity controls exist.
+1. Download and inspect the first exact merged protected candidate artifact, then record its report, closure, bundle, raw-verifier, and constrained-record identities.
+2. Implement controlled application ingestion that revalidates the downloaded closure and attestation before creating any authority.
+3. Create authoritative exact proof/refutation evidence only from that verified retained closure, never from caller-authored reports.
+4. Derive mathematical status only from exact current proof and fidelity evidence.
+5. Complete Pilot A through the real interfaces only after both authority and fidelity controls exist.
 
 ## Exact last validation commands
 
@@ -195,15 +201,18 @@ Run from the repository root. The explicit local toolchain path is required only
 ```text
 PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo fmt --check
 PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo clippy --workspace --all-targets --all-features -- -D warnings
-PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo test --workspace
+PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo test --workspace --all-targets
+MCL_RUN_LEAN_INTEGRATION=1 PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo test --test lean_worker -- --nocapture
 PYTHONPATH=src PYTHONWARNINGS=error::ResourceWarning python -m unittest discover -s tests -v
+bash -n scripts/publication-candidate.sh scripts/publication-smoke.sh scripts/publication-attestation-verify.sh
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color=false
 git diff --check
 ```
 
 Observed validation evidence for this update:
 
 - Home workstation: Windows 10.0.19045, PowerShell 5.1.19041.6456, Rust 1.97.1, Python 3.12.10, GitHub CLI 2.70.0, GNU Bash 5.2.21 through WSL, and Lean 4.32.0 `x86_64-w64-windows-gnu`.
-- Formatting, warnings-denied Clippy across all targets and features, all 92 default Rust tests, the opt-in real Lean 4.32 lifecycle, all 39 legacy Python regressions, and patch whitespace validation passed for the canonical request-preparation slice.
+- Formatting, warnings-denied Clippy across all targets and features, all 102 default Rust tests, the opt-in real Lean 4.32 lifecycle, all 39 legacy Python regressions, Bash syntax, Actionlint 1.7.12, YAML parsing, CLI help surfaces, and patch whitespace validation passed for the retained-closure and protected-candidate slice.
 - The corrected policy passed against retained artifact `8448611307`; independent report-digest, predicate, empty-timestamp, and empty-attestation mutations all failed closed.
 - `mcl init`, `mcl health`, and `mcl doctor` passed against a fresh Windows instance. Doctor observed the exact pinned Lean 4.32.0 toolchain and honestly reports the local profile.
 - PR #29 corrected the Windows-specific Lean platform expectation and temporary-database cleanup assumptions. Main CI run `29709993224` and publication run `29709993225` passed after that repair.

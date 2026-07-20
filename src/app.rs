@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -20,7 +21,8 @@ use crate::domain::{
     EvidenceSnapshot, FidelityReviewHistoryEntry, FidelityReviewReport, FidelityReviewRequest,
     FidelityStatus, FidelityStatusSnapshot, FidelityVerdict, GraphTraversalHit,
     GraphTraversalRequest, LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditReport,
-    LeanAuditRequest, PublicationOutcome, PublicationRequest, RecordDraft, RecordKind,
+    LeanAuditRequest, PublicationOutcome, PublicationReport, PublicationRequest,
+    PublicationRetainedArtifactRole, PublicationRetainedClosure, RecordDraft, RecordKind,
     RecordSnapshot, RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
     VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
     VerifierJobSnapshot, VerifierJobState,
@@ -29,6 +31,9 @@ use crate::error::AppError;
 use crate::store::Store;
 
 const DOCTOR_CANARY: &[u8] = b"mcl doctor artifact integrity canary v1";
+const MAX_RETAINED_JSON_BYTES: usize = 1_048_576;
+const MAX_RETAINED_LEAN_BYTES: usize = 1_048_576;
+const MAX_RETAINED_LOG_BYTES: usize = 16 * 1_048_576;
 
 #[derive(Debug, Serialize)]
 pub struct Check {
@@ -138,6 +143,16 @@ pub struct PublicationRequestPreparationOutcome {
     pub proposed_artifact_hash: String,
     pub request: PublicationRequest,
     pub artifact: Option<ArtifactSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PublicationCandidateValidationOutcome {
+    pub request_hash: String,
+    pub report_content_hash: String,
+    pub report_artifact_hash: String,
+    pub retained_closure_hash: String,
+    pub retained_closure_artifact_hash: String,
+    pub authoritative: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1664,6 +1679,68 @@ impl Application {
         })
     }
 
+    pub fn validate_publication_candidate(
+        &mut self,
+        report_bytes: &[u8],
+        retained_closure_bytes: &[u8],
+        retained_root: &Path,
+    ) -> Result<PublicationCandidateValidationOutcome, AppError> {
+        let candidate =
+            validate_publication_candidate_documents(report_bytes, retained_closure_bytes)?;
+        let retained_files =
+            read_retained_publication_files(retained_root, &candidate.retained_closure)?;
+        validate_retained_publication_semantics(
+            &candidate.report,
+            &candidate.retained_closure,
+            &retained_files,
+        )?;
+        let request = candidate.report.request.clone();
+        let rederived = self.prepare_publication_request(
+            &request.subject,
+            request.outcome,
+            &request.diagnostic_evidence_id,
+            &request.proof_closure_evidence_id,
+            &request.axiom_audit_evidence_id,
+            &request.source_commit_sha,
+            &request.source_tree_sha,
+            "publication-candidate-validator",
+            &format!("validate-publication-candidate:{}", candidate.request_hash),
+            true,
+        )?;
+        if rederived.request != request
+            || rederived.proposed_request_hash != candidate.request_hash
+            || rederived.proposed_artifact_hash != candidate.request_hash
+            || rederived.artifact.is_some()
+        {
+            return Err(publication_candidate_error(
+                "MCL_PUBLICATION_CANDIDATE_REQUEST_MISMATCH",
+                "publication candidate request does not reproduce the current canonical request",
+                "Regenerate the candidate from the current formalization head and its exact accepted evidence closure.",
+            ));
+        }
+        validate_retained_store_snapshots(&self.store, &request, &retained_files)?;
+        self.verify_artifact(&candidate.request_hash)
+            .map_err(|error| {
+                publication_candidate_error(
+                    "MCL_PUBLICATION_REQUEST_ARTIFACT_INVALID",
+                    format!(
+                        "registered publication request artifact {} is missing or invalid: {}",
+                        candidate.request_hash, error.message
+                    ),
+                    "Restore and verify the exact registered request artifact before validating its workflow candidate.",
+                )
+            })?;
+
+        Ok(PublicationCandidateValidationOutcome {
+            request_hash: candidate.request_hash,
+            report_content_hash: candidate.report_content_hash.clone(),
+            report_artifact_hash: candidate.report_content_hash,
+            retained_closure_hash: candidate.retained_closure_hash.clone(),
+            retained_closure_artifact_hash: candidate.retained_closure_hash,
+            authoritative: false,
+        })
+    }
+
     pub fn work_one_verifier_job(
         &mut self,
         worker: &str,
@@ -2410,6 +2487,1010 @@ impl Application {
     }
 }
 
+#[derive(Debug)]
+struct ValidatedPublicationCandidateDocuments {
+    report: PublicationReport,
+    retained_closure: PublicationRetainedClosure,
+    request_hash: String,
+    report_content_hash: String,
+    retained_closure_hash: String,
+}
+
+fn validate_publication_candidate_documents(
+    report_bytes: &[u8],
+    retained_closure_bytes: &[u8],
+) -> Result<ValidatedPublicationCandidateDocuments, AppError> {
+    let report: PublicationReport = decode_exact_canonical_publication_json(
+        report_bytes,
+        "publication report",
+        "MCL_PUBLICATION_REPORT_JSON_INVALID",
+        "MCL_PUBLICATION_REPORT_NONCANONICAL",
+    )?;
+    let retained_closure: PublicationRetainedClosure = decode_exact_canonical_publication_json(
+        retained_closure_bytes,
+        "publication retained closure",
+        "MCL_PUBLICATION_RETAINED_CLOSURE_JSON_INVALID",
+        "MCL_PUBLICATION_RETAINED_CLOSURE_NONCANONICAL",
+    )?;
+    let policy = crate::domain::publication::committed_publication_policy()?;
+    report.validate_candidate(&policy)?;
+    retained_closure.validate(&report.request)?;
+
+    let request_hash = report.request.request_hash()?;
+    let report_content_hash = report.report_hash(&policy)?;
+    let retained_closure_hash = retained_closure.closure_hash(&report.request)?;
+    let exact_report_hash = format!("{:x}", Sha256::digest(report_bytes));
+    let exact_retained_closure_hash = format!("{:x}", Sha256::digest(retained_closure_bytes));
+    if report_content_hash != exact_report_hash
+        || retained_closure_hash != exact_retained_closure_hash
+    {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_CANDIDATE_IDENTITY_MISMATCH",
+            "canonical publication document identities disagree with their exact file bytes",
+            "Regenerate both documents with the committed canonical JSON encoder.",
+        ));
+    }
+    let expected_retained_artifact_hashes =
+        retained_closure.report_retained_artifact_hashes(&report.request)?;
+    if report.retained_artifact_hashes != expected_retained_artifact_hashes {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_RETAINED_ARTIFACTS_MISMATCH",
+            "publication report retained artifact hashes do not equal the exact closure members plus its manifest artifact hash",
+            "Rebuild the report from the exact canonical retained closure without adding, omitting, or substituting hashes.",
+        ));
+    }
+
+    Ok(ValidatedPublicationCandidateDocuments {
+        report,
+        retained_closure,
+        request_hash,
+        report_content_hash,
+        retained_closure_hash,
+    })
+}
+
+fn decode_exact_canonical_publication_json<T>(
+    bytes: &[u8],
+    label: &str,
+    invalid_code: &'static str,
+    noncanonical_code: &'static str,
+) -> Result<T, AppError>
+where
+    T: DeserializeOwned + Serialize,
+{
+    let document: T = serde_json::from_slice(bytes).map_err(|error| {
+        publication_candidate_error(
+            invalid_code,
+            format!("{label} JSON is invalid: {error}"),
+            "Supply one complete document matching the committed closed publication schema.",
+        )
+    })?;
+    let value = serde_json::to_value(&document).map_err(|error| {
+        publication_candidate_error(
+            invalid_code,
+            format!("{label} cannot be serialized canonically: {error}"),
+            "Regenerate the document with the committed publication implementation.",
+        )
+    })?;
+    let canonical = canonical_json(&value).map_err(|error| {
+        publication_candidate_error(
+            invalid_code,
+            format!("{label} is not valid canonical I-JSON: {}", error.message),
+            "Regenerate the document with only canonical I-JSON values.",
+        )
+    })?;
+    if bytes != canonical {
+        return Err(publication_candidate_error(
+            noncanonical_code,
+            format!("{label} file bytes are not the exact canonical JSON encoding"),
+            "Use the exact canonical JSON bytes without whitespace, a byte-order mark, or a trailing newline.",
+        ));
+    }
+    Ok(document)
+}
+
+#[derive(Debug)]
+struct RetainedPublicationFiles {
+    bytes_by_role: BTreeMap<PublicationRetainedArtifactRole, Vec<u8>>,
+}
+
+impl RetainedPublicationFiles {
+    fn get(&self, role: PublicationRetainedArtifactRole) -> Result<&[u8], AppError> {
+        self.bytes_by_role
+            .get(&role)
+            .map(Vec::as_slice)
+            .ok_or_else(|| {
+                publication_candidate_error(
+                    "MCL_PUBLICATION_RETAINED_MEMBER_MISSING",
+                    format!("retained closure has no loaded {} member", role.as_str()),
+                    "Restore the complete protected-workflow retained closure.",
+                )
+            })
+    }
+}
+
+fn read_retained_publication_files(
+    retained_root: &Path,
+    closure: &PublicationRetainedClosure,
+) -> Result<RetainedPublicationFiles, AppError> {
+    let root_metadata = fs::symlink_metadata(retained_root)
+        .map_err(|error| AppError::io("inspect publication retained root", error))?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_RETAINED_ROOT_UNSAFE",
+            "publication retained root is not a real directory",
+            "Use the protected-workflow output directory without symbolic links.",
+        ));
+    }
+    let retained_root = retained_root
+        .canonicalize()
+        .map_err(|error| AppError::io("canonicalize publication retained root", error))?;
+    let mut bytes_by_role = BTreeMap::new();
+    for entry in &closure.artifacts {
+        let relative = Path::new(&entry.path);
+        let mut candidate = retained_root.clone();
+        for component in relative.components() {
+            let std::path::Component::Normal(component) = component else {
+                return Err(publication_candidate_error(
+                    "MCL_PUBLICATION_RETAINED_PATH_UNSAFE",
+                    format!(
+                        "retained {} path is not strictly relative",
+                        entry.role.as_str()
+                    ),
+                    "Use the exact fixed retained path declared for that role.",
+                ));
+            };
+            candidate.push(component);
+            let metadata = fs::symlink_metadata(&candidate).map_err(|error| {
+                publication_candidate_error(
+                    "MCL_PUBLICATION_RETAINED_MEMBER_MISSING",
+                    format!(
+                        "cannot inspect retained {} member {}: {error}",
+                        entry.role.as_str(),
+                        candidate.display()
+                    ),
+                    "Restore the complete protected-workflow retained closure.",
+                )
+            })?;
+            if metadata.file_type().is_symlink() {
+                return Err(publication_candidate_error(
+                    "MCL_PUBLICATION_RETAINED_PATH_UNSAFE",
+                    format!(
+                        "retained {} path contains a symbolic link",
+                        entry.role.as_str()
+                    ),
+                    "Materialize every retained member as a real contained file.",
+                ));
+            }
+        }
+        let candidate = candidate.canonicalize().map_err(|error| {
+            publication_candidate_error(
+                "MCL_PUBLICATION_RETAINED_MEMBER_MISSING",
+                format!(
+                    "cannot resolve retained {} member: {error}",
+                    entry.role.as_str()
+                ),
+                "Restore the complete protected-workflow retained closure.",
+            )
+        })?;
+        if !candidate.starts_with(&retained_root) || !candidate.is_file() {
+            return Err(publication_candidate_error(
+                "MCL_PUBLICATION_RETAINED_PATH_UNSAFE",
+                format!(
+                    "retained {} member is not a regular file contained by the retained root",
+                    entry.role.as_str()
+                ),
+                "Materialize every retained member as a real contained file.",
+            ));
+        }
+        let limit = retained_role_byte_limit(entry.role);
+        let file = fs::File::open(&candidate)
+            .map_err(|error| AppError::io("open retained publication member", error))?;
+        if !file
+            .metadata()
+            .map_err(|error| AppError::io("inspect retained publication member", error))?
+            .is_file()
+        {
+            return Err(publication_candidate_error(
+                "MCL_PUBLICATION_RETAINED_PATH_UNSAFE",
+                format!(
+                    "retained {} member is not a regular file",
+                    entry.role.as_str()
+                ),
+                "Materialize every retained member as a real contained file.",
+            ));
+        }
+        let mut bytes = Vec::new();
+        file.take(limit as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| AppError::io("read retained publication member", error))?;
+        if bytes.len() > limit {
+            return Err(publication_candidate_error(
+                "MCL_PUBLICATION_RETAINED_MEMBER_TOO_LARGE",
+                format!(
+                    "retained {} member exceeds its {} byte limit",
+                    entry.role.as_str(),
+                    limit
+                ),
+                "Reject the candidate and inspect the protected workflow output bound.",
+            ));
+        }
+        let observed_hash = format!("{:x}", Sha256::digest(&bytes));
+        if observed_hash != entry.artifact_hash {
+            return Err(publication_candidate_error(
+                "MCL_PUBLICATION_RETAINED_MEMBER_HASH_MISMATCH",
+                format!(
+                    "retained {} member bytes hash to {observed_hash}, expected {}",
+                    entry.role.as_str(),
+                    entry.artifact_hash
+                ),
+                "Reject the altered closure and retain the exact bytes named by the manifest.",
+            ));
+        }
+        bytes_by_role.insert(entry.role, bytes);
+    }
+    if bytes_by_role.len() != PublicationRetainedArtifactRole::ALL.len() {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_RETAINED_MEMBER_MISSING",
+            "retained closure did not load exactly one file for every required role",
+            "Restore the complete protected-workflow retained closure.",
+        ));
+    }
+    Ok(RetainedPublicationFiles { bytes_by_role })
+}
+
+const fn retained_role_byte_limit(role: PublicationRetainedArtifactRole) -> usize {
+    match role {
+        PublicationRetainedArtifactRole::LeanModule => MAX_RETAINED_LEAN_BYTES,
+        PublicationRetainedArtifactRole::AuditStderr
+        | PublicationRetainedArtifactRole::AuditStdout
+        | PublicationRetainedArtifactRole::ProtectedAuditStderr
+        | PublicationRetainedArtifactRole::ProtectedAuditStdout
+        | PublicationRetainedArtifactRole::ProtectedDependencyStderr
+        | PublicationRetainedArtifactRole::ProtectedDependencyStdout
+        | PublicationRetainedArtifactRole::ProtectedStderr
+        | PublicationRetainedArtifactRole::ProtectedStdout
+        | PublicationRetainedArtifactRole::VerifierStderr
+        | PublicationRetainedArtifactRole::VerifierStdout => MAX_RETAINED_LOG_BYTES,
+        _ => MAX_RETAINED_JSON_BYTES,
+    }
+}
+
+fn validate_retained_publication_semantics(
+    report: &PublicationReport,
+    closure: &PublicationRetainedClosure,
+    files: &RetainedPublicationFiles,
+) -> Result<(), AppError> {
+    let request = &report.request;
+    let retained_request: PublicationRequest =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::PublicationRequest)?;
+    if retained_request != *request || retained_request.request_hash()? != report.request_hash {
+        return Err(retained_semantic_error(
+            PublicationRetainedArtifactRole::PublicationRequest,
+            "retained request is not the exact request embedded in the candidate report",
+        ));
+    }
+
+    let committed_policy = crate::domain::publication::committed_publication_policy()?;
+    let retained_policy: crate::domain::PublicationPolicy =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::PublicationPolicy)?;
+    retained_policy.validate()?;
+    let publication_policy_hash = retained_policy.policy_hash()?;
+    if retained_policy != committed_policy || publication_policy_hash != request.policy_hash {
+        return Err(retained_semantic_error(
+            PublicationRetainedArtifactRole::PublicationPolicy,
+            "retained publication policy is not the exact committed request policy",
+        ));
+    }
+    require_retained_identity(
+        closure,
+        PublicationRetainedArtifactRole::PublicationPolicy,
+        &publication_policy_hash,
+    )?;
+
+    let committed_audit_policy = crate::domain::audit::committed_audit_policy()?;
+    let retained_audit_policy: crate::domain::LeanAuditPolicy =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::AuditPolicy)?;
+    retained_audit_policy.validate()?;
+    let audit_policy_hash = retained_audit_policy.policy_hash()?;
+    if retained_audit_policy != committed_audit_policy {
+        return Err(retained_semantic_error(
+            PublicationRetainedArtifactRole::AuditPolicy,
+            "retained audit policy is not the exact committed audit policy",
+        ));
+    }
+    require_retained_identity(
+        closure,
+        PublicationRetainedArtifactRole::AuditPolicy,
+        &audit_policy_hash,
+    )?;
+
+    let environment: EnvironmentManifest =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::EnvironmentManifest)?;
+    let environment_hash = environment.environment_hash()?;
+    if environment_hash != request.environment_hash {
+        return Err(retained_semantic_error(
+            PublicationRetainedArtifactRole::EnvironmentManifest,
+            "retained environment does not reproduce the publication request environment hash",
+        ));
+    }
+    require_retained_identity(
+        closure,
+        PublicationRetainedArtifactRole::EnvironmentManifest,
+        &environment_hash,
+    )?;
+
+    let module = files.get(PublicationRetainedArtifactRole::LeanModule)?;
+    if crate::verifier::scan_forbidden_source_token(module)?.is_some() {
+        return Err(retained_semantic_error(
+            PublicationRetainedArtifactRole::LeanModule,
+            "retained Lean module contains a forbidden source token",
+        ));
+    }
+    require_retained_identity(
+        closure,
+        PublicationRetainedArtifactRole::LeanModule,
+        &request.module_artifact_hash,
+    )?;
+
+    let formalization = validate_retained_record(
+        files,
+        closure,
+        PublicationRetainedArtifactRole::FormalizationVersion,
+        RecordKind::Formalization,
+    )?;
+    let claim = validate_retained_record(
+        files,
+        closure,
+        PublicationRetainedArtifactRole::ClaimVersion,
+        RecordKind::Claim,
+    )?;
+    let source = validate_retained_record(
+        files,
+        closure,
+        PublicationRetainedArtifactRole::SourceVersion,
+        RecordKind::Source,
+    )?;
+    if formalization.object_id != request.subject.object_id
+        || formalization.version_hash != request.subject.version_hash
+    {
+        return Err(retained_semantic_error(
+            PublicationRetainedArtifactRole::FormalizationVersion,
+            "retained formalization is not the exact publication request subject",
+        ));
+    }
+    let formalization_payload: FormalizationPayload =
+        serde_json::from_value(formalization.payload.clone()).map_err(|error| {
+            retained_semantic_error(
+                PublicationRetainedArtifactRole::FormalizationVersion,
+                format!("retained formalization payload is invalid: {error}"),
+            )
+        })?;
+    let claim_payload: ClaimPayload =
+        serde_json::from_value(claim.payload.clone()).map_err(|error| {
+            retained_semantic_error(
+                PublicationRetainedArtifactRole::ClaimVersion,
+                format!("retained claim payload is invalid: {error}"),
+            )
+        })?;
+    if formalization_payload.claim_version.object_id != claim.object_id
+        || formalization_payload.claim_version.version_hash != claim.version_hash
+        || claim_payload.source_reference.object_id != source.object_id
+        || claim_payload.source_reference.version_hash != source.version_hash
+        || formalization_payload.environment_hash != request.environment_hash
+        || formalization_payload.module_artifact_hash != request.module_artifact_hash
+        || formalization_payload.declaration_name != request.declaration_name
+        || !environment.dependencies.is_empty()
+        || !environment.import_manifest.is_empty()
+        || formalization_payload.import_manifest != environment.import_manifest
+    {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_RETAINED_RECORD_LINK_INVALID",
+            "retained formalization, claim, source, environment, module, and declaration do not form one exact chain",
+            "Regenerate the retained closure from the exact current canonical publication subject.",
+        ));
+    }
+
+    let diagnostic: EvidenceSnapshot =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::DiagnosticEvidence)?;
+    let proof_closure: EvidenceSnapshot =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::ProofClosureEvidence)?;
+    let axiom_audit: EvidenceSnapshot =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::AxiomAuditEvidence)?;
+    let diagnostic_job_id = validate_retained_evidence(
+        &diagnostic,
+        closure,
+        PublicationRetainedArtifactRole::DiagnosticEvidence,
+        &request.diagnostic_evidence_id,
+        &request.diagnostic_evidence_hash,
+        EvidenceKind::LeanElaboration,
+        request,
+        &formalization_payload,
+    )?;
+    let proof_closure_job_id = validate_retained_evidence(
+        &proof_closure,
+        closure,
+        PublicationRetainedArtifactRole::ProofClosureEvidence,
+        &request.proof_closure_evidence_id,
+        &request.proof_closure_evidence_hash,
+        EvidenceKind::ProofClosureScan,
+        request,
+        &formalization_payload,
+    )?;
+    let axiom_audit_job_id = validate_retained_evidence(
+        &axiom_audit,
+        closure,
+        PublicationRetainedArtifactRole::AxiomAuditEvidence,
+        &request.axiom_audit_evidence_id,
+        &request.axiom_audit_evidence_hash,
+        EvidenceKind::AxiomAudit,
+        request,
+        &formalization_payload,
+    )?;
+    if proof_closure_job_id != axiom_audit_job_id
+        || proof_closure.payload.artifact_hashes != axiom_audit.payload.artifact_hashes
+        || proof_closure.payload.verifier_or_reviewer_identity
+            != axiom_audit.payload.verifier_or_reviewer_identity
+    {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_RETAINED_EVIDENCE_MISMATCH",
+            "retained proof-closure and axiom-audit evidence do not form one exact audit pair",
+            "Retain both accepted evidence snapshots from the same terminal audit job.",
+        ));
+    }
+
+    let verifier_job: VerifierJobSnapshot =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::VerifierJob)?;
+    let verifier_report: VerifierExecutionReport =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::VerifierReport)?;
+    validate_retained_verifier_chain(
+        &verifier_job,
+        &verifier_report,
+        &diagnostic,
+        &diagnostic_job_id,
+        request,
+        &environment,
+        closure,
+        files,
+    )?;
+
+    let audit_job: LeanAuditJobSnapshot =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::AuditJob)?;
+    let audit_report: LeanAuditReport =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::AuditReport)?;
+    validate_retained_audit_chain(
+        &audit_job,
+        &audit_report,
+        &proof_closure,
+        &axiom_audit,
+        &proof_closure_job_id,
+        request,
+        &environment,
+        &retained_audit_policy,
+        closure,
+        files,
+    )?;
+
+    for role in [
+        PublicationRetainedArtifactRole::AuditStderr,
+        PublicationRetainedArtifactRole::AuditStdout,
+        PublicationRetainedArtifactRole::ProtectedAuditStderr,
+        PublicationRetainedArtifactRole::ProtectedAuditStdout,
+        PublicationRetainedArtifactRole::ProtectedDependencyStderr,
+        PublicationRetainedArtifactRole::ProtectedDependencyStdout,
+        PublicationRetainedArtifactRole::ProtectedStderr,
+        PublicationRetainedArtifactRole::ProtectedStdout,
+        PublicationRetainedArtifactRole::VerifierStderr,
+        PublicationRetainedArtifactRole::VerifierStdout,
+    ] {
+        if files.get(role)?.len() as u64 > environment.resource_limits.max_output_bytes {
+            return Err(retained_semantic_error(
+                role,
+                "retained output exceeds the request environment output bound",
+            ));
+        }
+    }
+    for role in [
+        PublicationRetainedArtifactRole::ProtectedAuditStderr,
+        PublicationRetainedArtifactRole::ProtectedAuditStdout,
+        PublicationRetainedArtifactRole::ProtectedDependencyStderr,
+        PublicationRetainedArtifactRole::ProtectedDependencyStdout,
+        PublicationRetainedArtifactRole::ProtectedStderr,
+        PublicationRetainedArtifactRole::ProtectedStdout,
+    ] {
+        let artifact_hash = retained_entry(closure, role)?.artifact_hash.clone();
+        require_retained_identity(closure, role, &artifact_hash)?;
+    }
+    validate_protected_dependency_output(
+        files.get(PublicationRetainedArtifactRole::ProtectedDependencyStdout)?,
+        files.get(PublicationRetainedArtifactRole::ProtectedDependencyStderr)?,
+    )?;
+    let protected_axioms = crate::verifier::parse_axiom_dependencies(
+        &request.declaration_name,
+        files.get(PublicationRetainedArtifactRole::ProtectedAuditStdout)?,
+        files.get(PublicationRetainedArtifactRole::ProtectedAuditStderr)?,
+    )?;
+    if protected_axioms != report.observed_axioms {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_PROTECTED_AUDIT_MISMATCH",
+            "protected audit output does not reproduce the candidate report observed axioms",
+            "Reject the candidate and rerun the protected audit from the exact retained module.",
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_protected_dependency_output(stdout: &[u8], stderr: &[u8]) -> Result<(), AppError> {
+    const PINNED_IMPLICIT_DEPENDENCY: &str = "/opt/lib/lean/Init.olean";
+    if !stderr.is_empty() {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_PROTECTED_DEPENDENCY_MISMATCH",
+            "protected Lean dependency discovery wrote unexpected stderr",
+            "Reject the candidate and rerun pinned Lean dependency discovery in the protected sandbox.",
+        ));
+    }
+    let output = std::str::from_utf8(stdout).map_err(|error| {
+        publication_candidate_error(
+            "MCL_PUBLICATION_PROTECTED_DEPENDENCY_MISMATCH",
+            format!("protected Lean dependency output is not UTF-8: {error}"),
+            "Reject the candidate and retain the exact pinned Lean dependency output.",
+        )
+    })?;
+    let dependencies = output.split_terminator('\n').collect::<Vec<_>>();
+    if dependencies.is_empty()
+        || dependencies.len() > 8
+        || dependencies
+            .iter()
+            .any(|dependency| *dependency != PINNED_IMPLICIT_DEPENDENCY)
+    {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_PROTECTED_DEPENDENCY_MISMATCH",
+            "protected Lean dependency output is not the closed implicit Init dependency",
+            "Reject undeclared imports and regenerate the no-import candidate from the exact pinned toolchain.",
+        ));
+    }
+    Ok(())
+}
+
+fn decode_closed_retained_json<T>(
+    files: &RetainedPublicationFiles,
+    role: PublicationRetainedArtifactRole,
+) -> Result<T, AppError>
+where
+    T: DeserializeOwned + Serialize,
+{
+    let bytes = files.get(role)?;
+    let source: Value = serde_json::from_slice(bytes).map_err(|error| {
+        retained_semantic_error(role, format!("retained JSON is invalid: {error}"))
+    })?;
+    let canonical = canonical_json(&source).map_err(|error| {
+        retained_semantic_error(
+            role,
+            format!("retained JSON is not canonical I-JSON: {}", error.message),
+        )
+    })?;
+    if bytes != canonical {
+        return Err(retained_semantic_error(
+            role,
+            "retained JSON bytes are not the exact canonical encoding",
+        ));
+    }
+    let document: T = serde_json::from_value(source.clone()).map_err(|error| {
+        retained_semantic_error(
+            role,
+            format!("retained JSON does not match its closed type: {error}"),
+        )
+    })?;
+    let reproduced = serde_json::to_value(&document).map_err(|error| {
+        retained_semantic_error(
+            role,
+            format!("retained typed value cannot be reproduced: {error}"),
+        )
+    })?;
+    if source != reproduced {
+        return Err(retained_semantic_error(
+            role,
+            "retained JSON contains unknown or non-reproducible fields",
+        ));
+    }
+    Ok(document)
+}
+
+fn validate_retained_record(
+    files: &RetainedPublicationFiles,
+    closure: &PublicationRetainedClosure,
+    role: PublicationRetainedArtifactRole,
+    expected_kind: RecordKind,
+) -> Result<RecordSnapshot, AppError> {
+    let record: RecordSnapshot = decode_closed_retained_json(files, role)?;
+    validate_record_payload(record.kind, &record.schema_version, &record.payload)
+        .map_err(|error| retained_semantic_error(role, error.message))?;
+    let reproduced = record_version_hash(&record.schema_version, &record.payload)?;
+    if record.kind != expected_kind
+        || uuid::Uuid::parse_str(&record.object_id).is_err()
+        || reproduced != record.version_hash
+        || record.created_by.trim().is_empty()
+        || record
+            .predecessor_hash
+            .as_deref()
+            .is_some_and(|hash| !is_lower_sha256(hash))
+    {
+        return Err(retained_semantic_error(
+            role,
+            "retained canonical record snapshot has an invalid kind, identity, or attribution",
+        ));
+    }
+    require_retained_identity(closure, role, &record.version_hash)?;
+    Ok(record)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_retained_evidence(
+    evidence: &EvidenceSnapshot,
+    closure: &PublicationRetainedClosure,
+    role: PublicationRetainedArtifactRole,
+    expected_id: &str,
+    expected_hash: &str,
+    expected_kind: EvidenceKind,
+    request: &PublicationRequest,
+    formalization: &FormalizationPayload,
+) -> Result<String, AppError> {
+    let reproduced_hash = evidence.payload.evidence_hash()?;
+    if evidence.evidence_id != expected_id
+        || evidence.evidence_hash != expected_hash
+        || evidence.evidence_hash != reproduced_hash
+        || evidence.created_by.trim().is_empty()
+    {
+        return Err(retained_semantic_error(
+            role,
+            "retained evidence snapshot does not reproduce its request-bound identity",
+        ));
+    }
+    require_retained_identity(closure, role, &reproduced_hash)?;
+    validate_publication_evidence(evidence, &request.subject, expected_kind, formalization)
+}
+
+fn validate_retained_store_snapshots(
+    store: &Store,
+    request: &PublicationRequest,
+    files: &RetainedPublicationFiles,
+) -> Result<(), AppError> {
+    for role in [
+        PublicationRetainedArtifactRole::SourceVersion,
+        PublicationRetainedArtifactRole::ClaimVersion,
+        PublicationRetainedArtifactRole::FormalizationVersion,
+    ] {
+        let retained: RecordSnapshot = decode_closed_retained_json(files, role)?;
+        if store.get_record_version(&retained.version_hash)? != retained {
+            return Err(retained_semantic_error(
+                role,
+                "retained record snapshot differs from the exact registered snapshot",
+            ));
+        }
+    }
+    let retained_environment: EnvironmentManifest =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::EnvironmentManifest)?;
+    if store.get_environment(&request.environment_hash)?.manifest != retained_environment {
+        return Err(retained_semantic_error(
+            PublicationRetainedArtifactRole::EnvironmentManifest,
+            "retained environment differs from the exact registered manifest",
+        ));
+    }
+    for (role, evidence_id) in [
+        (
+            PublicationRetainedArtifactRole::DiagnosticEvidence,
+            request.diagnostic_evidence_id.as_str(),
+        ),
+        (
+            PublicationRetainedArtifactRole::ProofClosureEvidence,
+            request.proof_closure_evidence_id.as_str(),
+        ),
+        (
+            PublicationRetainedArtifactRole::AxiomAuditEvidence,
+            request.axiom_audit_evidence_id.as_str(),
+        ),
+    ] {
+        let retained: EvidenceSnapshot = decode_closed_retained_json(files, role)?;
+        if store.get_evidence(evidence_id)? != retained {
+            return Err(retained_semantic_error(
+                role,
+                "retained evidence snapshot differs from the exact registered snapshot",
+            ));
+        }
+    }
+    let retained_verifier_job: VerifierJobSnapshot =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::VerifierJob)?;
+    if store.get_verifier_job(&retained_verifier_job.job_id)? != retained_verifier_job {
+        return Err(retained_semantic_error(
+            PublicationRetainedArtifactRole::VerifierJob,
+            "retained verifier job differs from the exact registered terminal snapshot",
+        ));
+    }
+    let retained_audit_job: LeanAuditJobSnapshot =
+        decode_closed_retained_json(files, PublicationRetainedArtifactRole::AuditJob)?;
+    if store.get_audit_job(&retained_audit_job.job_id)? != retained_audit_job {
+        return Err(retained_semantic_error(
+            PublicationRetainedArtifactRole::AuditJob,
+            "retained audit job differs from the exact registered terminal snapshot",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_retained_verifier_chain(
+    job: &VerifierJobSnapshot,
+    report: &VerifierExecutionReport,
+    evidence: &EvidenceSnapshot,
+    expected_job_id: &str,
+    request: &PublicationRequest,
+    environment: &EnvironmentManifest,
+    closure: &PublicationRetainedClosure,
+    files: &RetainedPublicationFiles,
+) -> Result<(), AppError> {
+    job.request.validate()?;
+    report.validate()?;
+    let input_hash =
+        crate::canonical::value_hash(&serde_json::to_value(&job.request).map_err(|error| {
+            retained_semantic_error(
+                PublicationRetainedArtifactRole::VerifierJob,
+                error.to_string(),
+            )
+        })?)?;
+    let report_artifact_hash =
+        retained_entry(closure, PublicationRetainedArtifactRole::VerifierReport)?
+            .artifact_hash
+            .as_str();
+    if job.job_id != expected_job_id
+        || uuid::Uuid::parse_str(&job.job_id).is_err()
+        || job.canonical_input_hash != input_hash
+        || job.state != VerifierJobState::Succeeded
+        || job.request.environment_hash != request.environment_hash
+        || job.request.module_artifact_hash != request.module_artifact_hash
+        || job.request.declaration_name != request.declaration_name
+        || job.result_artifact_hash.as_deref() != Some(report_artifact_hash)
+        || report.job_id != job.job_id
+        || report.environment_hash != request.environment_hash
+        || report.module_artifact_hash != request.module_artifact_hash
+        || report.declaration_name != request.declaration_name
+        || report.classification != VerifierExecutionClassification::Elaborated
+        || report.exit_code != Some(0)
+        || report.forbidden_source_token.is_some()
+        || report.observed_toolchain_version.is_none()
+        || report.trust_profile != environment.trust_profile
+        || evidence.payload.verifier_or_reviewer_identity
+            != format!(
+                "lean:{}",
+                report
+                    .observed_toolchain_version
+                    .as_deref()
+                    .unwrap_or("source-policy")
+            )
+    {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_RETAINED_VERIFIER_MISMATCH",
+            "retained verifier job and report do not reproduce the accepted diagnostic execution",
+            "Retain the exact terminal verifier snapshot, report, logs, module, and diagnostic evidence.",
+        ));
+    }
+    require_retained_identity(
+        closure,
+        PublicationRetainedArtifactRole::VerifierJob,
+        &input_hash,
+    )?;
+    require_retained_identity(
+        closure,
+        PublicationRetainedArtifactRole::VerifierReport,
+        report_artifact_hash,
+    )?;
+    validate_optional_retained_log(
+        report.stdout_artifact_hash.as_deref(),
+        PublicationRetainedArtifactRole::VerifierStdout,
+        closure,
+        files,
+    )?;
+    validate_optional_retained_log(
+        report.stderr_artifact_hash.as_deref(),
+        PublicationRetainedArtifactRole::VerifierStderr,
+        closure,
+        files,
+    )?;
+    let expected_artifacts = report_artifact_closure(
+        &request.module_artifact_hash,
+        report_artifact_hash,
+        report.stdout_artifact_hash.as_deref(),
+        report.stderr_artifact_hash.as_deref(),
+    );
+    if evidence.payload.artifact_hashes != expected_artifacts {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_RETAINED_VERIFIER_MISMATCH",
+            "retained diagnostic evidence artifact closure does not match the verifier report and logs",
+            "Retain the exact accepted verifier artifact closure.",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_retained_audit_chain(
+    job: &LeanAuditJobSnapshot,
+    report: &LeanAuditReport,
+    proof_closure: &EvidenceSnapshot,
+    axiom_audit: &EvidenceSnapshot,
+    expected_job_id: &str,
+    request: &PublicationRequest,
+    environment: &EnvironmentManifest,
+    policy: &crate::domain::LeanAuditPolicy,
+    closure: &PublicationRetainedClosure,
+    files: &RetainedPublicationFiles,
+) -> Result<(), AppError> {
+    job.request.validate()?;
+    report.validate_against_policy(policy)?;
+    let input_hash = job.request.request_hash()?;
+    let report_artifact_hash =
+        retained_entry(closure, PublicationRetainedArtifactRole::AuditReport)?
+            .artifact_hash
+            .as_str();
+    if job.job_id != expected_job_id
+        || uuid::Uuid::parse_str(&job.job_id).is_err()
+        || job.canonical_input_hash != input_hash
+        || job.state != VerifierJobState::Succeeded
+        || job.request.subject != request.subject
+        || job.request.diagnostic_evidence_id != request.diagnostic_evidence_id
+        || job.request.diagnostic_evidence_hash != request.diagnostic_evidence_hash
+        || job.request.environment_hash != request.environment_hash
+        || job.request.module_artifact_hash != request.module_artifact_hash
+        || job.request.declaration_name != request.declaration_name
+        || job.request.policy_hash != policy.policy_hash()?
+        || job.result_artifact_hash.as_deref() != Some(report_artifact_hash)
+        || report.job_id != job.job_id
+        || report.request_hash != job.canonical_input_hash
+        || report.subject != request.subject
+        || report.diagnostic_evidence_hash != request.diagnostic_evidence_hash
+        || report.environment_hash != request.environment_hash
+        || report.module_artifact_hash != request.module_artifact_hash
+        || report.declaration_name != request.declaration_name
+        || report.classification != LeanAuditClassification::Passed
+        || report.observed_toolchain_version.is_none()
+        || report.trust_profile != environment.trust_profile
+        || proof_closure.payload.verifier_or_reviewer_identity
+            != format!(
+                "lean-audit:{}",
+                report
+                    .observed_toolchain_version
+                    .as_deref()
+                    .unwrap_or("source-policy")
+            )
+    {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_RETAINED_AUDIT_MISMATCH",
+            "retained audit job and report do not reproduce the accepted exact audit pair",
+            "Retain the exact terminal audit snapshot, report, logs, policy, and evidence pair.",
+        ));
+    }
+    require_retained_identity(
+        closure,
+        PublicationRetainedArtifactRole::AuditJob,
+        &input_hash,
+    )?;
+    require_retained_identity(
+        closure,
+        PublicationRetainedArtifactRole::AuditReport,
+        report_artifact_hash,
+    )?;
+    validate_optional_retained_log(
+        report.stdout_artifact_hash.as_deref(),
+        PublicationRetainedArtifactRole::AuditStdout,
+        closure,
+        files,
+    )?;
+    validate_optional_retained_log(
+        report.stderr_artifact_hash.as_deref(),
+        PublicationRetainedArtifactRole::AuditStderr,
+        closure,
+        files,
+    )?;
+    let expected_artifacts = report_artifact_closure(
+        &request.module_artifact_hash,
+        report_artifact_hash,
+        report.stdout_artifact_hash.as_deref(),
+        report.stderr_artifact_hash.as_deref(),
+    );
+    if proof_closure.payload.artifact_hashes != expected_artifacts
+        || axiom_audit.payload.artifact_hashes != expected_artifacts
+    {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_RETAINED_AUDIT_MISMATCH",
+            "retained audit evidence artifact closure does not match the audit report and logs",
+            "Retain the exact accepted audit artifact closure.",
+        ));
+    }
+    let parsed_axioms = crate::verifier::parse_axiom_dependencies(
+        &request.declaration_name,
+        files.get(PublicationRetainedArtifactRole::AuditStdout)?,
+        files.get(PublicationRetainedArtifactRole::AuditStderr)?,
+    )?;
+    if parsed_axioms != report.observed_axioms {
+        return Err(publication_candidate_error(
+            "MCL_PUBLICATION_RETAINED_AUDIT_MISMATCH",
+            "retained local audit output does not reproduce its report observed axioms",
+            "Reject the altered audit closure and reproduce the exact terminal audit.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_optional_retained_log(
+    reported_hash: Option<&str>,
+    role: PublicationRetainedArtifactRole,
+    closure: &PublicationRetainedClosure,
+    files: &RetainedPublicationFiles,
+) -> Result<(), AppError> {
+    let entry = retained_entry(closure, role)?;
+    let bytes = files.get(role)?;
+    let matches = match reported_hash {
+        Some(hash) => hash == entry.artifact_hash,
+        None => bytes.is_empty(),
+    };
+    if !matches {
+        return Err(retained_semantic_error(
+            role,
+            "retained log bytes do not match the report's optional output identity",
+        ));
+    }
+    require_retained_identity(closure, role, &entry.artifact_hash)
+}
+
+fn retained_entry(
+    closure: &PublicationRetainedClosure,
+    role: PublicationRetainedArtifactRole,
+) -> Result<&crate::domain::PublicationRetainedClosureEntry, AppError> {
+    closure
+        .artifacts
+        .iter()
+        .find(|entry| entry.role == role)
+        .ok_or_else(|| {
+            retained_semantic_error(role, "retained closure entry is unexpectedly missing")
+        })
+}
+
+fn require_retained_identity(
+    closure: &PublicationRetainedClosure,
+    role: PublicationRetainedArtifactRole,
+    expected_identity: &str,
+) -> Result<(), AppError> {
+    if retained_entry(closure, role)?.identity_hash != expected_identity {
+        return Err(retained_semantic_error(
+            role,
+            format!("retained identity does not equal {expected_identity}"),
+        ));
+    }
+    Ok(())
+}
+
+fn retained_semantic_error(
+    role: PublicationRetainedArtifactRole,
+    message: impl Into<String>,
+) -> AppError {
+    publication_candidate_error(
+        "MCL_PUBLICATION_RETAINED_SEMANTIC_INVALID",
+        format!(
+            "retained {} member is invalid: {}",
+            role.as_str(),
+            message.into()
+        ),
+        "Reject the candidate and regenerate the exact retained closure in the protected workflow.",
+    )
+}
+
+fn is_lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn validate_publication_evidence(
     evidence: &EvidenceSnapshot,
     subject: &ExactVersionReference,
@@ -2469,6 +3550,14 @@ fn report_artifact_closure(
 }
 
 fn publication_preparation_error(
+    code: &'static str,
+    message: impl Into<String>,
+    corrective_action: impl Into<String>,
+) -> AppError {
+    AppError::new(code, message, false, corrective_action)
+}
+
+fn publication_candidate_error(
     code: &'static str,
     message: impl Into<String>,
     corrective_action: impl Into<String>,
@@ -2582,4 +3671,295 @@ fn report(profile: &'static str, checks: Vec<Check>) -> DiagnosticReport {
 
 pub fn root_exists(path: &Path) -> bool {
     path.is_dir()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::domain::{
+        PublicationClassification, PublicationRetainedArtifactRole,
+        PublicationRetainedClosureEntry, PublicationRunnerEnvironment,
+    };
+
+    use super::*;
+
+    fn publication_request() -> PublicationRequest {
+        let policy = crate::domain::publication::committed_publication_policy()
+            .expect("committed publication policy");
+        PublicationRequest {
+            schema_version: crate::domain::publication::PUBLICATION_REQUEST_SCHEMA_VERSION
+                .to_owned(),
+            subject: ExactVersionReference {
+                object_id: "018f0000-0000-7000-8000-000000000001".to_owned(),
+                version_hash: "a".repeat(64),
+            },
+            outcome: PublicationOutcome::Proof,
+            diagnostic_evidence_id: "018f0000-0000-7000-8000-000000000002".to_owned(),
+            diagnostic_evidence_hash: "b".repeat(64),
+            proof_closure_evidence_id: "018f0000-0000-7000-8000-000000000003".to_owned(),
+            proof_closure_evidence_hash: "c".repeat(64),
+            axiom_audit_evidence_id: "018f0000-0000-7000-8000-000000000004".to_owned(),
+            axiom_audit_evidence_hash: "d".repeat(64),
+            environment_hash: "e".repeat(64),
+            module_artifact_hash: "f".repeat(64),
+            declaration_name: "MathOS.Publication.truth".to_owned(),
+            policy_hash: policy.policy_hash().expect("publication policy hash"),
+            source_commit_sha: "1".repeat(40),
+            source_tree_sha: "2".repeat(40),
+        }
+    }
+
+    fn retained_closure(request: &PublicationRequest) -> PublicationRetainedClosure {
+        let request_hash = request.request_hash().expect("publication request hash");
+        let artifacts = PublicationRetainedArtifactRole::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(index, role)| PublicationRetainedClosureEntry {
+                role,
+                path: role.expected_path().to_owned(),
+                identity_hash: format!("{:064x}", index + 16),
+                artifact_hash: format!("{:064x}", index + 64),
+            })
+            .collect::<Vec<_>>();
+        let mut closure = PublicationRetainedClosure {
+            schema_version: crate::domain::publication::PUBLICATION_RETAINED_CLOSURE_SCHEMA_VERSION
+                .to_owned(),
+            subject: request.subject.clone(),
+            request_hash: request_hash.clone(),
+            artifacts,
+        };
+        let mut bind = |role, identity_hash: &str, artifact_hash: Option<&str>| {
+            let entry = closure
+                .artifacts
+                .iter_mut()
+                .find(|entry| entry.role == role)
+                .expect("required retained role");
+            entry.identity_hash = identity_hash.to_owned();
+            if let Some(artifact_hash) = artifact_hash {
+                entry.artifact_hash = artifact_hash.to_owned();
+            }
+        };
+        bind(
+            PublicationRetainedArtifactRole::PublicationRequest,
+            &request_hash,
+            Some(&request_hash),
+        );
+        bind(
+            PublicationRetainedArtifactRole::FormalizationVersion,
+            &request.subject.version_hash,
+            None,
+        );
+        bind(
+            PublicationRetainedArtifactRole::EnvironmentManifest,
+            &request.environment_hash,
+            None,
+        );
+        bind(
+            PublicationRetainedArtifactRole::LeanModule,
+            &request.module_artifact_hash,
+            Some(&request.module_artifact_hash),
+        );
+        bind(
+            PublicationRetainedArtifactRole::PublicationPolicy,
+            &request.policy_hash,
+            None,
+        );
+        bind(
+            PublicationRetainedArtifactRole::DiagnosticEvidence,
+            &request.diagnostic_evidence_hash,
+            None,
+        );
+        bind(
+            PublicationRetainedArtifactRole::ProofClosureEvidence,
+            &request.proof_closure_evidence_hash,
+            None,
+        );
+        bind(
+            PublicationRetainedArtifactRole::AxiomAuditEvidence,
+            &request.axiom_audit_evidence_hash,
+            None,
+        );
+        closure
+    }
+
+    fn canonical_bytes<T: Serialize>(document: &T) -> Vec<u8> {
+        canonical_json(&serde_json::to_value(document).expect("serializable publication document"))
+            .expect("canonical publication document")
+    }
+
+    fn candidate_documents() -> (PublicationReport, PublicationRetainedClosure) {
+        let policy = crate::domain::publication::committed_publication_policy()
+            .expect("committed publication policy");
+        let request = publication_request();
+        let closure = retained_closure(&request);
+        let retained_artifact_hashes = closure
+            .report_retained_artifact_hashes(&request)
+            .expect("report retained hashes");
+        let report = PublicationReport {
+            schema_version: crate::domain::publication::PUBLICATION_REPORT_SCHEMA_VERSION
+                .to_owned(),
+            request_hash: request.request_hash().expect("request hash"),
+            request,
+            classification: PublicationClassification::Passed,
+            repository: policy.repository,
+            workflow_path: policy.workflow_path,
+            source_ref: policy.required_source_ref,
+            workflow_run_id: 1,
+            workflow_run_attempt: 1,
+            runner_environment: PublicationRunnerEnvironment::GithubHosted,
+            observed_lean_toolchain: policy.required_lean_toolchain,
+            observed_axioms: Vec::new(),
+            retained_artifact_hashes,
+            clean_checkout: true,
+            dependency_closure_complete: true,
+            network_isolation_enforced: true,
+            memory_limit_enforced: true,
+            authoritative: false,
+        };
+        (report, closure)
+    }
+
+    #[test]
+    fn publication_candidate_documents_bind_exact_canonical_hashes() {
+        let (report, closure) = candidate_documents();
+        let report_bytes = canonical_bytes(&report);
+        let closure_bytes = canonical_bytes(&closure);
+        let validated = validate_publication_candidate_documents(&report_bytes, &closure_bytes)
+            .expect("closed publication candidate");
+
+        assert_eq!(validated.request_hash, report.request_hash);
+        assert_eq!(
+            validated.report_content_hash,
+            format!("{:x}", Sha256::digest(&report_bytes))
+        );
+        assert_eq!(
+            validated.retained_closure_hash,
+            format!("{:x}", Sha256::digest(&closure_bytes))
+        );
+    }
+
+    #[test]
+    fn publication_candidate_documents_reject_noncanonical_or_unknown_json() {
+        let (report, closure) = candidate_documents();
+        let report_bytes = canonical_bytes(&report);
+        let closure_bytes = canonical_bytes(&closure);
+
+        let mut noncanonical_report = report_bytes.clone();
+        noncanonical_report.push(b'\n');
+        assert_eq!(
+            validate_publication_candidate_documents(&noncanonical_report, &closure_bytes)
+                .expect_err("report newline must fail")
+                .code,
+            "MCL_PUBLICATION_REPORT_NONCANONICAL"
+        );
+        let mut noncanonical_closure = closure_bytes.clone();
+        noncanonical_closure.push(b' ');
+        assert_eq!(
+            validate_publication_candidate_documents(&report_bytes, &noncanonical_closure)
+                .expect_err("closure whitespace must fail")
+                .code,
+            "MCL_PUBLICATION_RETAINED_CLOSURE_NONCANONICAL"
+        );
+
+        let mut unknown_report: Value =
+            serde_json::from_slice(&report_bytes).expect("report value");
+        unknown_report["unexpected"] = Value::Bool(true);
+        let unknown_report = canonical_json(&unknown_report).expect("canonical unknown report");
+        assert_eq!(
+            validate_publication_candidate_documents(&unknown_report, &closure_bytes)
+                .expect_err("unknown report field must fail")
+                .code,
+            "MCL_PUBLICATION_REPORT_JSON_INVALID"
+        );
+    }
+
+    #[test]
+    fn publication_candidate_documents_reject_altered_report_or_closure() {
+        let (mut report, closure) = candidate_documents();
+        let closure_bytes = canonical_bytes(&closure);
+        report.retained_artifact_hashes.pop();
+        assert_eq!(
+            validate_publication_candidate_documents(&canonical_bytes(&report), &closure_bytes)
+                .expect_err("altered report retention must fail")
+                .code,
+            "MCL_PUBLICATION_RETAINED_ARTIFACTS_MISMATCH"
+        );
+
+        let (report, mut closure) = candidate_documents();
+        closure
+            .artifacts
+            .iter_mut()
+            .find(|entry| entry.role == PublicationRetainedArtifactRole::VerifierStdout)
+            .expect("verifier stdout role")
+            .artifact_hash = "9".repeat(64);
+        assert_eq!(
+            validate_publication_candidate_documents(
+                &canonical_bytes(&report),
+                &canonical_bytes(&closure),
+            )
+            .expect_err("altered retained closure must fail")
+            .code,
+            "MCL_PUBLICATION_RETAINED_ARTIFACTS_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn retained_member_reader_hashes_every_fixed_role_file() {
+        let request = publication_request();
+        let mut closure = retained_closure(&request);
+        let root = tempfile::TempDir::new().expect("retained root");
+        for entry in &mut closure.artifacts {
+            let bytes = format!("retained:{}", entry.role.as_str()).into_bytes();
+            let path = root.path().join(&entry.path);
+            fs::create_dir_all(path.parent().expect("retained parent"))
+                .expect("retained directory");
+            fs::write(&path, &bytes).expect("retained member");
+            entry.artifact_hash = format!("{:x}", Sha256::digest(&bytes));
+        }
+        let loaded = read_retained_publication_files(root.path(), &closure)
+            .expect("all exact retained files");
+        assert_eq!(
+            loaded.bytes_by_role.len(),
+            PublicationRetainedArtifactRole::ALL.len()
+        );
+
+        let altered = root
+            .path()
+            .join(PublicationRetainedArtifactRole::ProtectedStdout.expected_path());
+        fs::write(altered, b"altered").expect("alter retained member");
+        assert_eq!(
+            read_retained_publication_files(root.path(), &closure)
+                .expect_err("altered retained member must fail")
+                .code,
+            "MCL_PUBLICATION_RETAINED_MEMBER_HASH_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn protected_dependency_output_allows_only_the_pinned_implicit_init_closure() {
+        validate_protected_dependency_output(
+            b"/opt/lib/lean/Init.olean\n/opt/lib/lean/Init.olean\n",
+            b"",
+        )
+        .expect("pinned implicit dependency closure");
+
+        for (stdout, stderr) in [
+            (b"".as_slice(), b"".as_slice()),
+            (
+                b"/opt/lib/lean/Init.olean\n/opt/lib/lean/Init/System/IO.olean\n".as_slice(),
+                b"".as_slice(),
+            ),
+            (b"/tmp/Init.olean\n".as_slice(), b"".as_slice()),
+            (
+                b"/opt/lib/lean/Init.olean\n".as_slice(),
+                b"dependency warning\n".as_slice(),
+            ),
+        ] {
+            assert_eq!(
+                validate_protected_dependency_output(stdout, stderr)
+                    .expect_err("altered dependency output must fail")
+                    .code,
+                "MCL_PUBLICATION_PROTECTED_DEPENDENCY_MISMATCH"
+            );
+        }
+    }
 }

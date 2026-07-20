@@ -16,6 +16,8 @@ GitHub artifact attestations bind an artifact digest to a workflow identity usin
 
 The protected `.github/workflows/publication.yml` workflow will create a canonical `publication_report/1` candidate after clean-checkout verification. The candidate always carries `authoritative: false`. Its contract rejects a report that attempts to promote itself.
 
+The report is accompanied by a closed `publication_retained_closure/1` manifest. Its roles and paths are fixed rather than caller-named, every member carries both a semantic identity and exact byte hash, and the report binds the sorted member-hash set plus the canonical manifest hash. Protected Lean parser-derived dependency output is retained and checked against both import manifests rather than inferred with textual grep. Before attestation, the shared application service opens every member, replays its typed cross-references, re-derives the canonical request from current state, and still returns only a non-authoritative validation result.
+
 The workflow will attest the exact report bytes with the SHA-pinned `actions/attest` action and retain the report, full logs, hashes, and serialized Sigstore bundle. The attestation uses the SLSA provenance v1 predicate.
 
 Authority ingestion will invoke only the allowlisted GitHub CLI attestation verifier with typed arguments equivalent to:
@@ -39,7 +41,7 @@ The verifier is part of the trust boundary. The policy therefore pins the GitHub
 
 GitHub CLI treats exact certificate identity and signer-workflow selectors as mutually exclusive. MathOS uses the stronger exact certificate SAN, which already binds repository, workflow path, and `main` ref. The expected signer workflow remains explicit in the constrained verification record.
 
-The publication workflow lives on protected `main`. Pull-request CI may test candidate generation and rejection paths, but cannot produce authoritative evidence.
+The publication workflow lives on protected `main`. The workflow and candidate producer both fail closed unless GitHub's immutable run context reports that the exact source ref is actively protected. Pull-request CI may test candidate generation and rejection paths, but cannot produce authoritative evidence.
 
 The implementation follows GitHub's current [artifact attestation guidance](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations) and the [GitHub CLI attestation verification contract](https://cli.github.com/manual/gh_attestation_verify).
 
@@ -50,6 +52,7 @@ The implementation follows GitHub's current [artifact attestation guidance](http
 - Promotion requires GitHub attestation verification and is not fully offline by default. A future offline mode may use a securely acquired trusted root and retained bundle.
 - The workflow predicate remains partly workflow-controlled, so authority consumes only fields independently constrained by the certificate plus exact content identities revalidated by MathOS.
 - A compromised protected publication workflow can produce bad candidates. Branch protection, pinned actions, minimal permissions, reviewed workflow changes, and exact signer constraints remain administrative and engineering controls around that boundary.
+- Repository branch protection is part of the authority precondition, not an assumed label. Removing the rule makes candidate production fail before attestation.
 - Publication proof authority still does not establish source-statement fidelity, novelty, pedagogy quality, or mathematical importance.
 
 ## Rejected alternatives

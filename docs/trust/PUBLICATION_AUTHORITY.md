@@ -58,6 +58,29 @@ The application requires the current formalization head; rereads immutable diagn
 
 The commit and tree values in this local request are proposed source identities. The protected clean-checkout workflow must derive and match the actual runtime commit and tree before producing a candidate. A prepared request is not evidence, is not a publication report, and grants no authority.
 
+### Protected candidate and retained closure
+
+The protected workflow refuses to start unless GitHub's immutable run context reports that `main` is actively protected. It then constructs one fresh, real canonical lifecycle for the no-import `MathOS.Publication.smoke` declaration, prepares its request through the same application service, and rebuilds the exact retained module twice inside Bubblewrap: once for elaboration and once with a verifier-controlled `#print axioms` driver. Both subprocesses use a read-only root, separate mount, PID, and network namespaces, one Lean worker thread, a 120-second timeout, and a four-gibibyte address-space limit.
+
+The request-bound environment remains truthfully marked `local` because it describes the diagnostic and audit evidence created by the ordinary worker. Its manifest contains the exact Lean toolchain, no dependencies, no imports, and the checked-in `lean-toolchain` hash. The candidate report separately records the stronger GitHub-hosted runner, clean checkout, dependency closure, network isolation, and memory controls actually observed by the protected workflow. A local trust-profile label is never upgraded in place.
+
+`publication_retained_closure/1` has exactly 25 sorted roles with fixed lowercase paths. It retains the request; source, claim, and formalization snapshots; environment; Lean module; publication and audit policies; diagnostic and audit evidence; terminal jobs, reports, and local logs; and protected rebuild, Lean parser-derived dependency, and axiom-audit logs. Every entry binds a semantic identity and the SHA-256 of its exact bytes. The candidate report contains the sorted unique set of all member hashes plus the canonical closure-manifest hash; it cannot include its own hash without creating a recursive identity.
+
+Before attestation, the workflow invokes:
+
+```text
+mcl verify validate-publication-candidate \
+  --report-file <canonical-report> \
+  --retained-closure-file <canonical-closure> \
+  --retained-root <contained-output-root>
+```
+
+The application requires exact canonical JSON, bounded contained regular files, fixed paths with no symbolic-link components, and byte hashes for every retained member. It replays the source-to-claim-to-formalization references, environment and policy hashes, all evidence identities, terminal job/report/log closures, the pinned Lean `--deps` output, and both local and protected axiom outputs. For this no-import contract, the environment and formalization manifests must both be empty and protected discovery may contain only Lean's implicit pinned `Init.olean`. It then dry-run re-derives the request from current Store and CAS state and verifies the registered request artifact. The validator creates no canonical record or artifact, performs no promotion, and always returns `authoritative: false`; opening an instance may create ordinary operational directories or SQLite WAL files.
+
+The sandbox clears the inherited process environment and applies wall-clock, address-space, and output-file limits. A bounded structured attempt summary, per-execution classifications, and available CAS bytes are retained outside the authoritative closure on both success and failure so a rejected build is not erased.
+
+Pull-request CI exercises this producer in an explicitly `simulated-main`, non-attested context. Only the protected `main` workflow may attest the resulting candidate report.
+
 ## Attestation stage
 
 The protected workflow attests the exact candidate report digest using GitHub OIDC and Sigstore. Authority ingestion must verify at least:
@@ -74,8 +97,8 @@ MathOS must parse the verifier output and match it to the report and committed p
 
 ## Current implementation state
 
-The closed policy, request, candidate-report, and attestation-verification contracts are implemented. The shared application, CLI, and MCP paths can now derive and retain a non-authoritative publication request from exact current local evidence without accepting caller-authored JSON. A clean-checkout boundary smoke runs a pinned trivial Lean theorem with one Lean worker thread inside Linux mount, PID, and network namespaces with a four-gibibyte address-space limit. The protected `main` workflow attests the exact smoke-report bytes, challenges that bundle with the independently pinned GitHub CLI verifier, and retains the report, raw verification result, constrained verification record, diagnostics, and Sigstore bundle. Pull-request CI exercises the isolation script without granting authority.
+The closed policy, request, retained-closure, candidate-report, and attestation-verification contracts are implemented. The shared application, CLI, and MCP request-preparation paths derive and retain a non-authoritative request from exact current local evidence without accepting caller-authored JSON. The protected `main` workflow retains the earlier boundary smoke and additionally produces, application-validates, attests, independently challenges, and retains a real `publication_report/1` and its complete exact closure. Pull-request CI exercises the same candidate producer without attestation or authority.
 
-The attestation-verification record is still non-authoritative. It can establish that exact retained bytes were signed by the constrained protected workflow and witnessed by the configured transparency system. Canonical proof authority additionally requires a real `publication_report/1`, complete exact evidence closure, controlled ingestion, and a new authoritative evidence record produced by the application rather than accepted from caller JSON.
+The attestation-verification record is still non-authoritative. It can establish that exact retained report bytes were signed by the constrained protected workflow and witnessed by the configured transparency system. Canonical proof authority still requires controlled ingestion that revalidates the downloaded closure and attestation together, followed by a new authoritative evidence record produced only by that application path rather than accepted from caller JSON.
 
 No authoritative proof or refutation evidence exists yet. No mathematical claim status is derived.

@@ -1,0 +1,24 @@
+{
+  "schema_version": "environment/1",
+  "formal_system": "lean4",
+  "lean_toolchain": "leanprover/lean4:v4.32.0",
+  "dependencies": [],
+  "import_manifest": [],
+  "project_configuration_hashes": {
+    "lean-toolchain": "2773c517aa90b66ea8a2c52bddddf84393157797f8341be0df45294fff7fd32e"
+  },
+  "platform": "linux_x86_64",
+  "trust_profile": "local",
+  "verifier_command": {
+    "executable": "lean",
+    "arguments": ["{module_path}"]
+  },
+  "resource_limits": {
+    "timeout_seconds": 120,
+    "max_output_bytes": 1048576,
+    "max_memory_bytes": null,
+    "concurrency": 1
+  },
+  "network_access": false,
+  "working_directory_policy": "temporary_workspace"
+}

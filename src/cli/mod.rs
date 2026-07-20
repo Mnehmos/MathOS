@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -13,6 +14,8 @@ use crate::domain::{
     RunKind, TraversalDirection, VerifierJobRequest,
 };
 use crate::error::AppError;
+
+const MAX_PUBLICATION_CANDIDATE_DOCUMENT_BYTES: usize = 1_048_576;
 
 #[derive(Debug)]
 pub struct CliOutcome {
@@ -177,6 +180,7 @@ enum VerifyAction {
     ReviewFidelity(ReviewFidelityOptions),
     FidelityStatus(FidelityStatusOptions),
     PreparePublication(VerifyPreparePublicationOptions),
+    ValidatePublicationCandidate(VerifyValidatePublicationCandidateOptions),
 }
 
 #[derive(Debug, Args)]
@@ -294,6 +298,18 @@ struct VerifyPreparePublicationOptions {
 
     #[command(flatten)]
     mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct VerifyValidatePublicationCandidateOptions {
+    #[arg(long)]
+    report_file: PathBuf,
+
+    #[arg(long)]
+    retained_closure_file: PathBuf,
+
+    #[arg(long)]
+    retained_root: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -716,11 +732,134 @@ fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<Cli
             )?)
             .expect("publication request preparation is serializable")
         }
+        VerifyAction::ValidatePublicationCandidate(options) => {
+            let report_bytes = read_publication_candidate_file(
+                config,
+                &options.report_file,
+                "publication report",
+            )?;
+            let retained_closure_bytes = read_publication_candidate_file(
+                config,
+                &options.retained_closure_file,
+                "publication retained closure",
+            )?;
+            let retained_root = resolve_publication_retained_root(config, &options.retained_root)?;
+            to_value(application.validate_publication_candidate(
+                &report_bytes,
+                &retained_closure_bytes,
+                &retained_root,
+            )?)
+            .expect("publication candidate validation outcome is serializable")
+        }
     };
     Ok(CliOutcome {
         value,
         success: true,
     })
+}
+
+fn resolve_publication_retained_root(
+    config: &ResolvedConfig,
+    requested: &PathBuf,
+) -> Result<PathBuf, AppError> {
+    let root = if requested.is_absolute() {
+        requested.clone()
+    } else {
+        config.root.join(requested)
+    };
+    let metadata = fs::symlink_metadata(&root)
+        .map_err(|error| AppError::io("inspect publication retained root", error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(AppError::new(
+            "MCL_PUBLICATION_RETAINED_ROOT_UNSAFE",
+            "publication retained root must be a real directory, not a file or symbolic link",
+            false,
+            "Use the workflow output directory contained by the instance root.",
+        ));
+    }
+    let root = root
+        .canonicalize()
+        .map_err(|error| AppError::io("canonicalize publication retained root", error))?;
+    if !root.starts_with(&config.root) {
+        return Err(AppError::new(
+            "MCL_PUBLICATION_RETAINED_ROOT_UNSAFE",
+            format!(
+                "publication retained root {} escapes the instance root",
+                root.display()
+            ),
+            false,
+            "Place retained workflow output under the initialized instance root.",
+        ));
+    }
+    Ok(root)
+}
+
+fn read_publication_candidate_file(
+    config: &ResolvedConfig,
+    requested: &PathBuf,
+    label: &str,
+) -> Result<Vec<u8>, AppError> {
+    let input = if requested.is_absolute() {
+        requested.clone()
+    } else {
+        config.root.join(requested)
+    };
+    if fs::symlink_metadata(&input)
+        .map_err(|error| AppError::io(&format!("inspect {label} input"), error))?
+        .file_type()
+        .is_symlink()
+    {
+        return Err(AppError::new(
+            "MCL_PUBLICATION_CANDIDATE_INPUT_UNSAFE",
+            format!("{label} input may not be a symbolic link"),
+            false,
+            "Use a regular file contained by the instance root.",
+        ));
+    }
+    let input = input
+        .canonicalize()
+        .map_err(|error| AppError::io(&format!("canonicalize {label} input"), error))?;
+    if !input.starts_with(&config.root) || !input.is_file() {
+        return Err(AppError::new(
+            "MCL_PUBLICATION_CANDIDATE_INPUT_UNSAFE",
+            format!(
+                "{label} input {} is not a regular file contained by the instance root",
+                input.display()
+            ),
+            false,
+            "Copy the exact canonical file under the instance root and retry.",
+        ));
+    }
+    let file = fs::File::open(&input)
+        .map_err(|error| AppError::io(&format!("open {label} input"), error))?;
+    if !file
+        .metadata()
+        .map_err(|error| AppError::io(&format!("inspect {label} input size"), error))?
+        .is_file()
+    {
+        return Err(AppError::new(
+            "MCL_PUBLICATION_CANDIDATE_INPUT_UNSAFE",
+            format!("{label} input is not a regular file"),
+            false,
+            "Use a regular file contained by the instance root.",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_PUBLICATION_CANDIDATE_DOCUMENT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| AppError::io(&format!("read {label} input"), error))?;
+    if bytes.len() > MAX_PUBLICATION_CANDIDATE_DOCUMENT_BYTES {
+        return Err(AppError::new(
+            "MCL_PUBLICATION_CANDIDATE_INPUT_TOO_LARGE",
+            format!(
+                "{label} input exceeds the {} byte limit",
+                MAX_PUBLICATION_CANDIDATE_DOCUMENT_BYTES
+            ),
+            false,
+            "Reduce the document to the closed publication contract and retry.",
+        ));
+    }
+    Ok(bytes)
 }
 
 fn execute_artifact(

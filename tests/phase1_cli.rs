@@ -1431,3 +1431,43 @@ fn research_and_graph_cli_share_the_service_and_preserve_conflicts_and_dry_runs(
         golden(include_str!("../fixtures/cli/run-chain-report.json"))
     );
 }
+
+#[test]
+fn publication_candidate_cli_bounds_workflow_json_inputs() {
+    let root = TempDir::new().expect("temporary root");
+    assert!(
+        mcl(
+            &root,
+            &[
+                "init",
+                "--actor",
+                "publication-candidate-test",
+                "--idempotency-key",
+                "publication-candidate-init",
+            ],
+        )
+        .status
+        .success()
+    );
+    fs::write(root.path().join("report.json"), vec![b'x'; 1_048_577])
+        .expect("oversized publication report");
+    fs::write(root.path().join("retained-closure.json"), b"{}")
+        .expect("retained closure placeholder");
+
+    let output = mcl(
+        &root,
+        &[
+            "verify",
+            "validate-publication-candidate",
+            "--report-file",
+            "report.json",
+            "--retained-closure-file",
+            "retained-closure.json",
+            "--retained-root",
+            ".",
+        ],
+    );
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).expect("candidate error JSON");
+    assert_eq!(error["code"], "MCL_PUBLICATION_CANDIDATE_INPUT_TOO_LARGE");
+}

@@ -41,3 +41,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 31. [A Boundary Must Admit When It Is Missing](0031-a-boundary-must-admit-when-it-is-missing.md)
 32. [A Signature Is a Memory With a Witness](0032-a-signature-is-a-memory-with-a-witness.md)
 33. [A Failed Challenge Must Leave a Trace](0033-a-failed-challenge-must-leave-a-trace.md)
+34. [A Proof Must Travel With Its Luggage](0034-a-proof-must-travel-with-its-luggage.md)
