@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/publication/retained-closure/1",
+  "title": "MathOS Publication Retained Closure v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "subject", "request_hash", "artifacts"],
+  "properties": {
+    "schema_version": {"const": "publication_retained_closure/1"},
+    "subject": {"type": "object", "additionalProperties": false, "required": ["object_id", "version_hash"], "properties": {"object_id": {"type": "string", "format": "uuid"}, "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+    "request_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "artifacts": {
+      "type": "array",
+      "minItems": 25,
+      "maxItems": 25,
+      "uniqueItems": true,
+      "prefixItems": [
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "audit_job"}, "path": {"const": "closure/audit-job.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "audit_policy"}, "path": {"const": "closure/audit-policy.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "audit_report"}, "path": {"const": "closure/audit-report.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "audit_stderr"}, "path": {"const": "closure/audit.stderr"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "audit_stdout"}, "path": {"const": "closure/audit.stdout"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "axiom_audit_evidence"}, "path": {"const": "closure/axiom-audit-evidence.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "claim_version"}, "path": {"const": "closure/claim-version.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "diagnostic_evidence"}, "path": {"const": "closure/diagnostic-evidence.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "environment_manifest"}, "path": {"const": "closure/environment-manifest.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "formalization_version"}, "path": {"const": "closure/formalization-version.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "lean_module"}, "path": {"const": "closure/module.lean"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "proof_closure_evidence"}, "path": {"const": "closure/proof-closure-evidence.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "protected_audit_stderr"}, "path": {"const": "closure/protected-audit.stderr"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "protected_audit_stdout"}, "path": {"const": "closure/protected-audit.stdout"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "protected_dependency_stderr"}, "path": {"const": "closure/protected-dependency.stderr"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "protected_dependency_stdout"}, "path": {"const": "closure/protected-dependency.stdout"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "protected_stderr"}, "path": {"const": "closure/protected.stderr"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "protected_stdout"}, "path": {"const": "closure/protected.stdout"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "publication_policy"}, "path": {"const": "closure/publication-policy.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "publication_request"}, "path": {"const": "closure/publication-request.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "source_version"}, "path": {"const": "closure/source-version.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "verifier_job"}, "path": {"const": "closure/verifier-job.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "verifier_report"}, "path": {"const": "closure/verifier-report.json"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "verifier_stderr"}, "path": {"const": "closure/verifier.stderr"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "verifier_stdout"}, "path": {"const": "closure/verifier.stdout"}}}]}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "path", "identity_hash", "artifact_hash"],
+      "properties": {
+        "role": {"enum": ["audit_job", "audit_policy", "audit_report", "audit_stderr", "audit_stdout", "axiom_audit_evidence", "claim_version", "diagnostic_evidence", "environment_manifest", "formalization_version", "lean_module", "proof_closure_evidence", "protected_audit_stderr", "protected_audit_stdout", "protected_dependency_stderr", "protected_dependency_stdout", "protected_stderr", "protected_stdout", "publication_policy", "publication_request", "source_version", "verifier_job", "verifier_report", "verifier_stderr", "verifier_stdout"]},
+        "path": {"type": "string", "enum": ["closure/audit-job.json", "closure/audit-policy.json", "closure/audit-report.json", "closure/audit.stderr", "closure/audit.stdout", "closure/axiom-audit-evidence.json", "closure/claim-version.json", "closure/diagnostic-evidence.json", "closure/environment-manifest.json", "closure/formalization-version.json", "closure/module.lean", "closure/proof-closure-evidence.json", "closure/protected-audit.stderr", "closure/protected-audit.stdout", "closure/protected-dependency.stderr", "closure/protected-dependency.stdout", "closure/protected.stderr", "closure/protected.stdout", "closure/publication-policy.json", "closure/publication-request.json", "closure/source-version.json", "closure/verifier-job.json", "closure/verifier-report.json", "closure/verifier.stderr", "closure/verifier.stdout"]},
+        "identity_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

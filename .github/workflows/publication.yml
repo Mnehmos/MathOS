@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   boundary:
-    name: Attested publication boundary smoke
+    name: Attested publication candidate boundary
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -28,6 +28,14 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - name: Require protected main ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF_PROTECTED:-}" == "true" ]] || {
+            echo "publication candidate requires an actively protected main ref" >&2
+            exit 65
+          }
       - name: Install repository-pinned Lean
         shell: bash
         run: |
@@ -47,8 +55,13 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap
+          sudo apt-get install --yes --no-install-recommends bubblewrap jq util-linux
           /usr/bin/bwrap --version
+          /usr/bin/prlimit --version
+          jq --version
+      - name: Build the reviewed candidate generator
+        shell: bash
+        run: cargo build --locked --bin mcl
       - name: Install pinned attestation verifier
         shell: bash
         run: |
@@ -77,12 +90,45 @@ jobs:
         shell: bash
         env:
           PUBLICATION_GH_BIN: ${{ runner.temp }}/gh_2.96.0_linux_amd64/bin/gh
+          SMOKE_BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
         run: |
           scripts/publication-attestation-verify.sh \
             "${RUNNER_TEMP}/publication-smoke/publication-smoke-report.json" \
-            "${{ steps.attest.outputs.bundle-path }}" \
+            "${SMOKE_BUNDLE_PATH}" \
             "${RUNNER_TEMP}/publication-attestation-verification"
-      - name: Retain report, diagnostics, and Sigstore bundle
+      - name: Build and validate the exact protected candidate closure
+        shell: bash
+        env:
+          PUBLICATION_CONTEXT_MODE: protected-main
+          PUBLICATION_REPOSITORY: ${{ github.repository }}
+          PUBLICATION_WORKFLOW_PATH: .github/workflows/publication.yml
+          PUBLICATION_WORKFLOW_REF: ${{ github.workflow_ref }}
+          PUBLICATION_SOURCE_REF: ${{ github.ref }}
+          PUBLICATION_SOURCE_COMMIT_SHA: ${{ github.sha }}
+          PUBLICATION_WORKFLOW_RUN_ID: ${{ github.run_id }}
+          PUBLICATION_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PUBLICATION_RUNNER_ENVIRONMENT: github_hosted
+        run: |
+          set -euo pipefail
+          export PUBLICATION_SOURCE_TREE_SHA
+          PUBLICATION_SOURCE_TREE_SHA="$(git rev-parse 'HEAD^{tree}')"
+          bash scripts/publication-candidate.sh "${RUNNER_TEMP}/publication-candidate"
+      - name: Attest exact protected candidate report
+        id: attest_candidate
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
+        with:
+          subject-path: ${{ runner.temp }}/publication-candidate/publication-report.json
+      - name: Verify exact candidate attestation and retain the challenge result
+        shell: bash
+        env:
+          PUBLICATION_GH_BIN: ${{ runner.temp }}/gh_2.96.0_linux_amd64/bin/gh
+          CANDIDATE_BUNDLE_PATH: ${{ steps.attest_candidate.outputs.bundle-path }}
+        run: |
+          scripts/publication-attestation-verify.sh \
+            "${RUNNER_TEMP}/publication-candidate/publication-report.json" \
+            "${CANDIDATE_BUNDLE_PATH}" \
+            "${RUNNER_TEMP}/publication-candidate-attestation-verification"
+      - name: Retain smoke, candidate closure, diagnostics, and Sigstore bundles
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -93,3 +139,9 @@ jobs:
             ${{ runner.temp }}/publication-smoke/
             ${{ runner.temp }}/publication-attestation-verification/
             ${{ steps.attest.outputs.bundle-path }}
+            ${{ runner.temp }}/publication-candidate/attempt/
+            ${{ runner.temp }}/publication-candidate/closure/
+            ${{ runner.temp }}/publication-candidate/publication-retained-closure.json
+            ${{ runner.temp }}/publication-candidate/publication-report.json
+            ${{ runner.temp }}/publication-candidate-attestation-verification/
+            ${{ steps.attest_candidate.outputs.bundle-path }}

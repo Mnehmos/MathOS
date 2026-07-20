@@ -413,6 +413,21 @@ mod tests {
         let expected = include_str!("../../fixtures/environment/lean-4.32-local.sha256").trim();
         assert_eq!(fixture.environment_hash().expect("fixture hash"), expected);
         assert_eq!(fixture, manifest());
+
+        let no_imports: EnvironmentManifest = serde_json::from_str(include_str!(
+            "../../fixtures/environment/lean-4.32-no-imports-local.json"
+        ))
+        .expect("no-import publication candidate environment fixture");
+        let expected_no_imports =
+            include_str!("../../fixtures/environment/lean-4.32-no-imports-local.sha256").trim();
+        no_imports.validate().expect("no-import fixture validates");
+        assert_eq!(
+            no_imports.environment_hash().expect("no-import hash"),
+            expected_no_imports
+        );
+        assert!(no_imports.dependencies.is_empty());
+        assert!(no_imports.import_manifest.is_empty());
+        assert_eq!(no_imports.trust_profile, TrustProfile::Local);
     }
 
     #[test]

@@ -9,6 +9,7 @@ use crate::error::AppError;
 
 pub const PUBLICATION_POLICY_SCHEMA_VERSION: &str = "publication_policy/1";
 pub const PUBLICATION_REQUEST_SCHEMA_VERSION: &str = "publication_request/1";
+pub const PUBLICATION_RETAINED_CLOSURE_SCHEMA_VERSION: &str = "publication_retained_closure/1";
 pub const PUBLICATION_REPORT_SCHEMA_VERSION: &str = "publication_report/1";
 pub const PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION: &str =
     "publication_attestation_verification/1";
@@ -102,6 +103,144 @@ pub struct PublicationRequest {
     pub policy_hash: String,
     pub source_commit_sha: String,
     pub source_tree_sha: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicationRetainedArtifactRole {
+    AuditJob,
+    AuditPolicy,
+    AuditReport,
+    AuditStderr,
+    AuditStdout,
+    AxiomAuditEvidence,
+    ClaimVersion,
+    DiagnosticEvidence,
+    EnvironmentManifest,
+    FormalizationVersion,
+    LeanModule,
+    ProofClosureEvidence,
+    ProtectedAuditStderr,
+    ProtectedAuditStdout,
+    ProtectedDependencyStderr,
+    ProtectedDependencyStdout,
+    ProtectedStderr,
+    ProtectedStdout,
+    PublicationPolicy,
+    PublicationRequest,
+    SourceVersion,
+    VerifierJob,
+    VerifierReport,
+    VerifierStderr,
+    VerifierStdout,
+}
+
+impl PublicationRetainedArtifactRole {
+    pub const ALL: [Self; 25] = [
+        Self::AuditJob,
+        Self::AuditPolicy,
+        Self::AuditReport,
+        Self::AuditStderr,
+        Self::AuditStdout,
+        Self::AxiomAuditEvidence,
+        Self::ClaimVersion,
+        Self::DiagnosticEvidence,
+        Self::EnvironmentManifest,
+        Self::FormalizationVersion,
+        Self::LeanModule,
+        Self::ProofClosureEvidence,
+        Self::ProtectedAuditStderr,
+        Self::ProtectedAuditStdout,
+        Self::ProtectedDependencyStderr,
+        Self::ProtectedDependencyStdout,
+        Self::ProtectedStderr,
+        Self::ProtectedStdout,
+        Self::PublicationPolicy,
+        Self::PublicationRequest,
+        Self::SourceVersion,
+        Self::VerifierJob,
+        Self::VerifierReport,
+        Self::VerifierStderr,
+        Self::VerifierStdout,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AuditJob => "audit_job",
+            Self::AuditPolicy => "audit_policy",
+            Self::AuditReport => "audit_report",
+            Self::AuditStderr => "audit_stderr",
+            Self::AuditStdout => "audit_stdout",
+            Self::AxiomAuditEvidence => "axiom_audit_evidence",
+            Self::ClaimVersion => "claim_version",
+            Self::DiagnosticEvidence => "diagnostic_evidence",
+            Self::EnvironmentManifest => "environment_manifest",
+            Self::FormalizationVersion => "formalization_version",
+            Self::LeanModule => "lean_module",
+            Self::ProofClosureEvidence => "proof_closure_evidence",
+            Self::ProtectedAuditStderr => "protected_audit_stderr",
+            Self::ProtectedAuditStdout => "protected_audit_stdout",
+            Self::ProtectedDependencyStderr => "protected_dependency_stderr",
+            Self::ProtectedDependencyStdout => "protected_dependency_stdout",
+            Self::ProtectedStderr => "protected_stderr",
+            Self::ProtectedStdout => "protected_stdout",
+            Self::PublicationPolicy => "publication_policy",
+            Self::PublicationRequest => "publication_request",
+            Self::SourceVersion => "source_version",
+            Self::VerifierJob => "verifier_job",
+            Self::VerifierReport => "verifier_report",
+            Self::VerifierStderr => "verifier_stderr",
+            Self::VerifierStdout => "verifier_stdout",
+        }
+    }
+
+    pub const fn expected_path(self) -> &'static str {
+        match self {
+            Self::AuditJob => "closure/audit-job.json",
+            Self::AuditPolicy => "closure/audit-policy.json",
+            Self::AuditReport => "closure/audit-report.json",
+            Self::AuditStderr => "closure/audit.stderr",
+            Self::AuditStdout => "closure/audit.stdout",
+            Self::AxiomAuditEvidence => "closure/axiom-audit-evidence.json",
+            Self::ClaimVersion => "closure/claim-version.json",
+            Self::DiagnosticEvidence => "closure/diagnostic-evidence.json",
+            Self::EnvironmentManifest => "closure/environment-manifest.json",
+            Self::FormalizationVersion => "closure/formalization-version.json",
+            Self::LeanModule => "closure/module.lean",
+            Self::ProofClosureEvidence => "closure/proof-closure-evidence.json",
+            Self::ProtectedAuditStderr => "closure/protected-audit.stderr",
+            Self::ProtectedAuditStdout => "closure/protected-audit.stdout",
+            Self::ProtectedDependencyStderr => "closure/protected-dependency.stderr",
+            Self::ProtectedDependencyStdout => "closure/protected-dependency.stdout",
+            Self::ProtectedStderr => "closure/protected.stderr",
+            Self::ProtectedStdout => "closure/protected.stdout",
+            Self::PublicationPolicy => "closure/publication-policy.json",
+            Self::PublicationRequest => "closure/publication-request.json",
+            Self::SourceVersion => "closure/source-version.json",
+            Self::VerifierJob => "closure/verifier-job.json",
+            Self::VerifierReport => "closure/verifier-report.json",
+            Self::VerifierStderr => "closure/verifier.stderr",
+            Self::VerifierStdout => "closure/verifier.stdout",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationRetainedClosureEntry {
+    pub role: PublicationRetainedArtifactRole,
+    pub path: String,
+    pub identity_hash: String,
+    pub artifact_hash: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationRetainedClosure {
+    pub schema_version: String,
+    pub subject: ExactVersionReference,
+    pub request_hash: String,
+    pub artifacts: Vec<PublicationRetainedClosureEntry>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -217,6 +356,109 @@ impl PublicationRequest {
     pub fn request_hash(&self) -> Result<String, AppError> {
         self.validate()?;
         hash_serializable(self, "MCL_PUBLICATION_REQUEST_INVALID")
+    }
+}
+
+impl PublicationRetainedClosure {
+    pub fn validate(&self, request: &PublicationRequest) -> Result<(), AppError> {
+        request.validate()?;
+        let expected_request_hash = request.request_hash()?;
+        let exact_roles = self.artifacts.len() == PublicationRetainedArtifactRole::ALL.len()
+            && self
+                .artifacts
+                .iter()
+                .zip(PublicationRetainedArtifactRole::ALL)
+                .all(|(entry, role)| entry.role == role);
+        let valid_entries = self.artifacts.iter().all(|entry| {
+            entry.path == entry.role.expected_path()
+                && is_hash(&entry.identity_hash)
+                && is_hash(&entry.artifact_hash)
+        });
+        let binds = |role, identity_hash: &str, artifact_hash: Option<&str>| {
+            self.artifacts
+                .iter()
+                .find(|entry| entry.role == role)
+                .is_some_and(|entry| {
+                    entry.identity_hash == identity_hash
+                        && artifact_hash.is_none_or(|hash| entry.artifact_hash == hash)
+                })
+        };
+
+        if self.schema_version != PUBLICATION_RETAINED_CLOSURE_SCHEMA_VERSION
+            || self.subject != request.subject
+            || self.request_hash != expected_request_hash
+            || !exact_roles
+            || !valid_entries
+            || !binds(
+                PublicationRetainedArtifactRole::PublicationRequest,
+                &expected_request_hash,
+                Some(&expected_request_hash),
+            )
+            || !binds(
+                PublicationRetainedArtifactRole::FormalizationVersion,
+                &request.subject.version_hash,
+                None,
+            )
+            || !binds(
+                PublicationRetainedArtifactRole::EnvironmentManifest,
+                &request.environment_hash,
+                None,
+            )
+            || !binds(
+                PublicationRetainedArtifactRole::LeanModule,
+                &request.module_artifact_hash,
+                Some(&request.module_artifact_hash),
+            )
+            || !binds(
+                PublicationRetainedArtifactRole::PublicationPolicy,
+                &request.policy_hash,
+                None,
+            )
+            || !binds(
+                PublicationRetainedArtifactRole::DiagnosticEvidence,
+                &request.diagnostic_evidence_hash,
+                None,
+            )
+            || !binds(
+                PublicationRetainedArtifactRole::ProofClosureEvidence,
+                &request.proof_closure_evidence_hash,
+                None,
+            )
+            || !binds(
+                PublicationRetainedArtifactRole::AxiomAuditEvidence,
+                &request.axiom_audit_evidence_hash,
+                None,
+            )
+        {
+            return Err(publication_error(
+                "MCL_PUBLICATION_RETAINED_CLOSURE_INVALID",
+                "retained publication closure is incomplete, unsafe, or inconsistent with its canonical request",
+                "Retain exactly one safely named artifact for every required role and bind all request-controlled identities.",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn closure_hash(&self, request: &PublicationRequest) -> Result<String, AppError> {
+        self.validate(request)?;
+        hash_serializable(self, "MCL_PUBLICATION_RETAINED_CLOSURE_INVALID")
+    }
+
+    pub fn report_retained_artifact_hashes(
+        &self,
+        request: &PublicationRequest,
+    ) -> Result<Vec<String>, AppError> {
+        self.validate(request)?;
+        let closure_artifact_hash = self.closure_hash(request)?;
+        let mut hashes = self
+            .artifacts
+            .iter()
+            .map(|entry| entry.artifact_hash.clone())
+            .collect::<Vec<_>>();
+        hashes.push(closure_artifact_hash);
+        hashes.sort_unstable();
+        hashes.dedup();
+        Ok(hashes)
     }
 }
 
@@ -384,6 +626,68 @@ pub fn publication_request_schema() -> Value {
             "policy_hash": hash_schema(64),
             "source_commit_sha": hash_schema(40),
             "source_tree_sha": hash_schema(40)
+        }
+    })
+}
+
+pub fn publication_retained_closure_schema() -> Value {
+    let roles = PublicationRetainedArtifactRole::ALL
+        .into_iter()
+        .map(|role| Value::String(role.as_str().to_owned()))
+        .collect::<Vec<_>>();
+    let paths = PublicationRetainedArtifactRole::ALL
+        .into_iter()
+        .map(|role| Value::String(role.expected_path().to_owned()))
+        .collect::<Vec<_>>();
+    let ordered_artifacts = PublicationRetainedArtifactRole::ALL
+        .into_iter()
+        .map(|role| {
+            json!({
+                "allOf": [
+                    {"$ref": "#/$defs/artifact"},
+                    {"properties": {
+                        "role": {"const": role.as_str()},
+                        "path": {"const": role.expected_path()}
+                    }}
+                ]
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://mnehmos.ai/mathos/schemas/publication/retained-closure/1",
+        "title": "MathOS Publication Retained Closure v1",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema_version", "subject", "request_hash", "artifacts"],
+        "properties": {
+            "schema_version": {"const": PUBLICATION_RETAINED_CLOSURE_SCHEMA_VERSION},
+            "subject": exact_reference_schema(),
+            "request_hash": hash_schema(64),
+            "artifacts": {
+                "type": "array",
+                "minItems": PublicationRetainedArtifactRole::ALL.len(),
+                "maxItems": PublicationRetainedArtifactRole::ALL.len(),
+                "uniqueItems": true,
+                "prefixItems": ordered_artifacts,
+                "items": false
+            }
+        },
+        "$defs": {
+            "artifact": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["role", "path", "identity_hash", "artifact_hash"],
+                "properties": {
+                    "role": {"enum": roles},
+                    "path": {
+                        "type": "string",
+                        "enum": paths
+                    },
+                    "identity_hash": hash_schema(64),
+                    "artifact_hash": hash_schema(64)
+                }
+            }
         }
     })
 }
@@ -569,6 +873,257 @@ mod tests {
         }
     }
 
+    fn retained_closure(request: &PublicationRequest) -> PublicationRetainedClosure {
+        let request_hash = request.request_hash().expect("request hash");
+        let artifacts = PublicationRetainedArtifactRole::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(index, role)| PublicationRetainedClosureEntry {
+                role,
+                path: role.expected_path().to_owned(),
+                identity_hash: format!("{:064x}", index + 16),
+                artifact_hash: format!("{:064x}", index + 64),
+            })
+            .collect::<Vec<_>>();
+        let mut closure = PublicationRetainedClosure {
+            schema_version: PUBLICATION_RETAINED_CLOSURE_SCHEMA_VERSION.to_owned(),
+            subject: request.subject.clone(),
+            request_hash: request_hash.clone(),
+            artifacts,
+        };
+        let mut bind = |role, identity_hash: &str, artifact_hash: Option<&str>| {
+            let entry = closure
+                .artifacts
+                .iter_mut()
+                .find(|entry| entry.role == role)
+                .expect("required retained role");
+            entry.identity_hash = identity_hash.to_owned();
+            if let Some(artifact_hash) = artifact_hash {
+                entry.artifact_hash = artifact_hash.to_owned();
+            }
+        };
+        bind(
+            PublicationRetainedArtifactRole::PublicationRequest,
+            &request_hash,
+            Some(&request_hash),
+        );
+        bind(
+            PublicationRetainedArtifactRole::FormalizationVersion,
+            &request.subject.version_hash,
+            None,
+        );
+        bind(
+            PublicationRetainedArtifactRole::EnvironmentManifest,
+            &request.environment_hash,
+            None,
+        );
+        bind(
+            PublicationRetainedArtifactRole::LeanModule,
+            &request.module_artifact_hash,
+            Some(&request.module_artifact_hash),
+        );
+        bind(
+            PublicationRetainedArtifactRole::PublicationPolicy,
+            &request.policy_hash,
+            None,
+        );
+        bind(
+            PublicationRetainedArtifactRole::DiagnosticEvidence,
+            &request.diagnostic_evidence_hash,
+            None,
+        );
+        bind(
+            PublicationRetainedArtifactRole::ProofClosureEvidence,
+            &request.proof_closure_evidence_hash,
+            None,
+        );
+        bind(
+            PublicationRetainedArtifactRole::AxiomAuditEvidence,
+            &request.axiom_audit_evidence_hash,
+            None,
+        );
+        closure
+    }
+
+    #[test]
+    fn retained_closure_is_exact_sorted_and_allows_duplicate_artifact_hashes() {
+        let request = request();
+        let mut closure = retained_closure(&request);
+        let duplicate_log_hash = "8".repeat(64);
+        for role in [
+            PublicationRetainedArtifactRole::VerifierStdout,
+            PublicationRetainedArtifactRole::VerifierStderr,
+        ] {
+            closure
+                .artifacts
+                .iter_mut()
+                .find(|entry| entry.role == role)
+                .expect("log role")
+                .artifact_hash = duplicate_log_hash.clone();
+        }
+
+        closure.validate(&request).expect("closed retained set");
+        assert_eq!(
+            closure.closure_hash(&request).expect("closure hash").len(),
+            64
+        );
+        let closure_artifact_hash = closure.closure_hash(&request).expect("closure hash");
+        let retained_hashes = closure
+            .report_retained_artifact_hashes(&request)
+            .expect("report retention set");
+        assert!(retained_hashes.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(retained_hashes.contains(&duplicate_log_hash));
+        assert!(retained_hashes.contains(&closure_artifact_hash));
+        assert_eq!(retained_hashes.len(), closure.artifacts.len());
+    }
+
+    #[test]
+    fn retained_closure_rejects_missing_duplicate_or_unsorted_roles_and_paths() {
+        let request = request();
+        let closure = retained_closure(&request);
+
+        let names = PublicationRetainedArtifactRole::ALL
+            .into_iter()
+            .map(PublicationRetainedArtifactRole::as_str)
+            .collect::<Vec<_>>();
+        let mut sorted_names = names.clone();
+        sorted_names.sort_unstable();
+        assert_eq!(names, sorted_names);
+
+        let mut missing = closure.clone();
+        missing.artifacts.pop();
+        assert_eq!(
+            missing
+                .validate(&request)
+                .expect_err("missing role fails")
+                .code,
+            "MCL_PUBLICATION_RETAINED_CLOSURE_INVALID"
+        );
+
+        let mut duplicate = closure.clone();
+        duplicate.artifacts[1].role = duplicate.artifacts[0].role;
+        assert!(duplicate.validate(&request).is_err());
+
+        let mut unsorted = closure.clone();
+        unsorted.artifacts.swap(0, 1);
+        assert!(unsorted.validate(&request).is_err());
+
+        let unsafe_or_aliased_paths = [
+            "",
+            "../escape",
+            "/absolute",
+            "C:/drive",
+            "closure\\audit-job.json",
+            "closure//audit-job.json",
+            "closure/./audit-job.json",
+            ".hidden",
+            "closure/has space",
+            "closure/AUDIT-JOB.JSON",
+            "closure/audit-job.json.",
+            "closure/con.json",
+            "-rf",
+        ];
+        for unsafe_path in unsafe_or_aliased_paths {
+            let mut altered = closure.clone();
+            altered.artifacts[0].path = unsafe_path.to_owned();
+            assert!(
+                altered.validate(&request).is_err(),
+                "unsafe path accepted: {unsafe_path}"
+            );
+        }
+        let mut duplicate_path = closure.clone();
+        duplicate_path.artifacts[1].path = duplicate_path.artifacts[0].path.clone();
+        assert!(duplicate_path.validate(&request).is_err());
+    }
+
+    #[test]
+    fn retained_closure_rejects_altered_request_bindings_and_hashes() {
+        let request = request();
+        let closure = retained_closure(&request);
+
+        for role in [
+            PublicationRetainedArtifactRole::PublicationRequest,
+            PublicationRetainedArtifactRole::FormalizationVersion,
+            PublicationRetainedArtifactRole::EnvironmentManifest,
+            PublicationRetainedArtifactRole::LeanModule,
+            PublicationRetainedArtifactRole::PublicationPolicy,
+            PublicationRetainedArtifactRole::DiagnosticEvidence,
+            PublicationRetainedArtifactRole::ProofClosureEvidence,
+            PublicationRetainedArtifactRole::AxiomAuditEvidence,
+        ] {
+            let mut altered = closure.clone();
+            altered
+                .artifacts
+                .iter_mut()
+                .find(|entry| entry.role == role)
+                .expect("bound role")
+                .identity_hash = "9".repeat(64);
+            assert!(
+                altered.validate(&request).is_err(),
+                "altered identity accepted for {}",
+                role.as_str()
+            );
+        }
+
+        for role in [
+            PublicationRetainedArtifactRole::PublicationRequest,
+            PublicationRetainedArtifactRole::LeanModule,
+        ] {
+            let mut altered = closure.clone();
+            altered
+                .artifacts
+                .iter_mut()
+                .find(|entry| entry.role == role)
+                .expect("artifact-bound role")
+                .artifact_hash = "9".repeat(64);
+            assert!(
+                altered.validate(&request).is_err(),
+                "altered artifact accepted for {}",
+                role.as_str()
+            );
+        }
+
+        let mut altered_subject = closure.clone();
+        altered_subject.subject.object_id = uuid::Uuid::now_v7().to_string();
+        assert!(altered_subject.validate(&request).is_err());
+        let mut altered_request_hash = closure.clone();
+        altered_request_hash.request_hash = "9".repeat(64);
+        assert!(altered_request_hash.validate(&request).is_err());
+
+        for invalid_hash in ["a".repeat(63), "A".repeat(64), "g".repeat(64)] {
+            let mut invalid_identity = closure.clone();
+            invalid_identity.artifacts[0].identity_hash = invalid_hash.clone();
+            assert!(invalid_identity.validate(&request).is_err());
+            let mut invalid_artifact = closure.clone();
+            invalid_artifact.artifacts[0].artifact_hash = invalid_hash;
+            assert!(invalid_artifact.validate(&request).is_err());
+        }
+        let retained_hashes = closure
+            .report_retained_artifact_hashes(&request)
+            .expect("derived retained hash set");
+        assert!(retained_hashes.contains(&closure.closure_hash(&request).expect("closure hash")));
+    }
+
+    #[test]
+    fn retained_closure_deserialization_denies_unknown_fields_and_roles() {
+        let request = request();
+        let closure = retained_closure(&request);
+        let mut unknown_top = serde_json::to_value(&closure).expect("closure value");
+        unknown_top
+            .as_object_mut()
+            .expect("closure object")
+            .insert("authoritative".to_owned(), Value::Bool(true));
+        assert!(serde_json::from_value::<PublicationRetainedClosure>(unknown_top).is_err());
+
+        let mut unknown_entry = serde_json::to_value(&closure).expect("closure value");
+        unknown_entry["artifacts"][0]["extra"] = Value::Bool(true);
+        assert!(serde_json::from_value::<PublicationRetainedClosure>(unknown_entry).is_err());
+
+        let mut unknown_role = serde_json::to_value(&closure).expect("closure value");
+        unknown_role["artifacts"][0]["role"] = Value::String("publication_report".to_owned());
+        assert!(serde_json::from_value::<PublicationRetainedClosure>(unknown_role).is_err());
+    }
+
     fn candidate_report() -> PublicationReport {
         let request = request();
         PublicationReport {
@@ -722,6 +1277,10 @@ mod tests {
             "../../schemas/publication/publication-request-1.schema.json"
         ))
         .expect("request schema");
+        let retained_closure_value: Value = serde_json::from_str(include_str!(
+            "../../schemas/publication/publication-retained-closure-1.schema.json"
+        ))
+        .expect("retained closure schema");
         let report_value: Value = serde_json::from_str(include_str!(
             "../../schemas/publication/publication-report-1.schema.json"
         ))
@@ -732,6 +1291,10 @@ mod tests {
         .expect("attestation verification schema");
         assert_eq!(policy_value, publication_policy_schema());
         assert_eq!(request_value, publication_request_schema());
+        assert_eq!(
+            retained_closure_value,
+            publication_retained_closure_schema()
+        );
         assert_eq!(report_value, publication_report_schema());
         assert_eq!(
             attestation_value,

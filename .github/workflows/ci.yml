@@ -83,8 +83,10 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap
+          sudo apt-get install --yes --no-install-recommends bubblewrap jq util-linux
           /usr/bin/bwrap --version
+          /usr/bin/prlimit --version
+          jq --version
       - name: Run real contained Lean worker integration
         shell: bash
         env:
@@ -93,6 +95,36 @@ jobs:
       - name: Exercise publication isolation boundary without authority
         shell: bash
         run: scripts/publication-smoke.sh "${RUNNER_TEMP}/publication-smoke"
+      - name: Exercise non-attested simulated-main candidate without authority
+        shell: bash
+        env:
+          PUBLICATION_CONTEXT_MODE: simulated-main
+          PUBLICATION_REPOSITORY: Mnehmos/MathOS
+          PUBLICATION_WORKFLOW_PATH: .github/workflows/publication.yml
+          PUBLICATION_WORKFLOW_REF: Mnehmos/MathOS/.github/workflows/publication.yml@refs/heads/main
+          PUBLICATION_SOURCE_REF: refs/heads/main
+          PUBLICATION_SOURCE_COMMIT_SHA: ${{ github.sha }}
+          PUBLICATION_WORKFLOW_RUN_ID: ${{ github.run_id }}
+          PUBLICATION_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PUBLICATION_RUNNER_ENVIRONMENT: github_hosted
+        run: |
+          set -euo pipefail
+          cargo build --locked --bin mcl
+          export PUBLICATION_SOURCE_TREE_SHA
+          PUBLICATION_SOURCE_TREE_SHA="$(git rev-parse 'HEAD^{tree}')"
+          bash scripts/publication-candidate.sh "${RUNNER_TEMP}/publication-candidate-simulated-main"
+      - name: Retain a failed simulated candidate attempt
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: publication-candidate-failure-${{ github.sha }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/publication-candidate-simulated-main/attempt/
+            ${{ runner.temp }}/publication-candidate-simulated-main/closure/
+            ${{ runner.temp }}/publication-candidate-simulated-main/publication-retained-closure.json
+            ${{ runner.temp }}/publication-candidate-simulated-main/publication-report.json
 
   legacy-python-regression:
     name: Legacy Python regression evidence
