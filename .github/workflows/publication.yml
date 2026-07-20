@@ -90,10 +90,11 @@ jobs:
         shell: bash
         env:
           PUBLICATION_GH_BIN: ${{ runner.temp }}/gh_2.96.0_linux_amd64/bin/gh
+          SMOKE_BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
         run: |
           scripts/publication-attestation-verify.sh \
             "${RUNNER_TEMP}/publication-smoke/publication-smoke-report.json" \
-            "${{ steps.attest.outputs.bundle-path }}" \
+            "${SMOKE_BUNDLE_PATH}" \
             "${RUNNER_TEMP}/publication-attestation-verification"
       - name: Build and validate the exact protected candidate closure
         shell: bash
@@ -121,10 +122,11 @@ jobs:
         shell: bash
         env:
           PUBLICATION_GH_BIN: ${{ runner.temp }}/gh_2.96.0_linux_amd64/bin/gh
+          CANDIDATE_BUNDLE_PATH: ${{ steps.attest_candidate.outputs.bundle-path }}
         run: |
           scripts/publication-attestation-verify.sh \
             "${RUNNER_TEMP}/publication-candidate/publication-report.json" \
-            "${{ steps.attest_candidate.outputs.bundle-path }}" \
+            "${CANDIDATE_BUNDLE_PATH}" \
             "${RUNNER_TEMP}/publication-candidate-attestation-verification"
       - name: Retain smoke, candidate closure, diagnostics, and Sigstore bundles
         if: always()
