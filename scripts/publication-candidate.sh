@@ -685,11 +685,22 @@ if grep -Fq "'$DECLARATION_NAME' depends on axioms:" \
   die "$EXIT_VALIDATION" "protected axiom driver observed an unexpected axiom surface"
 fi
 
+if ! verifier_report_hash="$(jq -er '.result_artifact_hash | strings' "$temporary_root/verifier-job.json")" \
+    || [[ ! "$verifier_report_hash" =~ ^[0-9a-f]{64}$ ]]; then
+  die "$EXIT_VALIDATION" "terminal verifier job has no canonical report artifact hash"
+fi
+if ! audit_report_hash="$(jq -er '.result_artifact_hash | strings' "$temporary_root/audit-job.json")" \
+    || [[ ! "$audit_report_hash" =~ ^[0-9a-f]{64}$ ]]; then
+  die "$EXIT_VALIDATION" "terminal audit job has no canonical report artifact hash"
+fi
+if ! audit_policy_hash="$(jq -er '.request.policy_hash | strings' "$temporary_root/audit-job.json")" \
+    || [[ ! "$audit_policy_hash" =~ ^[0-9a-f]{64}$ ]]; then
+  die "$EXIT_VALIDATION" "terminal audit job has no canonical policy hash"
+fi
+
 copy_cas "$request_hash" "$closure_dir/publication-request.json"
-copy_cas "$(jq -er '.job.result_artifact_hash' "$temporary_root/verifier-job.json")" \
-  "$closure_dir/verifier-report.json"
-copy_cas "$(jq -er '.job.result_artifact_hash' "$temporary_root/audit-job.json")" \
-  "$closure_dir/audit-report.json"
+copy_cas "$verifier_report_hash" "$closure_dir/verifier-report.json"
+copy_cas "$audit_report_hash" "$closure_dir/audit-report.json"
 
 retain_optional_cas_log() {
   local source_json="$1"
@@ -734,8 +745,16 @@ assert_file_hash "$closure_dir/module.lean" "$module_hash" "Lean module"
 assert_file_hash "$closure_dir/environment-manifest.json" "$environment_hash" "environment manifest"
 publication_policy_hash="$(tr -d '\r\n' <"$PUBLICATION_POLICY_HASH")"
 assert_file_hash "$closure_dir/publication-policy.json" "$publication_policy_hash" "publication policy"
-audit_policy_hash="$(jq -er '.job.request.policy_hash' "$temporary_root/audit-job.json")"
 assert_file_hash "$closure_dir/audit-policy.json" "$audit_policy_hash" "audit policy"
+
+if ! verifier_job_input_hash="$(jq -er '.canonical_input_hash | strings' "$closure_dir/verifier-job.json")" \
+    || [[ ! "$verifier_job_input_hash" =~ ^[0-9a-f]{64}$ ]]; then
+  die "$EXIT_VALIDATION" "retained verifier job has no canonical input hash"
+fi
+if ! audit_job_input_hash="$(jq -er '.canonical_input_hash | strings' "$closure_dir/audit-job.json")" \
+    || [[ ! "$audit_job_input_hash" =~ ^[0-9a-f]{64}$ ]]; then
+  die "$EXIT_VALIDATION" "retained audit job has no canonical input hash"
+fi
 
 entries_file="$temporary_root/closure-entries.jsonl"
 : >"$entries_file"
@@ -757,7 +776,7 @@ add_entry() {
 }
 
 add_entry audit_job closure/audit-job.json \
-  "$(jq -er '.canonical_input_hash' "$closure_dir/audit-job.json")"
+  "$audit_job_input_hash"
 add_entry audit_policy closure/audit-policy.json "$audit_policy_hash"
 add_entry audit_report closure/audit-report.json \
   "$(sha256_file "$closure_dir/audit-report.json")"
@@ -788,7 +807,7 @@ add_entry publication_policy closure/publication-policy.json "$publication_polic
 add_entry publication_request closure/publication-request.json "$request_hash"
 add_entry source_version closure/source-version.json "$source_version_hash"
 add_entry verifier_job closure/verifier-job.json \
-  "$(jq -er '.canonical_input_hash' "$closure_dir/verifier-job.json")"
+  "$verifier_job_input_hash"
 add_entry verifier_report closure/verifier-report.json \
   "$(sha256_file "$closure_dir/verifier-report.json")"
 add_entry verifier_stderr closure/verifier.stderr \
