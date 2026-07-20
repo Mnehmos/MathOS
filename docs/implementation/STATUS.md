@@ -30,7 +30,9 @@ Issue [#20](https://github.com/Mnehmos/MathOS/issues/20) closed after GitHub Act
 
 PR [#22](https://github.com/Mnehmos/MathOS/pull/22) merged the isolated publication-boundary smoke after all five checks passed in run `29707914210` on exact tree `496e8b5dc71550aa83f11e6ba659f3353195741a`. Protected `main` publication run `29707995584` and ordinary CI run `29707995606` then passed on merge commit `31ccfdda41d538bde7e01e061865580cab2f04e5`.
 
-Active branch: `feat/publication-attestation-verification`.
+PR [#23](https://github.com/Mnehmos/MathOS/pull/23) passed all five checks in run `29708510408` on exact tree `a2f57f427d5e59b4042bcbdd703436595014bdd3` and merged as `47346cd4a378716711e6b4bbc079e847ab2621b5`.
+
+Active branch: `fix/publication-attestation-selector`.
 
 ## Completed criteria with evidence
 
@@ -171,6 +173,7 @@ These items establish only part of the product foundation and Phase 2 trace mode
 - Pull-request CI exercises the isolation boundary. The protected `main` workflow additionally attests the exact smoke report with the SHA-pinned official GitHub action and retains report bytes, diagnostics, and the Sigstore bundle for 90 days.
 - Protected `main` publication run `29707995584` retained artifact `8448453305`. Its archive digest is `0e3d0007da30460b1918d98fea39fad08cffda4b0249035a88bb9a1cd2d30896`; the exact smoke report digest is `08bead82cea25ffdfc3424084cb0878f2a648b3375317daa0c799395751dba40`; and its Sigstore bundle digest is `5dd23a13fa66efef8885e2116bd994bce92244a290c3ce0d9467d5eeb6d5ac14`. Inspection confirmed the DSSE subject digest matches the report, while the certificate binds the protected workflow, `main`, exact source commit, push event, and GitHub-hosted runner.
 - The active slice adds a closed, permanently non-authoritative attestation-verification record plus a pinned verifier invocation that challenges exact report bytes and the retained bundle. Controlled canonical ingestion and authoritative evidence creation remain unavailable.
+- Protected run `29708636210` proved installation, isolated Lean execution, and attestation, then rejected verification because GitHub CLI 2.96.0 makes exact certificate identity and signer-workflow selectors mutually exclusive. The corrective slice keeps the stronger exact certificate SAN, removes the redundant selector, captures verifier stderr, and makes failed-attempt artifact retention unconditional.
 
 ## Next highest-priority criteria
 

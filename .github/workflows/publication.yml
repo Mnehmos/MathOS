@@ -83,6 +83,7 @@ jobs:
             "${{ steps.attest.outputs.bundle-path }}" \
             "${RUNNER_TEMP}/publication-attestation-verification"
       - name: Retain report, diagnostics, and Sigstore bundle
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: publication-boundary-${{ github.sha }}

@@ -24,7 +24,6 @@ Authority ingestion will invoke only the allowlisted GitHub CLI attestation veri
 gh attestation verify <report> \
   --repo Mnehmos/MathOS \
   --bundle <retained-bundle> \
-  --signer-workflow Mnehmos/MathOS/.github/workflows/publication.yml \
   --cert-identity https://github.com/Mnehmos/MathOS/.github/workflows/publication.yml@refs/heads/main \
   --source-ref refs/heads/main \
   --source-digest <exact-commit-sha> \
@@ -37,6 +36,8 @@ gh attestation verify <report> \
 MathOS will then parse and constrain the verified certificate and statement rather than trusting command success alone. The report digest, repository, workflow, ref, commit, runner environment, policy hash, formalization, environment, module, evidence closure, and retained artifacts must all agree.
 
 The verifier is part of the trust boundary. The policy therefore pins the GitHub CLI version, release archive SHA-256, and extracted executable SHA-256. The protected workflow verifies both hashes before invoking it.
+
+GitHub CLI treats exact certificate identity and signer-workflow selectors as mutually exclusive. MathOS uses the stronger exact certificate SAN, which already binds repository, workflow path, and `main` ref. The expected signer workflow remains explicit in the constrained verification record.
 
 The publication workflow lives on protected `main`. Pull-request CI may test candidate generation and rejection paths, but cannot produce authoritative evidence.
 
