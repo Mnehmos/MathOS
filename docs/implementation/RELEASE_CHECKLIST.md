@@ -33,7 +33,7 @@ Remote fidelity evidence: GitHub Actions run `29706138708` passed fresh Linux, W
 - [ ] Authoritative proof and refutation evidence is recorded against exact formalization versions.
 - [ ] Hole, unsafe, and axiom policies are enforced.
 - [ ] Replay works and reports its exact trust boundary.
-- [ ] Publication CI produces retained evidence.
+- [x] Publication CI produces retained evidence.
 
 Phase 1 evidence: `lean-toolchain` pins Lean 4.32.0. No proof-authority item is complete.
 
@@ -53,7 +53,7 @@ Phase 3 publication contract evidence: the closed publication policy, request, r
 
 Remote controlled-ingestion evidence: PR #34 merged as `95bd8a1d2068612b5eca644c3d77754b5e4f49fd`, tree `4027d03fe05bd997108c86250adcf2d920adda48`; main CI run `29721420110` passed all five jobs. Protected publication run `29721420136`, job `88285050682`, passed exact candidate construction, attestation, independent challenge, staging, controlled ingestion, and retention. Artifact `8452528096` has GitHub archive digest `66cd47753a77f90bf216b874d4d7c99f7ba561a4586e29c524e094c82eb3206c`. Downloaded inspection recomputed the report (`5f02696eac1308f48eae9f085f003e750f009dbe496d055543792b088e3b2aa6`), 25-role closure (`6440836d612d91dfe43af952d6ac83ca1445bf75c86b8b52a8c79f6121427b38`), candidate bundle (`c02cde0384cd015bbb085d2f98e69c245888dd7cfbc10973b0c9a9e722ad326c`), stage (`e4b307416358ef657c57d81d07c6b21df0381befbf5600982442bc435d98baa5`), raw verifier output (`bdfe54e9e889c52c7dc32941dc8fb16d50b1e2b8071a5b69be04eb1040d45932`), and canonical CAS attestation-verification/SQLite receipt key (`659b789a41a14ac59ca9253c2c71d73c4717acc58dcc2187809e92c710814402`) hashes. All 71 retained files, eight stderr files, immutable repository/owner identities, one subject, one source dependency, Rekor timestamp `2026-07-20T06:22:33Z`, and 18 false authority fields passed audit. This is exact provenance evidence only.
 
-Remote evidence: GitHub Actions run `29704542965` passed the exact real Lean audit lifecycle and fresh Linux and Windows suites on tree `30d55d6e2ce7b0de2d921cff3e1368124fd9f66f`. This validates the local diagnostic audit capability only. The verification checklist remains open until publication-profile authority, replay, and retained publication evidence are complete.
+Remote evidence: GitHub Actions run `29704542965` passed the exact real Lean audit lifecycle and fresh Linux and Windows suites on tree `30d55d6e2ce7b0de2d921cff3e1368124fd9f66f`. This validates the local diagnostic audit capability only. The remaining verification checklist items stay open until publication-profile authority and replay are complete.
 
 Remote request-preparation evidence: PR #30 merged as `da33431a1061bb3f05db7a7d2473f1fb5b8059f2`, tree `620f2a3060290ffe37fb3051ff604fa4433679af`. Main CI run `29711916515` passed every required platform/toolchain job; publication run `29711916501` retained and independently verified the exact non-authoritative smoke artifact. That request-preparation capability is now incorporated into the merged candidate and controlled-ingestion evidence above.
 
