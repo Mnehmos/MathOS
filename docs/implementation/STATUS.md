@@ -1,6 +1,6 @@
 # Implementation Status
 
-Last updated: 2026-07-19
+Last updated: 2026-07-20
 
 ## Release truth
 
@@ -32,7 +32,9 @@ PR [#22](https://github.com/Mnehmos/MathOS/pull/22) merged the isolated publicat
 
 PR [#23](https://github.com/Mnehmos/MathOS/pull/23) passed all five checks in run `29708510408` on exact tree `a2f57f427d5e59b4042bcbdd703436595014bdd3` and merged as `47346cd4a378716711e6b4bbc079e847ab2621b5`.
 
-Active branch: `fix/publication-attestation-selector`.
+PR [#26](https://github.com/Mnehmos/MathOS/pull/26) corrected the attestation policy's `jq` object iteration. All five PR checks passed in run `29709569292` on exact tree `e5b0bcbf4eacf9cb402d87b04b5dc9b0431134f2`, and the PR merged as `6b4a0f22d3498a4cb0c8dab744da7f9a09993fd8`.
+
+Active branch: `main`; issue #21 continues with controlled ingestion of a real publication closure.
 
 ## Completed criteria with evidence
 
@@ -172,12 +174,15 @@ These items establish only part of the product foundation and Phase 2 trace mode
 - The publication boundary smoke uses a clean checkout, pinned Lean, read-only root mount, separate mount, PID, and network namespaces, a private temporary filesystem, one Lean worker thread, and a four-gibibyte address-space limit. Its report remains explicitly non-authoritative.
 - Pull-request CI exercises the isolation boundary. The protected `main` workflow additionally attests the exact smoke report with the SHA-pinned official GitHub action and retains report bytes, diagnostics, and the Sigstore bundle for 90 days.
 - Protected `main` publication run `29707995584` retained artifact `8448453305`. Its archive digest is `0e3d0007da30460b1918d98fea39fad08cffda4b0249035a88bb9a1cd2d30896`; the exact smoke report digest is `08bead82cea25ffdfc3424084cb0878f2a648b3375317daa0c799395751dba40`; and its Sigstore bundle digest is `5dd23a13fa66efef8885e2116bd994bce92244a290c3ce0d9467d5eeb6d5ac14`. Inspection confirmed the DSSE subject digest matches the report, while the certificate binds the protected workflow, `main`, exact source commit, push event, and GitHub-hosted runner.
-- The active slice adds a closed, permanently non-authoritative attestation-verification record plus a pinned verifier invocation that challenges exact report bytes and the retained bundle. Controlled canonical ingestion and authoritative evidence creation remain unavailable.
+- The protected verification path now emits a closed, permanently non-authoritative attestation-verification record after the pinned verifier challenges exact report bytes and the retained bundle. Controlled canonical ingestion and authoritative evidence creation remain unavailable.
 - Protected run `29708636210` proved installation, isolated Lean execution, and attestation, then rejected verification because GitHub CLI 2.96.0 makes exact certificate identity and signer-workflow selectors mutually exclusive. The corrective slice keeps the stronger exact certificate SAN, removes the redundant selector, captures verifier stderr, and makes failed-attempt artifact retention unconditional.
+- Protected run `29708831882` then completed cryptographic verification but exposed incorrect `jq` use of `all` in the final policy query. Failed artifact `8448611307` retained the exact report, bundle, raw verifier JSON, and stderr. PR #26 changed the predicate and timestamp constraints to `all(.[]; condition)`, retained the exact subject-digest check, and made policy rejection preserve diagnostics, emit a stable message, exit `71`, and omit the constrained success record.
+- Protected publication run `29709634846`, job `88251709818`, passed on merge commit `6b4a0f22d3498a4cb0c8dab744da7f9a09993fd8` and tree `e5b0bcbf4eacf9cb402d87b04b5dc9b0431134f2`. Retained artifact `8448739399` has downloaded archive SHA-256 `a379d01a60157f6ad22de4d933e662a044684bc471ec528de6017e34519498af`. The smoke report hash is `15a7a938504f8c57a8693bf57efec7692c1c4270d3325304bae61234fb203021`, canonical report content hash is `c8cbeb76cc2092ed4b537a0686c00f2ce80a5ba8598a5d7d1d744f51eccd3904`, Sigstore bundle hash is `2aa75b909c67fe44f464f1b5d78f8f19c36bab0df1d41ffd4121ea5f445ab7a1`, raw verifier JSON hash is `fc47407047615b97ff25a1790ead1dfe090636202ab8ae779216040018b6cab4`, and constrained record hash is `de1ecfaa304bc403c76752a7fecd0906fe1ea1bfefdc7a94ed54e286e651bc4a`.
+- The retained certificate binds the protected workflow, `refs/heads/main`, exact merge commit, push event, and GitHub-hosted runner. Its subject digest matches the report, its predicate is SLSA provenance v1, and its Rekor timestamp is `2026-07-20T00:33:02Z`. The constrained verification record remains `authoritative: false`; this is infrastructure evidence only.
 
 ## Next highest-priority criteria
 
-1. Prove the pinned attestation-verification path on protected `main`, then implement controlled canonical ingestion for a real `publication_report/1`.
+1. Implement controlled canonical ingestion for a real `publication_request/1`, `publication_report/1`, and complete retained publication closure.
 2. Create authoritative exact proof/refutation evidence only from the verified retained closure, never from caller-authored reports.
 3. Derive mathematical status only from exact current proof and fidelity evidence.
 4. Complete Pilot A through the real interfaces only after both authority and fidelity controls exist.
@@ -196,12 +201,12 @@ git diff --check
 
 Observed validation evidence for this update:
 
-- formatting passed;
-- warnings-denied Clippy passed;
-- 76 Rust unit tests passed;
-- 9 Rust CLI integration tests and 3 Rust MCP subprocess integration tests passed;
-- 39 legacy Python regression tests passed;
-- patch whitespace validation passed.
+- Home workstation: Windows 10.0.19045, PowerShell 5.1.19041.6456, Rust 1.97.1, Python 3.12.10, GitHub CLI 2.70.0, GNU Bash 5.2.21 through WSL, and Lean 4.32.0 `x86_64-w64-windows-gnu`.
+- `bash -n scripts/publication-attestation-verify.sh`, formatting, warnings-denied Clippy, all 89 default Rust tests, and patch whitespace validation passed.
+- The corrected policy passed against retained artifact `8448611307`; independent report-digest, predicate, empty-timestamp, and empty-attestation mutations all failed closed.
+- `mcl init`, `mcl health`, and `mcl doctor` passed against a fresh Windows instance. Doctor observed the exact pinned Lean 4.32.0 toolchain and honestly reports the local profile.
+- The Windows legacy Python command preserved one failure because the installed Lean turns the test's assumed missing-toolchain result into a Lean rejection, plus two errors where SQLite connections opened directly by tampering tests remain locked during temporary-directory cleanup. The opt-in real Lean worker test also preserved a Windows `launch_failed` result. These host-specific failures remain open observations; they were not hidden or mixed into the attestation correction.
+- PR #26 CI run `29709569292` passed fresh Linux, Windows, storage, legacy Python, and pinned Lean jobs on exact tree `e5b0bcbf4eacf9cb402d87b04b5dc9b0431134f2`.
 - GitHub Actions run `29699563931` passed all five jobs for the completed MCP invalid-action and environment-persistence state, including exact pinned Lean availability and both Rust operating-system targets.
 - GitHub Actions run `29700398370` passed all five jobs for the canonical artifact slice, including both Rust operating-system targets.
 - GitHub Actions run `29700933580` passed all jobs for the durable verifier input, leasing, recovery, CLI, and migration slice on its exact remote tree.
@@ -209,7 +214,7 @@ Observed validation evidence for this update:
 - GitHub Actions run `29703359524` passed all jobs for exact diagnostic evidence, including the real pinned Lean worker and fresh Linux and Windows suites.
 - GitHub Actions run `29704542965` passed all jobs for local proof-closure and axiom-audit evidence, including the exact real Lean lifecycle and fresh Linux and Windows suites.
 - GitHub Actions run `29706138708` passed all jobs for controlled statement-fidelity evidence on exact tree `80b1d2e92e81192a2863bb445a7bef872fc21b72`, including fresh Linux and Windows, real storage, legacy regression, and pinned Lean jobs.
-- The managed workspace still lacks Lean; local `mcl doctor` correctly reports that one unhealthy check while database, CAS, leases, environments, and artifact inventory remain healthy.
+- Protected publication run `29709634846` passed on the exact merged tree and retained the constrained, non-authoritative verification evidence recorded above.
 
 ## Release readiness
 
