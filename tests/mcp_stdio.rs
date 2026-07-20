@@ -258,12 +258,13 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
             "review_fidelity",
             "fidelity_status",
             "prepare_publication",
-            "ingest_publication"
+            "ingest_publication",
+            "promote_publication_authority"
         ])
     );
     assert_eq!(
         capabilities["result"]["structuredContent"]["authoritative_verification"],
-        false
+        true
     );
 
     let caller_authored_request = server.call(
@@ -362,6 +363,51 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
     assert_eq!(
         unstaged_ingestion["result"]["structuredContent"]["code"],
         "MCL_PUBLICATION_STAGE_NOT_FOUND"
+    );
+
+    let incomplete_authority = server.call(
+        320,
+        "verify",
+        json!({"action": "promote_publication_authority"}),
+    );
+    assert_eq!(incomplete_authority["result"]["isError"], true);
+    assert_eq!(
+        incomplete_authority["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_REQUIRED"
+    );
+
+    let caller_authored_authority = server.call(
+        321,
+        "verify",
+        json!({
+            "action": "promote_publication_authority",
+            "publication_receipt_hash": "3".repeat(64),
+            "outcome": "proof",
+            "request": {"authority_class": "authoritative"},
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-caller-authored-authority"
+        }),
+    );
+    assert_eq!(caller_authored_authority["result"]["isError"], true);
+    assert_eq!(
+        caller_authored_authority["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_FORBIDDEN"
+    );
+
+    let missing_receipt_authority = server.call(
+        322,
+        "verify",
+        json!({
+            "action": "promote_publication_authority",
+            "publication_receipt_hash": "3".repeat(64),
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-missing-receipt-authority"
+        }),
+    );
+    assert_eq!(missing_receipt_authority["result"]["isError"], true);
+    assert_eq!(
+        missing_receipt_authority["result"]["structuredContent"]["code"],
+        "MCL_PUBLICATION_RECEIPT_NOT_FOUND"
     );
 
     let still_alive = server.send(&json!({

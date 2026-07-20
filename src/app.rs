@@ -23,15 +23,16 @@ use crate::domain::{
     EvidenceSnapshot, FidelityReviewHistoryEntry, FidelityReviewReport, FidelityReviewRequest,
     FidelityStatus, FidelityStatusSnapshot, FidelityVerdict, GraphTraversalHit,
     GraphTraversalRequest, LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditReport,
-    LeanAuditRequest, PublicationAttestationVerification, PublicationIngestionReceiptSnapshot,
-    PublicationOutcome, PublicationReport, PublicationRequest, PublicationRetainedArtifactRole,
+    LeanAuditRequest, PublicationAttestationVerification, PublicationAuthorityBinding,
+    PublicationClassification, PublicationIngestionReceiptSnapshot, PublicationOutcome,
+    PublicationReport, PublicationRequest, PublicationRetainedArtifactRole,
     PublicationRetainedClosure, PublicationStage, PublicationStageArtifact,
     PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot, RunChainReport,
     RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot, VerifierExecutionClassification,
     VerifierExecutionReport, VerifierJobRequest, VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
-use crate::store::Store;
+use crate::store::{PublicationAuthorityCommit, Store};
 
 const DOCTOR_CANARY: &[u8] = b"mcl doctor artifact integrity canary v1";
 const MAX_RETAINED_JSON_BYTES: usize = 1_048_576;
@@ -176,6 +177,15 @@ pub struct PublicationIngestionOutcome {
     pub proposed_receipt_hash: String,
     pub verification: PublicationAttestationVerification,
     pub receipt: Option<PublicationIngestionReceiptSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PublicationAuthorityPromotionOutcome {
+    pub dry_run: bool,
+    pub publication_receipt_hash: String,
+    pub proposed_evidence_hash: String,
+    pub evidence_kind: EvidenceKind,
+    pub evidence: Option<EvidenceSnapshot>,
 }
 
 #[derive(Debug, Serialize)]
@@ -766,6 +776,7 @@ impl Application {
             supersedes_evidence_id: None,
             stale: false,
             stale_reason: None,
+            publication_authority: None,
         };
         let proposed_evidence_hash = payload.evidence_hash()?;
         let evidence = if dry_run {
@@ -938,6 +949,7 @@ impl Application {
             supersedes_evidence_id: request.supersedes_evidence_id.clone(),
             stale: false,
             stale_reason: None,
+            publication_authority: None,
         };
         let proposed_evidence_hash = payload.evidence_hash()?;
         let evidence = if dry_run {
@@ -1321,6 +1333,7 @@ impl Application {
             supersedes_evidence_id: None,
             stale: false,
             stale_reason: None,
+            publication_authority: None,
         };
         let payloads = [
             build(EvidenceKind::ProofClosureScan),
@@ -2117,6 +2130,142 @@ impl Application {
             proposed_receipt_hash,
             verification,
             receipt,
+        })
+    }
+
+    pub fn promote_publication_authority(
+        &mut self,
+        publication_receipt_hash: &str,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<PublicationAuthorityPromotionOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        if actor.chars().count() > 256 {
+            return Err(publication_authority_error(
+                "MCL_ATTRIBUTION_INVALID",
+                "publication authority actor attribution exceeds 256 characters",
+                "Use a short stable actor identity.",
+            ));
+        }
+        let receipt = self
+            .store
+            .get_publication_ingestion_receipt(publication_receipt_hash)?;
+        let stage = self
+            .store
+            .get_publication_stage_by_hash(&receipt.stage_hash)?;
+        let report_bytes = self.read_staged_publication_bytes(
+            &stage.stage.report_artifact_hash,
+            stage.stage.report_byte_size,
+            "publication report",
+        )?;
+        let retained_closure_bytes = self.read_staged_publication_bytes(
+            &stage.stage.retained_closure_artifact_hash,
+            stage.stage.retained_closure_byte_size,
+            "publication retained closure",
+        )?;
+        let attestation_bundle_bytes = self.read_staged_publication_bytes(
+            &stage.stage.attestation_bundle_artifact_hash,
+            stage.stage.attestation_bundle_byte_size,
+            "publication attestation bundle",
+        )?;
+        let bundle_value: Value =
+            serde_json::from_slice(&attestation_bundle_bytes).map_err(|error| {
+                publication_ingestion_error(
+                    "MCL_PUBLICATION_BUNDLE_INVALID",
+                    format!("staged attestation bundle is not valid JSON: {error}"),
+                    "Quarantine the stage and restage the exact protected-workflow bundle.",
+                )
+            })?;
+        validate_sigstore_bundle_shape(&bundle_value)?;
+
+        let candidate =
+            validate_publication_candidate_documents(&report_bytes, &retained_closure_bytes)?;
+        if candidate.report_content_hash != stage.stage.report_artifact_hash
+            || candidate.retained_closure_hash != stage.stage.retained_closure_artifact_hash
+        {
+            return Err(publication_authority_error(
+                "MCL_PUBLICATION_AUTHORITY_INTEGRITY_FAILED",
+                "publication receipt resolves to a stage whose candidate identities disagree",
+                "Quarantine the receipt and restore the exact protected publication closure.",
+            ));
+        }
+        let retained_files =
+            self.read_staged_publication_members(&stage, &candidate.retained_closure)?;
+        validate_retained_publication_semantics(
+            &candidate.report,
+            &candidate.retained_closure,
+            &retained_files,
+        )?;
+        self.validate_publication_candidate_against_current_store(&candidate, &retained_files)?;
+
+        let raw_verification = self.read_staged_publication_bytes(
+            &receipt.verification.raw_verification_hash,
+            receipt.raw_verification_byte_size,
+            "raw publication attestation verification",
+        )?;
+        let canonical_receipt = self.read_staged_publication_bytes(
+            &receipt.receipt_hash,
+            receipt.receipt_byte_size,
+            "publication attestation receipt",
+        )?;
+        let policy = crate::domain::publication::committed_publication_policy()?;
+        validate_persisted_publication_receipt(
+            &receipt,
+            &raw_verification,
+            &canonical_receipt,
+            &bundle_value,
+            &candidate.report,
+            &policy,
+        )?;
+        validate_publication_authority_report(&candidate.report)?;
+
+        let binding = PublicationAuthorityBinding {
+            schema_version: crate::domain::evidence::PUBLICATION_AUTHORITY_BINDING_SCHEMA_VERSION
+                .to_owned(),
+            ingestion_receipt_hash: receipt.receipt_hash.clone(),
+            stage_hash: stage.stage_hash.clone(),
+            report_artifact_hash: stage.stage.report_artifact_hash.clone(),
+            retained_closure_artifact_hash: stage.stage.retained_closure_artifact_hash.clone(),
+            attestation_bundle_artifact_hash: stage.stage.attestation_bundle_artifact_hash.clone(),
+            raw_verification_hash: receipt.verification.raw_verification_hash.clone(),
+            publication_request_hash: candidate.request_hash.clone(),
+            publication_policy_hash: candidate.report.request.policy_hash.clone(),
+        };
+        let mut artifact_hashes = candidate.report.retained_artifact_hashes.clone();
+        artifact_hashes.extend([
+            stage.stage.report_artifact_hash.clone(),
+            stage.stage.attestation_bundle_artifact_hash.clone(),
+            receipt.verification.raw_verification_hash.clone(),
+            receipt.receipt_hash.clone(),
+        ]);
+        artifact_hashes.sort_unstable();
+        artifact_hashes.dedup();
+        let commit = PublicationAuthorityCommit {
+            subject: candidate.report.request.subject.clone(),
+            outcome: candidate.report.request.outcome,
+            environment_hash: candidate.report.request.environment_hash.clone(),
+            binding,
+            artifact_hashes,
+        };
+        let proposed_payload = commit.evidence_payload()?;
+        let proposed_evidence_hash = proposed_payload.evidence_hash()?;
+        let evidence_kind = proposed_payload.evidence_kind;
+        let evidence = if dry_run {
+            None
+        } else {
+            Some(self.store.create_publication_authority_evidence(
+                &commit,
+                actor,
+                idempotency_key,
+            )?)
+        };
+        Ok(PublicationAuthorityPromotionOutcome {
+            dry_run,
+            publication_receipt_hash: receipt.receipt_hash,
+            proposed_evidence_hash,
+            evidence_kind,
+            evidence,
         })
     }
 
@@ -4078,6 +4227,31 @@ fn publication_ingestion_error(
     AppError::new(code, message, false, corrective_action)
 }
 
+fn publication_authority_error(
+    code: &'static str,
+    message: impl Into<String>,
+    corrective_action: impl Into<String>,
+) -> AppError {
+    AppError::new(code, message, false, corrective_action)
+}
+
+fn validate_publication_authority_report(report: &PublicationReport) -> Result<(), AppError> {
+    if report.classification != PublicationClassification::Passed
+        || !report.clean_checkout
+        || !report.dependency_closure_complete
+        || !report.network_isolation_enforced
+        || !report.memory_limit_enforced
+        || report.authoritative
+    {
+        return Err(publication_authority_error(
+            "MCL_PUBLICATION_AUTHORITY_REPORT_NOT_PASSED",
+            "only an exact passed protected publication report can create authority",
+            "Reproduce and attest a passed candidate under the committed publication policy.",
+        ));
+    }
+    Ok(())
+}
+
 fn ensure_staged_hash(
     artifacts: &ArtifactStore,
     bytes: &[u8],
@@ -4403,8 +4577,9 @@ pub fn root_exists(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::domain::{
-        PublicationClassification, PublicationRetainedArtifactRole,
-        PublicationRetainedClosureEntry, PublicationRunnerEnvironment,
+        ArtifactCreationSource, ArtifactMediaType, ArtifactRestriction, PublicationClassification,
+        PublicationPolicy, PublicationRetainedArtifactRole, PublicationRetainedClosureEntry,
+        PublicationRunnerEnvironment, TrustProfile,
     };
 
     use super::*;
@@ -4545,6 +4720,866 @@ mod tests {
         (report, closure)
     }
 
+    struct LocalPublicationAuthorityFixture {
+        root: tempfile::TempDir,
+        application: Application,
+        receipt: PublicationIngestionReceiptSnapshot,
+        stage: PublicationStageSnapshot,
+        request: PublicationRequest,
+    }
+
+    fn verifier_report_metadata(job_id: &str, role: &str) -> ArtifactMetadata {
+        ArtifactMetadata {
+            schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION.to_owned(),
+            media_type: ArtifactMediaType::Json,
+            creation_source: ArtifactCreationSource::Verifier,
+            license_expression: None,
+            restriction: ArtifactRestriction::Private,
+            semantic_metadata: BTreeMap::from([
+                ("job_id".to_owned(), job_id.to_owned()),
+                ("artifact_role".to_owned(), role.to_owned()),
+            ]),
+        }
+    }
+
+    fn valid_publication_attestation_output(
+        report: &PublicationReport,
+        policy: &PublicationPolicy,
+        bundle: &Value,
+    ) -> Value {
+        let repository_url = format!("https://github.com/{}", policy.repository);
+        let owner = policy.repository.split_once('/').expect("repository").0;
+        let identity = format!(
+            "{repository_url}/{}@{}",
+            policy.workflow_path, policy.required_source_ref
+        );
+        let run_uri = format!(
+            "{repository_url}/actions/runs/{}/attempts/{}",
+            report.workflow_run_id, report.workflow_run_attempt
+        );
+        json!([{
+            "attestation": {"bundle": bundle, "bundle_url": "", "initiator": ""},
+            "verificationResult": {
+                "mediaType": "application/vnd.dev.sigstore.verificationresult+json;version=0.1",
+                "signature": {"certificate": {
+                    "certificateIssuer": "CN=sigstore-intermediate,O=sigstore.dev",
+                    "subjectAlternativeName": identity,
+                    "issuer": "https://token.actions.githubusercontent.com",
+                    "githubWorkflowTrigger": "push",
+                    "githubWorkflowSHA": report.request.source_commit_sha,
+                    "githubWorkflowName": "Publication authority boundary",
+                    "githubWorkflowRepository": policy.repository,
+                    "githubWorkflowRef": policy.required_source_ref,
+                    "buildSignerURI": identity,
+                    "buildSignerDigest": report.request.source_commit_sha,
+                    "runnerEnvironment": "github-hosted",
+                    "sourceRepositoryURI": repository_url,
+                    "sourceRepositoryDigest": report.request.source_commit_sha,
+                    "sourceRepositoryRef": policy.required_source_ref,
+                    "sourceRepositoryIdentifier": policy.repository_id.to_string(),
+                    "sourceRepositoryOwnerURI": format!("https://github.com/{owner}"),
+                    "sourceRepositoryOwnerIdentifier": policy.repository_owner_id.to_string(),
+                    "buildConfigURI": identity,
+                    "buildConfigDigest": report.request.source_commit_sha,
+                    "buildTrigger": "push",
+                    "runInvocationURI": run_uri,
+                    "sourceRepositoryVisibilityAtSigning": "public"
+                }},
+                "verifiedTimestamps": [{
+                    "type": "Tlog",
+                    "uri": "https://rekor.sigstore.dev",
+                    "timestamp": "2026-07-20T04:22:41Z"
+                }],
+                "verifiedIdentity": {
+                    "subjectAlternativeName": {"subjectAlternativeName": identity},
+                    "issuer": {"issuer": "", "regexp": ".*"},
+                    "runnerEnvironment": "github-hosted"
+                },
+                "statement": {
+                    "_type": "https://in-toto.io/Statement/v1",
+                    "subject": [{
+                        "name": "publication-report.json",
+                        "digest": {"sha256": report.report_hash(policy).expect("report hash")}
+                    }],
+                    "predicateType": policy.attestation_predicate_type,
+                    "predicate": {
+                        "buildDefinition": {
+                            "buildType": "https://actions.github.io/buildtypes/workflow/v1",
+                            "externalParameters": {"workflow": {
+                                "path": policy.workflow_path,
+                                "ref": policy.required_source_ref,
+                                "repository": repository_url
+                            }},
+                            "internalParameters": {"github": {
+                                "event_name": "push",
+                                "repository_id": policy.repository_id.to_string(),
+                                "repository_owner_id": policy.repository_owner_id.to_string(),
+                                "runner_environment": "github-hosted"
+                            }},
+                            "resolvedDependencies": [{
+                                "digest": {"gitCommit": report.request.source_commit_sha},
+                                "uri": format!(
+                                    "git+{repository_url}@{}",
+                                    policy.required_source_ref
+                                )
+                            }]
+                        },
+                        "runDetails": {
+                            "builder": {"id": identity},
+                            "metadata": {"invocationId": run_uri}
+                        }
+                    }
+                }
+            }
+        }])
+    }
+
+    fn local_publication_authority_fixture() -> LocalPublicationAuthorityFixture {
+        let root = tempfile::TempDir::new().expect("publication authority root");
+        let config = ResolvedConfig::load(root.path(), None).expect("publication test config");
+        Application::initialize(
+            &config,
+            "publication-authority-test",
+            "publication-authority-init",
+            false,
+        )
+        .expect("application initializes");
+        let mut application = Application::open(&config).expect("application opens");
+
+        let environment: EnvironmentManifest = serde_json::from_str(include_str!(
+            "../fixtures/environment/lean-4.32-no-imports-local.json"
+        ))
+        .expect("no-import environment fixture");
+        let environment = application
+            .register_environment(
+                &environment,
+                "publication-authority-test",
+                "publication-authority-environment",
+                false,
+            )
+            .expect("environment registers")
+            .environment
+            .expect("persisted environment");
+
+        let declaration_name = "MathOS.Publication.authorityFixture";
+        let module_bytes = b"namespace MathOS.Publication\ntheorem authorityFixture : True := by trivial\nend MathOS.Publication\n";
+        let module = application
+            .ingest_artifact(
+                module_bytes,
+                &ArtifactMetadata {
+                    schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION
+                        .to_owned(),
+                    media_type: ArtifactMediaType::LeanSource,
+                    creation_source: ArtifactCreationSource::UserIngest,
+                    license_expression: None,
+                    restriction: ArtifactRestriction::Private,
+                    semantic_metadata: BTreeMap::from([(
+                        "declaration_name".to_owned(),
+                        declaration_name.to_owned(),
+                    )]),
+                },
+                "publication-authority-test",
+                "publication-authority-module",
+                false,
+            )
+            .expect("module ingests")
+            .artifact
+            .expect("persisted module");
+        let source = application
+            .create_record(
+                &RecordDraft {
+                    kind: RecordKind::Source,
+                    schema_version: "source/1".to_owned(),
+                    payload: json!({
+                        "source_type": "user_statement",
+                        "title_or_label": "Publication authority fixture",
+                        "authors_or_origin": ["MathOS tests"],
+                        "canonical_locator": "local:publication-authority-fixture",
+                        "acquisition_date": "2026-07-20",
+                        "license_expression": null,
+                        "redistribution_status": "unknown",
+                        "content_hash": module.artifact_hash,
+                        "citation_metadata": {},
+                        "redaction_class": "private",
+                        "provenance_notes": "local authority promotion fixture",
+                        "original_text": "True is inhabited."
+                    }),
+                    searchable_text: "Publication authority fixture".to_owned(),
+                },
+                "publication-authority-test",
+                "publication-authority-source",
+                false,
+            )
+            .expect("source creates")
+            .record
+            .expect("persisted source");
+        let claim = application
+            .create_record(
+                &RecordDraft {
+                    kind: RecordKind::Claim,
+                    schema_version: "claim/1".to_owned(),
+                    payload: json!({
+                        "source_reference": {
+                            "object_id": source.object_id,
+                            "version_hash": source.version_hash
+                        },
+                        "normalized_informal_statement": "True is inhabited.",
+                        "claim_kind": "existential",
+                        "logical_shape": "True",
+                        "assumptions": [],
+                        "variables": [],
+                        "concept_links": [],
+                        "source_citations": [],
+                        "ambiguity_notes": []
+                    }),
+                    searchable_text: "True is inhabited".to_owned(),
+                },
+                "publication-authority-test",
+                "publication-authority-claim",
+                false,
+            )
+            .expect("claim creates")
+            .record
+            .expect("persisted claim");
+        let formalization = application
+            .create_record(
+                &RecordDraft {
+                    kind: RecordKind::Formalization,
+                    schema_version: "formalization/1".to_owned(),
+                    payload: json!({
+                        "claim_version": {
+                            "object_id": claim.object_id,
+                            "version_hash": claim.version_hash
+                        },
+                        "formal_system": "lean4",
+                        "claim_polarity": "claim",
+                        "environment_hash": environment.environment_hash,
+                        "module_artifact_hash": module.artifact_hash,
+                        "declaration_name": declaration_name,
+                        "exact_theorem_type": "True",
+                        "declaration_hash": "d".repeat(64),
+                        "import_manifest": [],
+                        "formalization_notes": "local authority promotion fixture",
+                        "fidelity_evidence_references": [],
+                        "verification_evidence_references": []
+                    }),
+                    searchable_text: declaration_name.to_owned(),
+                },
+                "publication-authority-test",
+                "publication-authority-formalization",
+                false,
+            )
+            .expect("formalization creates")
+            .record
+            .expect("persisted formalization");
+        let subject = ExactVersionReference {
+            object_id: formalization.object_id.clone(),
+            version_hash: formalization.version_hash.clone(),
+        };
+
+        let verifier_job = application
+            .enqueue_verifier_job(
+                &VerifierJobRequest {
+                    schema_version: crate::domain::verifier::VERIFIER_REQUEST_SCHEMA_VERSION
+                        .to_owned(),
+                    environment_hash: environment.environment_hash.clone(),
+                    module_artifact_hash: module.artifact_hash.clone(),
+                    declaration_name: declaration_name.to_owned(),
+                },
+                0,
+                "publication-authority-test",
+                "publication-authority-verifier-job",
+                false,
+            )
+            .expect("verifier job enqueues")
+            .job
+            .expect("persisted verifier job");
+        let verifier_worker = "publication-authority-verifier-worker";
+        application
+            .store
+            .lease_next_verifier_job(verifier_worker, 60)
+            .expect("verifier job leases")
+            .expect("leased verifier job");
+        let running_verifier = application
+            .store
+            .mark_verifier_job_running(&verifier_job.job_id, verifier_worker)
+            .expect("verifier job runs");
+        let verifier_report = VerifierExecutionReport {
+            schema_version: crate::domain::verifier::VERIFIER_EXECUTION_REPORT_SCHEMA_VERSION
+                .to_owned(),
+            job_id: running_verifier.job_id.clone(),
+            environment_hash: environment.environment_hash.clone(),
+            module_artifact_hash: module.artifact_hash.clone(),
+            declaration_name: declaration_name.to_owned(),
+            classification: VerifierExecutionClassification::Elaborated,
+            exit_code: Some(0),
+            stdout_artifact_hash: None,
+            stderr_artifact_hash: None,
+            duration_milliseconds: 1,
+            observed_toolchain_version: Some("Lean 4.32.0".to_owned()),
+            forbidden_source_token: None,
+            trust_profile: TrustProfile::Local,
+            memory_limit_enforced: false,
+            network_isolation_enforced: false,
+            authoritative: false,
+        };
+        let verifier_report_bytes = canonical_bytes(&verifier_report);
+        let verifier_report_artifact = application
+            .ensure_verifier_artifact(
+                &verifier_report_bytes,
+                &verifier_report_metadata(&verifier_job.job_id, "verifier_report"),
+                verifier_worker,
+                "publication-authority-verifier-report",
+            )
+            .expect("verifier report stores");
+        let verifier_job = application
+            .store
+            .finish_verifier_job(
+                &verifier_job.job_id,
+                verifier_worker,
+                &verifier_report_artifact.artifact_hash,
+                true,
+                None,
+            )
+            .expect("verifier job finishes");
+        let diagnostic = application
+            .promote_verifier_diagnostic(
+                &subject.object_id,
+                &subject.version_hash,
+                &verifier_job.job_id,
+                "publication-authority-test",
+                "publication-authority-diagnostic",
+                false,
+            )
+            .expect("diagnostic promotes")
+            .evidence
+            .expect("persisted diagnostic");
+
+        let audit_job = application
+            .enqueue_audit_job(
+                &subject,
+                &diagnostic.evidence_id,
+                0,
+                "publication-authority-test",
+                "publication-authority-audit-job",
+                false,
+            )
+            .expect("audit job enqueues")
+            .job
+            .expect("persisted audit job");
+        let audit_worker = "publication-authority-audit-worker";
+        application
+            .store
+            .lease_next_audit_job(audit_worker, 60)
+            .expect("audit job leases")
+            .expect("leased audit job");
+        let running_audit = application
+            .store
+            .mark_audit_job_running(&audit_job.job_id, audit_worker)
+            .expect("audit job runs");
+        let audit_stdout =
+            format!("'{declaration_name}' does not depend on any axioms\n").into_bytes();
+        let audit_stdout_hash = application
+            .register_audit_output(&running_audit, "audit_stdout", &audit_stdout, audit_worker)
+            .expect("audit stdout stores")
+            .expect("nonempty audit stdout");
+        let audit_policy =
+            crate::domain::audit::committed_audit_policy().expect("committed audit policy");
+        let audit_report = LeanAuditReport {
+            schema_version: crate::domain::audit::AUDIT_REPORT_SCHEMA_VERSION.to_owned(),
+            job_id: running_audit.job_id.clone(),
+            request_hash: running_audit.canonical_input_hash.clone(),
+            subject: subject.clone(),
+            diagnostic_evidence_hash: diagnostic.evidence_hash.clone(),
+            environment_hash: environment.environment_hash.clone(),
+            module_artifact_hash: module.artifact_hash.clone(),
+            declaration_name: declaration_name.to_owned(),
+            policy_hash: audit_policy.policy_hash().expect("audit policy hash"),
+            classification: LeanAuditClassification::Passed,
+            source_forbidden_token: None,
+            observed_axioms: Vec::new(),
+            unexpected_axioms: Vec::new(),
+            stdout_artifact_hash: Some(audit_stdout_hash),
+            stderr_artifact_hash: None,
+            observed_toolchain_version: Some("Lean 4.32.0".to_owned()),
+            trust_profile: TrustProfile::Local,
+            dependency_closure_complete: true,
+            memory_limit_enforced: false,
+            network_isolation_enforced: false,
+            authoritative: false,
+        };
+        let audit_report_bytes = canonical_bytes(&audit_report);
+        let audit_report_artifact = application
+            .ensure_verifier_artifact(
+                &audit_report_bytes,
+                &verifier_report_metadata(&audit_job.job_id, "audit_report"),
+                audit_worker,
+                "publication-authority-audit-report",
+            )
+            .expect("audit report stores");
+        let audit_job = application
+            .store
+            .finish_audit_job(
+                &audit_job.job_id,
+                audit_worker,
+                &audit_report_artifact.artifact_hash,
+                true,
+                None,
+            )
+            .expect("audit job finishes");
+        let audit_evidence = application
+            .promote_audit_evidence(
+                &subject.object_id,
+                &subject.version_hash,
+                &audit_job.job_id,
+                "publication-authority-test",
+                "publication-authority-audit-evidence",
+                false,
+            )
+            .expect("audit evidence promotes")
+            .evidence
+            .expect("persisted audit evidence");
+        let proof_closure = audit_evidence
+            .iter()
+            .find(|evidence| evidence.payload.evidence_kind == EvidenceKind::ProofClosureScan)
+            .expect("proof closure evidence")
+            .clone();
+        let axiom_audit = audit_evidence
+            .iter()
+            .find(|evidence| evidence.payload.evidence_kind == EvidenceKind::AxiomAudit)
+            .expect("axiom audit evidence")
+            .clone();
+
+        let preparation = application
+            .prepare_publication_request(
+                &subject,
+                PublicationOutcome::Proof,
+                &diagnostic.evidence_id,
+                &proof_closure.evidence_id,
+                &axiom_audit.evidence_id,
+                &"a".repeat(40),
+                &"b".repeat(40),
+                "publication-authority-test",
+                "publication-authority-request",
+                false,
+            )
+            .expect("publication request prepares");
+        let request = preparation.request;
+        let request_hash = request.request_hash().expect("request hash");
+        let request_bytes = canonical_bytes(&request);
+        assert_eq!(preparation.proposed_request_hash, request_hash);
+
+        let publication_policy = crate::domain::publication::committed_publication_policy()
+            .expect("committed publication policy");
+        let publication_policy_hash = publication_policy
+            .policy_hash()
+            .expect("publication policy hash");
+        let empty = Vec::new();
+        let protected_dependency_stdout = b"/opt/lib/lean/Init.olean\n".to_vec();
+        let mut retained = BTreeMap::from([
+            (
+                PublicationRetainedArtifactRole::AuditJob,
+                canonical_bytes(&audit_job),
+            ),
+            (
+                PublicationRetainedArtifactRole::AuditPolicy,
+                canonical_bytes(&audit_policy),
+            ),
+            (
+                PublicationRetainedArtifactRole::AuditReport,
+                audit_report_bytes.clone(),
+            ),
+            (PublicationRetainedArtifactRole::AuditStderr, empty.clone()),
+            (
+                PublicationRetainedArtifactRole::AuditStdout,
+                audit_stdout.clone(),
+            ),
+            (
+                PublicationRetainedArtifactRole::AxiomAuditEvidence,
+                canonical_bytes(&axiom_audit),
+            ),
+            (
+                PublicationRetainedArtifactRole::ClaimVersion,
+                canonical_bytes(&claim),
+            ),
+            (
+                PublicationRetainedArtifactRole::DiagnosticEvidence,
+                canonical_bytes(&diagnostic),
+            ),
+            (
+                PublicationRetainedArtifactRole::EnvironmentManifest,
+                canonical_bytes(&environment.manifest),
+            ),
+            (
+                PublicationRetainedArtifactRole::FormalizationVersion,
+                canonical_bytes(&formalization),
+            ),
+            (
+                PublicationRetainedArtifactRole::LeanModule,
+                module_bytes.to_vec(),
+            ),
+            (
+                PublicationRetainedArtifactRole::ProofClosureEvidence,
+                canonical_bytes(&proof_closure),
+            ),
+            (
+                PublicationRetainedArtifactRole::ProtectedAuditStderr,
+                empty.clone(),
+            ),
+            (
+                PublicationRetainedArtifactRole::ProtectedAuditStdout,
+                audit_stdout.clone(),
+            ),
+            (
+                PublicationRetainedArtifactRole::ProtectedDependencyStderr,
+                empty.clone(),
+            ),
+            (
+                PublicationRetainedArtifactRole::ProtectedDependencyStdout,
+                protected_dependency_stdout,
+            ),
+            (
+                PublicationRetainedArtifactRole::ProtectedStderr,
+                empty.clone(),
+            ),
+            (
+                PublicationRetainedArtifactRole::ProtectedStdout,
+                empty.clone(),
+            ),
+            (
+                PublicationRetainedArtifactRole::PublicationPolicy,
+                canonical_bytes(&publication_policy),
+            ),
+            (
+                PublicationRetainedArtifactRole::PublicationRequest,
+                request_bytes,
+            ),
+            (
+                PublicationRetainedArtifactRole::SourceVersion,
+                canonical_bytes(&source),
+            ),
+            (
+                PublicationRetainedArtifactRole::VerifierJob,
+                canonical_bytes(&verifier_job),
+            ),
+            (
+                PublicationRetainedArtifactRole::VerifierReport,
+                verifier_report_bytes.clone(),
+            ),
+            (
+                PublicationRetainedArtifactRole::VerifierStderr,
+                empty.clone(),
+            ),
+            (PublicationRetainedArtifactRole::VerifierStdout, empty),
+        ]);
+        let entries = PublicationRetainedArtifactRole::ALL
+            .into_iter()
+            .map(|role| {
+                let bytes = retained.get(&role).expect("retained role");
+                let artifact_hash = format!("{:x}", Sha256::digest(bytes));
+                let identity_hash = match role {
+                    PublicationRetainedArtifactRole::AuditJob => {
+                        audit_job.canonical_input_hash.clone()
+                    }
+                    PublicationRetainedArtifactRole::AuditPolicy => {
+                        audit_policy.policy_hash().expect("audit policy hash")
+                    }
+                    PublicationRetainedArtifactRole::AxiomAuditEvidence => {
+                        axiom_audit.evidence_hash.clone()
+                    }
+                    PublicationRetainedArtifactRole::ClaimVersion => claim.version_hash.clone(),
+                    PublicationRetainedArtifactRole::DiagnosticEvidence => {
+                        diagnostic.evidence_hash.clone()
+                    }
+                    PublicationRetainedArtifactRole::EnvironmentManifest => {
+                        environment.environment_hash.clone()
+                    }
+                    PublicationRetainedArtifactRole::FormalizationVersion => {
+                        formalization.version_hash.clone()
+                    }
+                    PublicationRetainedArtifactRole::LeanModule => module.artifact_hash.clone(),
+                    PublicationRetainedArtifactRole::ProofClosureEvidence => {
+                        proof_closure.evidence_hash.clone()
+                    }
+                    PublicationRetainedArtifactRole::PublicationPolicy => {
+                        publication_policy_hash.clone()
+                    }
+                    PublicationRetainedArtifactRole::PublicationRequest => request_hash.clone(),
+                    PublicationRetainedArtifactRole::SourceVersion => source.version_hash.clone(),
+                    PublicationRetainedArtifactRole::VerifierJob => {
+                        verifier_job.canonical_input_hash.clone()
+                    }
+                    _ => artifact_hash.clone(),
+                };
+                PublicationRetainedClosureEntry {
+                    role,
+                    path: role.expected_path().to_owned(),
+                    identity_hash,
+                    artifact_hash,
+                }
+            })
+            .collect::<Vec<_>>();
+        let closure = PublicationRetainedClosure {
+            schema_version: crate::domain::publication::PUBLICATION_RETAINED_CLOSURE_SCHEMA_VERSION
+                .to_owned(),
+            subject: subject.clone(),
+            request_hash: request_hash.clone(),
+            artifacts: entries,
+        };
+        for entry in &closure.artifacts {
+            let path = root.path().join(&entry.path);
+            fs::create_dir_all(path.parent().expect("retained parent"))
+                .expect("retained parent creates");
+            fs::write(
+                path,
+                retained.remove(&entry.role).expect("retained member bytes"),
+            )
+            .expect("retained member writes");
+        }
+        let closure_bytes = canonical_bytes(&closure);
+        let report = PublicationReport {
+            schema_version: crate::domain::publication::PUBLICATION_REPORT_SCHEMA_VERSION
+                .to_owned(),
+            request_hash,
+            request: request.clone(),
+            classification: PublicationClassification::Passed,
+            repository: publication_policy.repository.clone(),
+            workflow_path: publication_policy.workflow_path.clone(),
+            source_ref: publication_policy.required_source_ref.clone(),
+            workflow_run_id: 1,
+            workflow_run_attempt: 1,
+            runner_environment: PublicationRunnerEnvironment::GithubHosted,
+            observed_lean_toolchain: publication_policy.required_lean_toolchain.clone(),
+            observed_axioms: Vec::new(),
+            retained_artifact_hashes: closure
+                .report_retained_artifact_hashes(&request)
+                .expect("report retained hashes"),
+            clean_checkout: true,
+            dependency_closure_complete: true,
+            network_isolation_enforced: true,
+            memory_limit_enforced: true,
+            authoritative: false,
+        };
+        let report_bytes = canonical_bytes(&report);
+        let bundle = json!({
+            "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+            "verificationMaterial": {},
+            "dsseEnvelope": {}
+        });
+        let bundle_bytes = canonical_json(&bundle).expect("bundle canonicalizes");
+        let stage = application
+            .stage_publication_candidate(
+                &report_bytes,
+                &closure_bytes,
+                root.path(),
+                &bundle_bytes,
+                "publication-authority-test",
+                "publication-authority-stage",
+                false,
+            )
+            .expect("publication candidate stages")
+            .stage
+            .expect("persisted publication stage");
+
+        let raw_verification = canonical_json(&valid_publication_attestation_output(
+            &report,
+            &publication_policy,
+            &bundle,
+        ))
+        .expect("raw attestation canonicalizes");
+        let parsed = crate::publication_attestation::validate_gh_attestation_output(
+            &raw_verification,
+            &bundle,
+            &report,
+            &publication_policy,
+        )
+        .expect("raw attestation validates");
+        let raw_verification_hash = application
+            .artifacts
+            .put(&raw_verification)
+            .expect("raw attestation stores");
+        let verification = PublicationAttestationVerification {
+            schema_version:
+                crate::domain::publication::PUBLICATION_ATTESTATION_VERIFICATION_SCHEMA_VERSION
+                    .to_owned(),
+            report_content_hash: stage.stage.report_artifact_hash.clone(),
+            report_artifact_hash: stage.stage.report_artifact_hash.clone(),
+            attestation_bundle_hash: stage.stage.attestation_bundle_artifact_hash.clone(),
+            raw_verification_hash,
+            verifier_name: "gh".to_owned(),
+            verifier_version: publication_policy.attestation_verifier_version.clone(),
+            verifier_binary_sha256: publication_policy
+                .attestation_verifier_binary_sha256
+                .clone(),
+            repository: publication_policy.repository.clone(),
+            signer_workflow: format!(
+                "{}/{}",
+                publication_policy.repository, publication_policy.workflow_path
+            ),
+            certificate_identity: format!(
+                "https://github.com/{}/{}@{}",
+                publication_policy.repository,
+                publication_policy.workflow_path,
+                publication_policy.required_source_ref
+            ),
+            source_ref: publication_policy.required_source_ref.clone(),
+            source_commit_sha: request.source_commit_sha.clone(),
+            predicate_type: publication_policy.attestation_predicate_type.clone(),
+            self_hosted_runners_denied: true,
+            verified_attestation_count: parsed.verified_attestation_count,
+            verified_timestamp_count: parsed.verified_timestamp_count,
+            authoritative: false,
+        };
+        let receipt_bytes = canonical_bytes(&verification);
+        let receipt_hash = application
+            .artifacts
+            .put(&receipt_bytes)
+            .expect("attestation receipt stores");
+        let receipt = application
+            .store
+            .register_publication_ingestion_receipt(
+                &stage.stage_hash,
+                &subject,
+                &verification,
+                raw_verification.len() as u64,
+                receipt_bytes.len() as u64,
+                "publication-authority-test",
+                "publication-authority-receipt",
+            )
+            .expect("publication receipt registers");
+        assert_eq!(receipt.receipt_hash, receipt_hash);
+
+        LocalPublicationAuthorityFixture {
+            root,
+            application,
+            receipt,
+            stage,
+            request,
+        }
+    }
+
+    fn fixture_cas_path(root: &Path, hash: &str) -> PathBuf {
+        root.join(".mcl")
+            .join("artifacts")
+            .join("sha256")
+            .join(&hash[..2])
+            .join(&hash[2..4])
+            .join(hash)
+    }
+
+    #[test]
+    fn publication_authority_promotion_is_dry_run_idempotent_and_fails_closed() {
+        let mut fixture = local_publication_authority_fixture();
+        let receipt_hash = fixture.receipt.receipt_hash.clone();
+        let dry_run = fixture
+            .application
+            .promote_publication_authority(
+                &receipt_hash,
+                "publication-authority-test",
+                "publication-authority-promotion",
+                true,
+            )
+            .expect("publication authority dry run");
+        assert!(dry_run.dry_run);
+        assert!(dry_run.evidence.is_none());
+        assert_eq!(dry_run.evidence_kind, EvidenceKind::LeanKernelProof);
+
+        let persisted = fixture
+            .application
+            .promote_publication_authority(
+                &receipt_hash,
+                "publication-authority-test",
+                "publication-authority-promotion",
+                false,
+            )
+            .expect("publication authority persists");
+        assert!(!persisted.dry_run);
+        assert_eq!(
+            persisted.proposed_evidence_hash,
+            dry_run.proposed_evidence_hash
+        );
+        let evidence = persisted.evidence.as_ref().expect("authoritative evidence");
+        assert_eq!(evidence.evidence_hash, dry_run.proposed_evidence_hash);
+        assert_eq!(
+            evidence.payload.schema_version,
+            crate::domain::evidence::AUTHORITATIVE_EVIDENCE_SCHEMA_VERSION
+        );
+        assert_eq!(
+            evidence.payload.evidence_kind,
+            EvidenceKind::LeanKernelProof
+        );
+        assert_eq!(evidence.payload.result, EvidenceResult::Accepted);
+        assert_eq!(
+            evidence.payload.authority_class,
+            EvidenceAuthorityClass::Authoritative
+        );
+        assert!(evidence.payload.producing_run_id.is_none());
+        assert!(evidence.payload.producing_job_id.is_none());
+        let binding = evidence
+            .payload
+            .publication_authority
+            .as_ref()
+            .expect("receipt-bound authority");
+        assert_eq!(
+            binding.schema_version,
+            crate::domain::evidence::PUBLICATION_AUTHORITY_BINDING_SCHEMA_VERSION
+        );
+        assert_eq!(binding.ingestion_receipt_hash, receipt_hash);
+        assert_eq!(binding.stage_hash, fixture.stage.stage_hash);
+        assert_eq!(
+            binding.report_artifact_hash,
+            fixture.stage.stage.report_artifact_hash
+        );
+        assert_eq!(
+            binding.retained_closure_artifact_hash,
+            fixture.stage.stage.retained_closure_artifact_hash
+        );
+        assert_eq!(
+            binding.attestation_bundle_artifact_hash,
+            fixture.stage.stage.attestation_bundle_artifact_hash
+        );
+        assert_eq!(
+            binding.raw_verification_hash,
+            fixture.receipt.verification.raw_verification_hash
+        );
+        assert_eq!(
+            binding.publication_request_hash,
+            fixture.request.request_hash().expect("request hash")
+        );
+        assert_eq!(binding.publication_policy_hash, fixture.request.policy_hash);
+
+        let retry = fixture
+            .application
+            .promote_publication_authority(
+                &receipt_hash,
+                "publication-authority-test",
+                "publication-authority-promotion",
+                false,
+            )
+            .expect("identical authority retry");
+        assert_eq!(
+            serde_json::to_value(&retry).expect("retry serializes"),
+            serde_json::to_value(&persisted).expect("promotion serializes")
+        );
+
+        let missing = fixture.stage.stage.attestation_bundle_artifact_hash.clone();
+        fs::remove_file(fixture_cas_path(fixture.root.path(), &missing))
+            .expect("staged CAS member removes");
+        assert_eq!(
+            fixture
+                .application
+                .promote_publication_authority(
+                    &receipt_hash,
+                    "publication-authority-test",
+                    "publication-authority-missing-cas",
+                    false,
+                )
+                .expect_err("missing staged CAS member must fail")
+                .code,
+            "MCL_PUBLICATION_STAGE_MEMBER_MISSING"
+        );
+    }
+
     #[test]
     fn publication_candidate_documents_bind_exact_canonical_hashes() {
         let (report, closure) = candidate_documents();
@@ -4562,6 +5597,52 @@ mod tests {
             validated.retained_closure_hash,
             format!("{:x}", Sha256::digest(&closure_bytes))
         );
+    }
+
+    #[test]
+    fn publication_authority_requires_an_explicit_passed_report() {
+        let (report, _) = candidate_documents();
+        validate_publication_authority_report(&report).expect("passed protected report");
+
+        let mut rejected_reports = Vec::new();
+        for classification in [
+            PublicationClassification::Rejected,
+            PublicationClassification::Failed,
+        ] {
+            let mut rejected = report.clone();
+            rejected.classification = classification;
+            rejected_reports.push(("classification", rejected));
+        }
+
+        let mut rejected = report.clone();
+        rejected.clean_checkout = false;
+        rejected_reports.push(("clean checkout", rejected));
+
+        let mut rejected = report.clone();
+        rejected.dependency_closure_complete = false;
+        rejected_reports.push(("dependency closure", rejected));
+
+        let mut rejected = report.clone();
+        rejected.network_isolation_enforced = false;
+        rejected_reports.push(("network isolation", rejected));
+
+        let mut rejected = report.clone();
+        rejected.memory_limit_enforced = false;
+        rejected_reports.push(("memory limit", rejected));
+
+        let mut rejected = report.clone();
+        rejected.authoritative = true;
+        rejected_reports.push(("pre-existing authority", rejected));
+
+        for (failed_condition, rejected) in rejected_reports {
+            assert_eq!(
+                validate_publication_authority_report(&rejected)
+                    .expect_err("failed condition cannot cross the authority gate")
+                    .code,
+                "MCL_PUBLICATION_AUTHORITY_REPORT_NOT_PASSED",
+                "{failed_condition} must fail closed"
+            );
+        }
     }
 
     #[test]

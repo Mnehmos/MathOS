@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/evidence/2",
+  "title": "MathOS Authoritative Evidence Payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "subject",
+    "evidence_kind",
+    "result",
+    "authority_class",
+    "producing_run_id",
+    "producing_job_id",
+    "artifact_hashes",
+    "verifier_or_reviewer_identity",
+    "environment_hash",
+    "supersedes_evidence_id",
+    "stale",
+    "stale_reason",
+    "publication_authority"
+  ],
+  "properties": {
+    "schema_version": {"const": "evidence/2"},
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "format": "uuid"},
+        "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "evidence_kind": {"enum": ["lean_kernel_proof", "lean_kernel_refutation"]},
+    "result": {"const": "accepted"},
+    "authority_class": {"const": "authoritative"},
+    "producing_run_id": {"type": "null"},
+    "producing_job_id": {"type": "null"},
+    "artifact_hashes": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "verifier_or_reviewer_identity": {"type": "string", "minLength": 1, "maxLength": 256},
+    "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "supersedes_evidence_id": {"type": "null"},
+    "stale": {"const": false},
+    "stale_reason": {"type": "null"},
+    "publication_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "ingestion_receipt_hash",
+        "stage_hash",
+        "report_artifact_hash",
+        "retained_closure_artifact_hash",
+        "attestation_bundle_artifact_hash",
+        "raw_verification_hash",
+        "publication_request_hash",
+        "publication_policy_hash"
+      ],
+      "properties": {
+        "schema_version": {"const": "publication_authority_binding/1"},
+        "ingestion_receipt_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "stage_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "report_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "retained_closure_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "attestation_bundle_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "raw_verification_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "publication_request_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "publication_policy_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

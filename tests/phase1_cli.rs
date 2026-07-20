@@ -105,7 +105,7 @@ fn init_creates_real_storage_and_health_passes() {
         String::from_utf8_lossy(&initialized.stderr)
     );
     let value = parse_stdout(&initialized);
-    assert_eq!(value["migration_version"], 10);
+    assert_eq!(value["migration_version"], 11);
     assert_eq!(value["journal_mode"], "wal");
     assert!(root.path().join("mcl.toml").is_file());
     assert!(root.path().join(".mcl/state.sqlite3").is_file());
@@ -1546,4 +1546,22 @@ fn publication_candidate_cli_bounds_workflow_json_inputs() {
     assert!(!unstaged.status.success());
     let error: Value = serde_json::from_slice(&unstaged.stderr).expect("ingestion error JSON");
     assert_eq!(error["code"], "MCL_PUBLICATION_STAGE_NOT_FOUND");
+
+    let missing_receipt = mcl(
+        &root,
+        &[
+            "verify",
+            "promote-publication-authority",
+            "--publication-receipt-hash",
+            &"3".repeat(64),
+            "--actor",
+            "publication-candidate-test",
+            "--idempotency-key",
+            "missing-publication-authority-receipt",
+        ],
+    );
+    assert!(!missing_receipt.status.success());
+    let error: Value =
+        serde_json::from_slice(&missing_receipt.stderr).expect("authority error JSON");
+    assert_eq!(error["code"], "MCL_PUBLICATION_RECEIPT_NOT_FOUND");
 }
