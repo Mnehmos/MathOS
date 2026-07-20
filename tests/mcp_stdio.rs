@@ -251,6 +251,72 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
         "{invalid_action:#}"
     );
 
+    let capabilities = server.call(312, "system", json!({"action": "capabilities"}));
+    assert_eq!(
+        capabilities["result"]["structuredContent"]["verify_actions"],
+        json!(["review_fidelity", "fidelity_status", "prepare_publication"])
+    );
+    assert_eq!(
+        capabilities["result"]["structuredContent"]["authoritative_verification"],
+        false
+    );
+
+    let caller_authored_request = server.call(
+        313,
+        "verify",
+        json!({"action": "prepare_publication", "request": {}}),
+    );
+    assert_eq!(caller_authored_request["result"]["isError"], true);
+    assert_eq!(
+        caller_authored_request["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_FORBIDDEN"
+    );
+
+    let incomplete_preparation =
+        server.call(314, "verify", json!({"action": "prepare_publication"}));
+    assert_eq!(incomplete_preparation["result"]["isError"], true);
+    assert_eq!(
+        incomplete_preparation["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_REQUIRED"
+    );
+
+    let crossed_action_field = server.call(
+        315,
+        "verify",
+        json!({
+            "action": "fidelity_status",
+            "source_commit_sha": "1".repeat(40)
+        }),
+    );
+    assert_eq!(crossed_action_field["result"]["isError"], true);
+    assert_eq!(
+        crossed_action_field["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_FORBIDDEN"
+    );
+
+    let invalid_outcome = server.call(
+        316,
+        "verify",
+        json!({
+            "action": "prepare_publication",
+            "formalization_object_id": "01900000-0000-7000-8000-000000000000",
+            "formalization_version_hash": "a".repeat(64),
+            "outcome": "proved",
+            "diagnostic_evidence_id": "01900000-0000-7000-8000-000000000001",
+            "proof_closure_evidence_id": "01900000-0000-7000-8000-000000000002",
+            "axiom_audit_evidence_id": "01900000-0000-7000-8000-000000000003",
+            "source_commit_sha": "1".repeat(40),
+            "source_tree_sha": "2".repeat(40),
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-invalid-publication-outcome"
+        }),
+    );
+    assert_eq!(invalid_outcome["result"]["isError"], true);
+    assert_eq!(
+        invalid_outcome["result"]["structuredContent"]["code"],
+        "MCL_PUBLICATION_OUTCOME_INVALID"
+    );
+
     let still_alive = server.send(&json!({
         "jsonrpc": "2.0",
         "id": 32,

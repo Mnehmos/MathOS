@@ -169,6 +169,7 @@ These items establish only part of the product foundation and Phase 2 trace mode
 - Issue #20 is complete with exact-tree CI evidence. Issue #21 must now bind clean-checkout verification, dependency closure, retained artifacts, policy identity, and non-forgeable report provenance before authoritative proof or refutation evidence can exist.
 - The first issue #21 slice defines closed publication policy, request, and candidate-report contracts. The policy pins repository, protected workflow, main ref, GitHub-hosted runner, Lean toolchain, allowed axioms, required isolation controls, SLSA predicate, and action commit identities.
 - Publication requests separately name proof and refutation outcomes and bind exact diagnostic, proof-closure, axiom-audit, environment, module, declaration, policy, Git commit, and Git tree identities.
+- `mcl verify prepare-publication` and MCP `verify.prepare_publication` now derive that request from the current canonical formalization head and its exact accepted elaboration/audit chain. Typed `claim_polarity` maps `claim` to proof and `negation` to refutation; earlier records may omit it for read compatibility but cannot publish until versioned and reverified. The application reopens the controlled jobs and reports, verifies every referenced CAS object, and retains only private `generated` canonical request bytes behind a transactional head/idempotency check. Callers cannot submit request JSON, derived hashes, or authority fields, and polarity remains non-authoritative intent until fidelity and protected publication evidence are combined.
 - Candidate reports must remain non-authoritative. A passed candidate fails validation if clean checkout, dependency closure, network isolation, memory enforcement, allowed axioms, retained artifacts, workflow identity, source identity, or policy identity is missing or inconsistent.
 - ADR-0006 requires GitHub OIDC and Sigstore attestation of the exact report bytes, followed by repository, workflow, ref, commit, predicate, runner, and subject-digest verification before authority promotion. The policy now additionally pins GitHub CLI 2.96.0 by release archive and executable SHA-256.
 - The publication boundary smoke uses a clean checkout, pinned Lean, read-only root mount, separate mount, PID, and network namespaces, a private temporary filesystem, one Lean worker thread, and a four-gibibyte address-space limit. Its report remains explicitly non-authoritative.
@@ -182,7 +183,7 @@ These items establish only part of the product foundation and Phase 2 trace mode
 
 ## Next highest-priority criteria
 
-1. Implement controlled canonical ingestion for a real `publication_request/1`, `publication_report/1`, and complete retained publication closure.
+1. Feed the prepared canonical request into a real clean-checkout `publication_report/1` and complete retained publication closure.
 2. Create authoritative exact proof/refutation evidence only from the verified retained closure, never from caller-authored reports.
 3. Derive mathematical status only from exact current proof and fidelity evidence.
 4. Complete Pilot A through the real interfaces only after both authority and fidelity controls exist.
@@ -202,10 +203,10 @@ git diff --check
 Observed validation evidence for this update:
 
 - Home workstation: Windows 10.0.19045, PowerShell 5.1.19041.6456, Rust 1.97.1, Python 3.12.10, GitHub CLI 2.70.0, GNU Bash 5.2.21 through WSL, and Lean 4.32.0 `x86_64-w64-windows-gnu`.
-- `bash -n scripts/publication-attestation-verify.sh`, formatting, warnings-denied Clippy, all 89 default Rust tests, and patch whitespace validation passed.
+- Formatting, warnings-denied Clippy across all targets and features, all 92 default Rust tests, the opt-in real Lean 4.32 lifecycle, all 39 legacy Python regressions, and patch whitespace validation passed for the canonical request-preparation slice.
 - The corrected policy passed against retained artifact `8448611307`; independent report-digest, predicate, empty-timestamp, and empty-attestation mutations all failed closed.
 - `mcl init`, `mcl health`, and `mcl doctor` passed against a fresh Windows instance. Doctor observed the exact pinned Lean 4.32.0 toolchain and honestly reports the local profile.
-- The Windows legacy Python command preserved one failure because the installed Lean turns the test's assumed missing-toolchain result into a Lean rejection, plus two errors where SQLite connections opened directly by tampering tests remain locked during temporary-directory cleanup. The opt-in real Lean worker test also preserved a Windows `launch_failed` result. These host-specific failures remain open observations; they were not hidden or mixed into the attestation correction.
+- PR #29 corrected the Windows-specific Lean platform expectation and temporary-database cleanup assumptions. Main CI run `29709993224` and publication run `29709993225` passed after that repair.
 - PR #26 CI run `29709569292` passed fresh Linux, Windows, storage, legacy Python, and pinned Lean jobs on exact tree `e5b0bcbf4eacf9cb402d87b04b5dc9b0431134f2`.
 - GitHub Actions run `29699563931` passed all five jobs for the completed MCP invalid-action and environment-persistence state, including exact pinned Lean availability and both Rust operating-system targets.
 - GitHub Actions run `29700398370` passed all five jobs for the canonical artifact slice, including both Rust operating-system targets.
