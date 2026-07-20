@@ -102,4 +102,41 @@ cp -- "$(cas_path "$receipt_hash")" "$output_dir/attestation-verification.json"
 echo "$raw_hash  $output_dir/attestation-verification-raw.json" | sha256sum --check --strict
 echo "$receipt_hash  $output_dir/attestation-verification.json" | sha256sum --check --strict
 
+"$mcl_bin" --root "$candidate_dir" --json verify promote-publication-authority \
+  --publication-receipt-hash "$receipt_hash" \
+  --actor publication-boundary \
+  --idempotency-key "publication-authority:$receipt_hash" \
+  >"$output_dir/publication-authority.json"
+
+expected_evidence_kind="$(
+  jq -er '
+    if .request.outcome == "proof" then "lean_kernel_proof"
+    elif .request.outcome == "refutation" then "lean_kernel_refutation"
+    else error("unsupported publication outcome")
+    end
+  ' "$candidate_dir/publication-report.json"
+)"
+stage_hash="$(jq -er '.stage.stage_hash' "$output_dir/publication-stage.json")"
+jq -e \
+  --arg receipt_hash "$receipt_hash" \
+  --arg stage_hash "$stage_hash" \
+  --arg evidence_kind "$expected_evidence_kind" '
+  .dry_run == false and
+  .publication_receipt_hash == $receipt_hash and
+  .proposed_evidence_hash == .evidence.evidence_hash and
+  .evidence_kind == $evidence_kind and
+  .evidence.payload.schema_version == "evidence/2" and
+  .evidence.payload.evidence_kind == $evidence_kind and
+  .evidence.payload.result == "accepted" and
+  .evidence.payload.authority_class == "authoritative" and
+  .evidence.payload.producing_run_id == null and
+  .evidence.payload.producing_job_id == null and
+  .evidence.payload.stale == false and
+  .evidence.payload.publication_authority.ingestion_receipt_hash == $receipt_hash and
+  .evidence.payload.publication_authority.stage_hash == $stage_hash
+' "$output_dir/publication-authority.json" >/dev/null || {
+  printf 'publication authority output failed its closed contract\n' >&2
+  exit 71
+}
+
 jq -cS . "$output_dir/publication-ingestion.json"

@@ -183,6 +183,7 @@ enum VerifyAction {
     ValidatePublicationCandidate(VerifyValidatePublicationCandidateOptions),
     StagePublicationCandidate(VerifyStagePublicationCandidateOptions),
     IngestPublication(VerifyIngestPublicationOptions),
+    PromotePublicationAuthority(VerifyPromotePublicationAuthorityOptions),
 }
 
 #[derive(Debug, Args)]
@@ -339,6 +340,15 @@ struct VerifyIngestPublicationOptions {
 
     #[arg(long)]
     attestation_bundle_artifact_hash: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct VerifyPromotePublicationAuthorityOptions {
+    #[arg(long)]
+    publication_receipt_hash: String,
 
     #[command(flatten)]
     mutation: MutationOptions,
@@ -819,6 +829,15 @@ fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<Cli
             options.mutation.dry_run,
         )?)
         .expect("publication ingestion outcome is serializable"),
+        VerifyAction::PromotePublicationAuthority(options) => {
+            to_value(application.promote_publication_authority(
+                &options.publication_receipt_hash,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("publication authority promotion outcome is serializable")
+        }
     };
     Ok(CliOutcome {
         value,

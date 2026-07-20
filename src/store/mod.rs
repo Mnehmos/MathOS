@@ -10,17 +10,19 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::canonical::{canonical_json, record_version_hash, value_hash};
+use crate::domain::evidence::{AUTHORITATIVE_EVIDENCE_SCHEMA_VERSION, PublicationAuthorityBinding};
 use crate::domain::schemas::{
-    ExactVersionReference, FormalizationPayload, validate_record_payload,
+    ExactVersionReference, FormalizationClaimPolarity, FormalizationPayload,
+    validate_record_payload,
 };
 use crate::domain::{
     ArtifactCreationSource, ArtifactMediaType, ArtifactMetadata, ArtifactRestriction,
     ArtifactSnapshot, EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest, EnvironmentSnapshot,
     EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult, EvidenceSnapshot,
     LeanAuditJobSnapshot, LeanAuditRequest, PublicationAttestationVerification,
-    PublicationIngestionReceiptSnapshot, PublicationRequest, PublicationStage,
-    PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot, VerifierJobRequest,
-    VerifierJobSnapshot, VerifierJobState,
+    PublicationIngestionReceiptSnapshot, PublicationOutcome, PublicationRequest,
+    PublicationRetainedArtifactRole, PublicationStage, PublicationStageSnapshot, RecordDraft,
+    RecordKind, RecordSnapshot, VerifierJobRequest, VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
 
@@ -37,9 +39,11 @@ const MIGRATION_0007: &str = include_str!("../../migrations/0007_artifact_invari
 const MIGRATION_0008: &str = include_str!("../../migrations/0008_verifier_jobs.sql");
 const MIGRATION_0009: &str = include_str!("../../migrations/0009_evidence_invariants.sql");
 const MIGRATION_0010: &str = include_str!("../../migrations/0010_publication_ingestion.sql");
+const MIGRATION_0011: &str = include_str!("../../migrations/0011_publication_authority.sql");
 const MAX_PUBLICATION_INPUT_BYTES: u64 = 16 * 1_048_576;
 const MAX_REGISTERED_CAS_HASHES: usize = 100_000;
 const PUBLICATION_INGESTION_OPERATION: &str = "publication.ingestion_receipt.register";
+const PUBLICATION_AUTHORITY_OPERATION: &str = "evidence.create_publication_authority";
 const REQUIRED_TABLES: &[&str] = &[
     "artifacts",
     "edges",
@@ -77,6 +81,45 @@ type RawEdgeRow = (
     i64,
     String,
 );
+
+#[derive(Clone, Debug)]
+pub(crate) struct PublicationAuthorityCommit {
+    pub subject: ExactVersionReference,
+    pub outcome: PublicationOutcome,
+    pub environment_hash: String,
+    pub binding: PublicationAuthorityBinding,
+    pub artifact_hashes: Vec<String>,
+}
+
+impl PublicationAuthorityCommit {
+    pub(crate) fn evidence_payload(&self) -> Result<EvidencePayload, AppError> {
+        let evidence_kind = match self.outcome {
+            PublicationOutcome::Proof => EvidenceKind::LeanKernelProof,
+            PublicationOutcome::Refutation => EvidenceKind::LeanKernelRefutation,
+        };
+        let payload = EvidencePayload {
+            schema_version: AUTHORITATIVE_EVIDENCE_SCHEMA_VERSION.to_owned(),
+            subject: self.subject.clone(),
+            evidence_kind,
+            result: EvidenceResult::Accepted,
+            authority_class: EvidenceAuthorityClass::Authoritative,
+            producing_run_id: None,
+            producing_job_id: None,
+            artifact_hashes: self.artifact_hashes.clone(),
+            verifier_or_reviewer_identity: format!(
+                "publication-policy:{}",
+                self.binding.publication_policy_hash
+            ),
+            environment_hash: Some(self.environment_hash.clone()),
+            supersedes_evidence_id: None,
+            stale: false,
+            stale_reason: None,
+            publication_authority: Some(self.binding.clone()),
+        };
+        payload.validate()?;
+        Ok(payload)
+    }
+}
 
 pub struct Store {
     connection: Connection,
@@ -287,6 +330,24 @@ impl Store {
                     params![10_i64, "publication ingestion"],
                 )
                 .map_err(|error| AppError::database("record migration 0010", error))?;
+        }
+        let migration_0011_applied: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 11)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::database("inspect migration 0011", error))?;
+        if !migration_0011_applied {
+            transaction
+                .execute_batch(MIGRATION_0011)
+                .map_err(|error| AppError::database("apply migration 0011", error))?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, unixepoch())",
+                    params![11_i64, "publication authority"],
+                )
+                .map_err(|error| AppError::database("record migration 0011", error))?;
         }
         transaction
             .commit()
@@ -892,6 +953,14 @@ impl Store {
         read_publication_stage(&self.connection, &stage_hash)
     }
 
+    pub fn get_publication_stage_by_hash(
+        &self,
+        stage_hash: &str,
+    ) -> Result<PublicationStageSnapshot, AppError> {
+        validate_hash(stage_hash, "publication stage")?;
+        read_publication_stage(&self.connection, stage_hash)
+    }
+
     pub fn publication_ingestion_idempotency_result(
         &self,
         stage_hash: &str,
@@ -986,6 +1055,15 @@ impl Store {
             .map_err(|error| AppError::database("start publication receipt registration", error))?;
         let stage = read_publication_stage(&transaction, stage_hash)?;
         validate_current_publication_subject(&transaction, current_subject)?;
+        let retained_request_subject = publication_request_subject_binding(&transaction, &stage)?;
+        if retained_request_subject != *current_subject {
+            return Err(AppError::new(
+                "MCL_PUBLICATION_RECEIPT_SUBJECT_MISMATCH",
+                "publication receipt subject does not match the formalization retained by the staged publication request",
+                false,
+                "Ingest only the exact current subject embedded in the retained publication request.",
+            ));
+        }
         validate_publication_receipt_binding(&stage, verification)?;
 
         if let Some(existing) = read_idempotent_result::<PublicationIngestionReceiptSnapshot>(
@@ -995,6 +1073,11 @@ impl Store {
             &input_hash,
         )? {
             let stored = read_publication_ingestion_receipt(&transaction, &existing.receipt_hash)?;
+            validate_publication_receipt_retry_subject(
+                &transaction,
+                &stored.receipt_hash,
+                current_subject,
+            )?;
             if existing != stored
                 || stored.receipt_hash != receipt_hash
                 || stored.stage_hash != stage_hash
@@ -1020,6 +1103,11 @@ impl Store {
         if let Some(existing_receipt_hash) = existing_receipt_hash {
             let existing =
                 read_publication_ingestion_receipt(&transaction, &existing_receipt_hash)?;
+            validate_publication_receipt_retry_subject(
+                &transaction,
+                &existing.receipt_hash,
+                current_subject,
+            )?;
             if existing.receipt_hash != receipt_hash
                 || existing.stage_hash != stage_hash
                 || existing.verification != verification.clone()
@@ -1048,7 +1136,7 @@ impl Store {
 
         transaction
             .execute(
-                "INSERT INTO publication_ingestion_receipts(receipt_hash, schema_version, stage_hash, report_artifact_hash, attestation_bundle_artifact_hash, raw_verification_hash, raw_verification_byte_size, receipt_byte_size, verification_json, authoritative, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, unixepoch(), ?10)",
+                "INSERT INTO publication_ingestion_receipts(receipt_hash, schema_version, stage_hash, report_artifact_hash, attestation_bundle_artifact_hash, raw_verification_hash, raw_verification_byte_size, receipt_byte_size, verification_json, authoritative, created_at, created_by, subject_object_id, subject_version_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, unixepoch(), ?10, ?11, ?12)",
                 params![
                     receipt_hash,
                     verification.schema_version,
@@ -1060,6 +1148,8 @@ impl Store {
                     receipt_byte_size as i64,
                     verification_json,
                     actor,
+                    current_subject.object_id,
+                    current_subject.version_hash,
                 ],
             )
             .map_err(|error| AppError::database("insert publication ingestion receipt", error))?;
@@ -1093,6 +1183,136 @@ impl Store {
             .map_err(|error| AppError::database("find publication ingestion receipt", error))?
             .ok_or_else(|| publication_receipt_not_found(stage_hash))?;
         read_publication_ingestion_receipt(&self.connection, &receipt_hash)
+    }
+
+    pub fn get_publication_ingestion_receipt(
+        &self,
+        receipt_hash: &str,
+    ) -> Result<PublicationIngestionReceiptSnapshot, AppError> {
+        validate_hash(receipt_hash, "publication ingestion receipt")?;
+        read_publication_ingestion_receipt(&self.connection, receipt_hash)
+    }
+
+    pub(crate) fn create_publication_authority_evidence(
+        &mut self,
+        commit: &PublicationAuthorityCommit,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<EvidenceSnapshot, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        validate_publication_actor(actor)?;
+        let payload = commit.evidence_payload()?;
+        let evidence_hash = payload.evidence_hash()?;
+        let payload_value = serde_json::to_value(&payload).map_err(|error| {
+            publication_authority_error(
+                "MCL_PUBLICATION_AUTHORITY_INVALID",
+                error.to_string(),
+                "Report this deterministic authoritative-evidence serialization defect.",
+            )
+        })?;
+        let payload_json = canonical_string(&payload_value)?;
+        let artifact_hashes_json =
+            serde_json::to_string(&payload.artifact_hashes).map_err(|error| {
+                publication_authority_error(
+                    "MCL_PUBLICATION_AUTHORITY_INVALID",
+                    error.to_string(),
+                    "Report this deterministic authority-artifact serialization defect.",
+                )
+            })?;
+        let input_hash = value_hash(&json!({
+            "operation": PUBLICATION_AUTHORITY_OPERATION,
+            "payload": payload_value,
+            "actor": actor,
+        }))?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start publication authority creation", error))?;
+        let receipt = read_publication_ingestion_receipt(
+            &transaction,
+            &commit.binding.ingestion_receipt_hash,
+        )?;
+        let stage = read_publication_stage(&transaction, &commit.binding.stage_hash)?;
+        validate_publication_authority_commit(&transaction, commit, &receipt, &stage)?;
+
+        if let Some(existing) = read_idempotent_result::<EvidenceSnapshot>(
+            &transaction,
+            PUBLICATION_AUTHORITY_OPERATION,
+            idempotency_key,
+            &input_hash,
+        )? {
+            let stored = read_evidence(&transaction, &existing.evidence_id)?;
+            if existing != stored
+                || stored.evidence_hash != evidence_hash
+                || stored.payload != payload
+                || stored.created_by != actor
+            {
+                return Err(publication_authority_integrity_error(
+                    "stored idempotency result disagrees with the immutable authoritative evidence",
+                ));
+            }
+            return Ok(stored);
+        }
+
+        let existing_evidence_id = transaction
+            .query_row(
+                "SELECT evidence_id FROM evidence WHERE publication_receipt_hash = ?1",
+                [&commit.binding.ingestion_receipt_hash],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| AppError::database("find publication authority evidence", error))?;
+        if let Some(existing_evidence_id) = existing_evidence_id {
+            let existing = read_evidence(&transaction, &existing_evidence_id)?;
+            if existing.payload != payload || existing.evidence_hash != evidence_hash {
+                return Err(publication_authority_integrity_error(
+                    "the publication receipt is bound to conflicting authoritative evidence",
+                ));
+            }
+            return Err(publication_authority_error(
+                "MCL_PUBLICATION_AUTHORITY_EXISTS",
+                format!(
+                    "publication receipt {} already produced authoritative evidence {}",
+                    commit.binding.ingestion_receipt_hash, existing.evidence_id
+                ),
+                "Retrieve the existing evidence or retry with the original idempotency key.",
+            ));
+        }
+
+        let evidence_id = Uuid::now_v7().to_string();
+        transaction
+            .execute(
+                "INSERT INTO evidence(evidence_id, subject_object_id, subject_version_hash, evidence_kind, result, authority_class, run_id, environment_hash, artifact_hash, metadata_json, created_at, superseded_by, evidence_hash, job_id, artifact_hashes_json, verifier_identity, created_by, stale_reason, publication_receipt_hash, publication_stage_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL, ?8, unixepoch(), NULL, ?9, NULL, ?10, ?11, ?12, NULL, ?13, ?14)",
+                params![
+                    evidence_id,
+                    payload.subject.object_id,
+                    payload.subject.version_hash,
+                    payload.evidence_kind.as_str(),
+                    payload.result.as_str(),
+                    payload.authority_class.as_str(),
+                    payload.environment_hash,
+                    payload_json,
+                    evidence_hash,
+                    artifact_hashes_json,
+                    payload.verifier_or_reviewer_identity,
+                    actor,
+                    commit.binding.ingestion_receipt_hash,
+                    commit.binding.stage_hash,
+                ],
+            )
+            .map_err(|error| AppError::database("insert publication authority evidence", error))?;
+        let snapshot = read_evidence(&transaction, &evidence_id)?;
+        write_idempotent_result(
+            &transaction,
+            PUBLICATION_AUTHORITY_OPERATION,
+            idempotency_key,
+            &input_hash,
+            &snapshot,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit publication authority evidence", error))?;
+        Ok(snapshot)
     }
 
     pub fn all_registered_cas_hashes(&self) -> Result<Vec<String>, AppError> {
@@ -2639,6 +2859,387 @@ fn validate_current_publication_subject(
     Ok(())
 }
 
+fn read_publication_receipt_subject_binding(
+    connection: &Connection,
+    receipt_hash: &str,
+) -> Result<Option<ExactVersionReference>, AppError> {
+    let binding = connection
+        .query_row(
+            "SELECT subject_object_id, subject_version_hash FROM publication_ingestion_receipts WHERE receipt_hash = ?1",
+            [receipt_hash],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| AppError::database("read publication receipt subject binding", error))?
+        .ok_or_else(|| publication_receipt_not_found(receipt_hash))?;
+    let (Some(object_id), Some(version_hash)) = binding else {
+        if binding.0.is_none() && binding.1.is_none() {
+            return Ok(None);
+        }
+        return Err(publication_receipt_integrity_error(format!(
+            "stored publication receipt {receipt_hash} has a partial subject binding"
+        )));
+    };
+    let exact_formalization_exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM records AS record JOIN record_versions AS version ON version.object_id = record.object_id WHERE record.object_id = ?1 AND version.version_hash = ?2 AND record.record_type = 'formalization')",
+            params![object_id, version_hash],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| AppError::database("validate publication receipt subject binding", error))?;
+    if Uuid::parse_str(&object_id).is_err()
+        || !is_lower_hex(&version_hash, 64)
+        || !exact_formalization_exists
+    {
+        return Err(publication_receipt_integrity_error(format!(
+            "stored publication receipt {receipt_hash} has an invalid exact formalization binding"
+        )));
+    }
+    Ok(Some(ExactVersionReference {
+        object_id,
+        version_hash,
+    }))
+}
+
+fn validate_publication_receipt_retry_subject(
+    connection: &Connection,
+    receipt_hash: &str,
+    expected_subject: &ExactVersionReference,
+) -> Result<(), AppError> {
+    match read_publication_receipt_subject_binding(connection, receipt_hash)? {
+        Some(bound_subject) if bound_subject == *expected_subject => Ok(()),
+        Some(bound_subject) => Err(AppError::new(
+            "MCL_PUBLICATION_RECEIPT_SUBJECT_MISMATCH",
+            format!(
+                "publication receipt {receipt_hash} is bound to {}@{}, not {}@{}",
+                bound_subject.object_id,
+                bound_subject.version_hash,
+                expected_subject.object_id,
+                expected_subject.version_hash
+            ),
+            false,
+            "Use the exact publication-request formalization retained by this receipt.",
+        )),
+        None => Err(AppError::new(
+            "MCL_PUBLICATION_RECEIPT_SUBJECT_UNBOUND",
+            format!("publication receipt {receipt_hash} predates immutable formalization binding"),
+            false,
+            "Reingest a freshly staged protected candidate before granting authority.",
+        )),
+    }
+}
+
+fn validate_publication_authority_commit(
+    connection: &Connection,
+    commit: &PublicationAuthorityCommit,
+    receipt: &PublicationIngestionReceiptSnapshot,
+    stage: &PublicationStageSnapshot,
+) -> Result<(), AppError> {
+    commit.binding.validate()?;
+    validate_hash(
+        &commit.subject.version_hash,
+        "publication authority subject version",
+    )?;
+    Uuid::parse_str(&commit.subject.object_id).map_err(|_| {
+        publication_authority_error(
+            "MCL_PUBLICATION_AUTHORITY_SUBJECT_INVALID",
+            "publication authority subject object identity is not a UUID",
+            "Use the exact application-replayed publication subject.",
+        )
+    })?;
+    validate_hash(
+        &commit.environment_hash,
+        "publication authority environment",
+    )?;
+    let receipt_subject = read_publication_receipt_subject_binding(
+        connection,
+        &commit.binding.ingestion_receipt_hash,
+    )?;
+    let retained_request_subject = publication_request_subject_binding(connection, stage)?;
+    if receipt_subject.as_ref() != Some(&commit.subject)
+        || retained_request_subject != commit.subject
+    {
+        return Err(publication_authority_error(
+            "MCL_PUBLICATION_AUTHORITY_SUBJECT_MISMATCH",
+            "publication authority subject does not match the exact formalization retained by the ingestion receipt",
+            "Replay only the publication-request subject immutably bound during controlled ingestion.",
+        ));
+    }
+
+    if receipt.receipt_hash != commit.binding.ingestion_receipt_hash
+        || receipt.stage_hash != commit.binding.stage_hash
+        || stage.stage_hash != commit.binding.stage_hash
+        || stage.stage.report_artifact_hash != commit.binding.report_artifact_hash
+        || stage.stage.retained_closure_artifact_hash
+            != commit.binding.retained_closure_artifact_hash
+        || stage.stage.attestation_bundle_artifact_hash
+            != commit.binding.attestation_bundle_artifact_hash
+        || receipt.verification.report_artifact_hash != commit.binding.report_artifact_hash
+        || receipt.verification.report_content_hash != commit.binding.report_artifact_hash
+        || receipt.verification.attestation_bundle_hash
+            != commit.binding.attestation_bundle_artifact_hash
+        || receipt.verification.raw_verification_hash != commit.binding.raw_verification_hash
+        || receipt.verification.authoritative
+        || stage.stage.authoritative
+    {
+        return Err(publication_authority_error(
+            "MCL_PUBLICATION_AUTHORITY_BINDING_INVALID",
+            "publication authority commit does not reproduce the exact immutable receipt and stage projections",
+            "Replay the exact receipt and complete staged publication closure through the application service.",
+        ));
+    }
+
+    let request_hash = publication_stage_role_artifact_hash(
+        stage,
+        PublicationRetainedArtifactRole::PublicationRequest,
+    )?;
+    let policy_hash = publication_stage_role_artifact_hash(
+        stage,
+        PublicationRetainedArtifactRole::PublicationPolicy,
+    )?;
+    if request_hash != commit.binding.publication_request_hash
+        || policy_hash != commit.binding.publication_policy_hash
+    {
+        return Err(publication_authority_error(
+            "MCL_PUBLICATION_AUTHORITY_BINDING_INVALID",
+            "publication authority request or policy hash does not match the immutable stage",
+            "Replay the request and committed policy retained by the exact publication stage.",
+        ));
+    }
+
+    let expected_artifact_hashes = publication_authority_artifact_hashes(stage, receipt);
+    if commit.artifact_hashes != expected_artifact_hashes {
+        return Err(publication_authority_error(
+            "MCL_PUBLICATION_AUTHORITY_ARTIFACTS_INVALID",
+            "publication authority artifact set is not the complete exact staged and verified CAS closure",
+            "Use the application-derived sorted union of the stage, report, bundle, raw verification, and receipt hashes.",
+        ));
+    }
+
+    validate_current_publication_subject(connection, &commit.subject)?;
+    let (schema_version, payload_json) = connection
+        .query_row(
+            "SELECT schema_version, payload_json FROM record_versions WHERE object_id = ?1 AND version_hash = ?2",
+            params![commit.subject.object_id, commit.subject.version_hash],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(|error| AppError::database("read publication authority subject", error))?;
+    let payload_value: Value = serde_json::from_str(&payload_json).map_err(|error| {
+        publication_authority_integrity_error(format!(
+            "stored formalization payload is invalid: {error}"
+        ))
+    })?;
+    validate_record_payload(RecordKind::Formalization, &schema_version, &payload_value).map_err(
+        |error| {
+            publication_authority_integrity_error(format!(
+                "stored formalization fails validation: {}",
+                error.message
+            ))
+        },
+    )?;
+    if record_version_hash(&schema_version, &payload_value)? != commit.subject.version_hash {
+        return Err(publication_authority_integrity_error(
+            "stored formalization does not reproduce its exact version identity",
+        ));
+    }
+    let formalization: FormalizationPayload =
+        serde_json::from_value(payload_value).map_err(|error| {
+            publication_authority_integrity_error(format!(
+                "stored formalization cannot be decoded: {error}"
+            ))
+        })?;
+    let expected_outcome = match formalization.claim_polarity {
+        Some(FormalizationClaimPolarity::Claim) => PublicationOutcome::Proof,
+        Some(FormalizationClaimPolarity::Negation) => PublicationOutcome::Refutation,
+        None => {
+            return Err(publication_authority_error(
+                "MCL_PUBLICATION_OUTCOME_UNBOUND",
+                "publication authority subject has no typed claim polarity",
+                "Create and republish an exact formalization version with typed claim polarity.",
+            ));
+        }
+    };
+    if formalization.environment_hash != commit.environment_hash {
+        return Err(publication_authority_error(
+            "MCL_PUBLICATION_AUTHORITY_ENVIRONMENT_MISMATCH",
+            "publication authority environment does not match the exact formalization",
+            "Replay the environment bound by the exact publication request and formalization.",
+        ));
+    }
+    if commit.outcome != expected_outcome {
+        return Err(publication_authority_error(
+            "MCL_PUBLICATION_OUTCOME_MISMATCH",
+            "publication authority outcome conflicts with the formalization's typed claim polarity",
+            "Use only the outcome derived from the exact protected publication request.",
+        ));
+    }
+    Ok(())
+}
+
+fn publication_stage_role_artifact_hash(
+    stage: &PublicationStageSnapshot,
+    role: PublicationRetainedArtifactRole,
+) -> Result<&str, AppError> {
+    stage
+        .stage
+        .retained_artifacts
+        .iter()
+        .find(|artifact| artifact.role == role)
+        .map(|artifact| artifact.artifact_hash.as_str())
+        .ok_or_else(|| {
+            publication_authority_integrity_error(format!(
+                "publication stage is missing retained role {}",
+                role.as_str()
+            ))
+        })
+}
+
+fn publication_request_subject_binding(
+    connection: &Connection,
+    stage: &PublicationStageSnapshot,
+) -> Result<ExactVersionReference, AppError> {
+    let request_hash = stage
+        .stage
+        .retained_artifacts
+        .iter()
+        .find(|artifact| artifact.role == PublicationRetainedArtifactRole::PublicationRequest)
+        .map(|artifact| artifact.artifact_hash.as_str())
+        .ok_or_else(|| {
+            AppError::new(
+                "MCL_PUBLICATION_REQUEST_BINDING_INVALID",
+                "publication stage is missing its retained publication request",
+                false,
+                "Restage the exact protected publication closure.",
+            )
+        })?;
+    let artifact = read_artifact(connection, request_hash).map_err(|error| {
+        AppError::new(
+            "MCL_PUBLICATION_REQUEST_BINDING_INVALID",
+            format!(
+                "retained publication request metadata is unavailable: {}",
+                error.message
+            ),
+            false,
+            "Restore the exact controlled publication-request artifact registration.",
+        )
+    })?;
+    let object_id = artifact
+        .semantic_metadata
+        .get("formalization_object_id")
+        .cloned();
+    let version_hash = artifact
+        .semantic_metadata
+        .get("formalization_version_hash")
+        .cloned();
+    let (Some(object_id), Some(version_hash)) = (object_id, version_hash) else {
+        return Err(AppError::new(
+            "MCL_PUBLICATION_REQUEST_BINDING_INVALID",
+            "retained publication request metadata omits its exact formalization subject",
+            false,
+            "Restore the exact controlled publication-request artifact registration.",
+        ));
+    };
+    let exact_formalization_exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM records AS record JOIN record_versions AS version ON version.object_id = record.object_id WHERE record.object_id = ?1 AND version.version_hash = ?2 AND record.record_type = 'formalization')",
+            params![object_id, version_hash],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| AppError::database("validate retained publication request subject", error))?;
+    if artifact.media_type != ArtifactMediaType::Json
+        || artifact.creation_source != ArtifactCreationSource::Generated
+        || artifact.restriction != ArtifactRestriction::Private
+        || artifact
+            .semantic_metadata
+            .get("artifact_role")
+            .is_none_or(|role| role != "publication_request")
+        || artifact
+            .semantic_metadata
+            .get("request_hash")
+            .is_none_or(|hash| hash != request_hash)
+        || Uuid::parse_str(&object_id).is_err()
+        || !is_lower_hex(&version_hash, 64)
+        || !exact_formalization_exists
+    {
+        return Err(AppError::new(
+            "MCL_PUBLICATION_REQUEST_BINDING_INVALID",
+            "retained publication request artifact metadata does not reproduce one exact formalization binding",
+            false,
+            "Restore the exact artifact registered through the controlled publication-request path.",
+        ));
+    }
+    Ok(ExactVersionReference {
+        object_id,
+        version_hash,
+    })
+}
+
+fn publication_authority_artifact_hashes(
+    stage: &PublicationStageSnapshot,
+    receipt: &PublicationIngestionReceiptSnapshot,
+) -> Vec<String> {
+    let mut hashes = stage
+        .stage
+        .retained_artifacts
+        .iter()
+        .map(|artifact| artifact.artifact_hash.clone())
+        .collect::<Vec<_>>();
+    hashes.extend([
+        stage.stage.report_artifact_hash.clone(),
+        stage.stage.retained_closure_artifact_hash.clone(),
+        stage.stage.attestation_bundle_artifact_hash.clone(),
+        receipt.verification.raw_verification_hash.clone(),
+        receipt.receipt_hash.clone(),
+    ]);
+    hashes.sort_unstable();
+    hashes.dedup();
+    hashes
+}
+
+fn validate_stored_publication_authority_evidence(
+    connection: &Connection,
+    payload: &EvidencePayload,
+    binding: &PublicationAuthorityBinding,
+) -> Result<(), AppError> {
+    let receipt = read_publication_ingestion_receipt(connection, &binding.ingestion_receipt_hash)?;
+    let stage = read_publication_stage(connection, &binding.stage_hash)?;
+    let receipt_subject =
+        read_publication_receipt_subject_binding(connection, &binding.ingestion_receipt_hash)?;
+    let retained_request_subject = publication_request_subject_binding(connection, &stage)?;
+    let request_hash = publication_stage_role_artifact_hash(
+        &stage,
+        PublicationRetainedArtifactRole::PublicationRequest,
+    )?;
+    let policy_hash = publication_stage_role_artifact_hash(
+        &stage,
+        PublicationRetainedArtifactRole::PublicationPolicy,
+    )?;
+    if receipt_subject.as_ref() != Some(&payload.subject)
+        || retained_request_subject != payload.subject
+        || receipt.stage_hash != binding.stage_hash
+        || stage.stage.report_artifact_hash != binding.report_artifact_hash
+        || stage.stage.retained_closure_artifact_hash != binding.retained_closure_artifact_hash
+        || stage.stage.attestation_bundle_artifact_hash != binding.attestation_bundle_artifact_hash
+        || receipt.verification.report_artifact_hash != binding.report_artifact_hash
+        || receipt.verification.report_content_hash != binding.report_artifact_hash
+        || receipt.verification.attestation_bundle_hash != binding.attestation_bundle_artifact_hash
+        || receipt.verification.raw_verification_hash != binding.raw_verification_hash
+        || request_hash != binding.publication_request_hash
+        || policy_hash != binding.publication_policy_hash
+        || payload.artifact_hashes != publication_authority_artifact_hashes(&stage, &receipt)
+    {
+        return Err(publication_authority_integrity_error(
+            "stored authoritative evidence does not reproduce its receipt-bound publication closure",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_publication_input_size(byte_size: u64, label: &str) -> Result<(), AppError> {
     if byte_size == 0 || byte_size > MAX_PUBLICATION_INPUT_BYTES {
         return Err(AppError::new(
@@ -3309,7 +3910,7 @@ fn validate_diagnostic_evidence_references(
 fn read_evidence(connection: &Connection, evidence_id: &str) -> Result<EvidenceSnapshot, AppError> {
     let row = connection
         .query_row(
-            "SELECT evidence_hash, metadata_json, created_at, created_by, subject_object_id, subject_version_hash, evidence_kind, result, authority_class, run_id, job_id, environment_hash, artifact_hashes_json, verifier_identity, stale_reason FROM evidence WHERE evidence_id = ?1 AND evidence_hash IS NOT NULL",
+            "SELECT evidence_hash, metadata_json, created_at, created_by, subject_object_id, subject_version_hash, evidence_kind, result, authority_class, run_id, job_id, environment_hash, artifact_hashes_json, verifier_identity, stale_reason, publication_receipt_hash, publication_stage_hash FROM evidence WHERE evidence_id = ?1 AND evidence_hash IS NOT NULL",
             [evidence_id],
             |row| {
                 Ok((
@@ -3321,6 +3922,7 @@ fn read_evidence(connection: &Connection, evidence_id: &str) -> Result<EvidenceS
                     row.get::<_, Option<String>>(10)?, row.get::<_, Option<String>>(11)?,
                     row.get::<_, String>(12)?, row.get::<_, String>(13)?,
                     row.get::<_, Option<String>>(14)?,
+                    row.get::<_, Option<String>>(15)?, row.get::<_, Option<String>>(16)?,
                 ))
             },
         )
@@ -3342,6 +3944,8 @@ fn read_evidence(connection: &Connection, evidence_id: &str) -> Result<EvidenceS
         artifact_hashes_json,
         verifier_identity,
         stale_reason,
+        publication_receipt_hash,
+        publication_stage_hash,
     )) = row
     else {
         return Err(AppError::new(
@@ -3375,6 +3979,13 @@ fn read_evidence(connection: &Connection, evidence_id: &str) -> Result<EvidenceS
             "Quarantine the database and restore a verified backup.",
         )
     })?;
+    let publication_projection_matches = match &payload.publication_authority {
+        Some(binding) => {
+            publication_receipt_hash.as_deref() == Some(binding.ingestion_receipt_hash.as_str())
+                && publication_stage_hash.as_deref() == Some(binding.stage_hash.as_str())
+        }
+        None => publication_receipt_hash.is_none() && publication_stage_hash.is_none(),
+    };
     if payload.evidence_hash()? != evidence_hash
         || payload.subject.object_id != subject_object_id
         || payload.subject.version_hash != subject_version_hash
@@ -3387,6 +3998,7 @@ fn read_evidence(connection: &Connection, evidence_id: &str) -> Result<EvidenceS
         || payload.artifact_hashes != artifacts
         || payload.verifier_or_reviewer_identity != verifier_identity
         || payload.stale_reason != stale_reason
+        || !publication_projection_matches
     {
         return Err(AppError::new(
             "MCL_EVIDENCE_INTEGRITY_FAILED",
@@ -3394,6 +4006,10 @@ fn read_evidence(connection: &Connection, evidence_id: &str) -> Result<EvidenceS
             false,
             "Quarantine the database and restore a verified backup.",
         ));
+    }
+    if let Some(binding) = &payload.publication_authority {
+        validate_stored_publication_authority_evidence(connection, &payload, binding)
+            .map_err(|error| publication_authority_integrity_error(error.message))?;
     }
     Ok(EvidenceSnapshot {
         evidence_id: evidence_id.to_owned(),
@@ -4074,6 +4690,21 @@ fn read_publication_ingestion_receipt(
             "stored ingestion receipt binding is invalid: {error}"
         ))
     })?;
+    let retained_request_subject = publication_request_subject_binding(connection, &stage)
+        .map_err(|error| {
+            publication_receipt_integrity_error(format!(
+                "stored ingestion receipt request binding is invalid: {}",
+                error.message
+            ))
+        })?;
+    if read_publication_receipt_subject_binding(connection, receipt_hash)?
+        .as_ref()
+        .is_some_and(|receipt_subject| receipt_subject != &retained_request_subject)
+    {
+        return Err(publication_receipt_integrity_error(format!(
+            "stored ingestion receipt subject disagrees with its retained publication request for {receipt_hash}"
+        )));
+    }
     Ok(PublicationIngestionReceiptSnapshot {
         receipt_hash: receipt_hash.to_owned(),
         stage_hash,
@@ -4123,6 +4754,23 @@ fn publication_receipt_integrity_error(message: impl Into<String>) -> AppError {
         message,
         false,
         "Quarantine the database and restore a verified backup.",
+    )
+}
+
+fn publication_authority_error(
+    code: &'static str,
+    message: impl Into<String>,
+    corrective_action: impl Into<String>,
+) -> AppError {
+    AppError::new(code, message, false, corrective_action)
+}
+
+fn publication_authority_integrity_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_PUBLICATION_AUTHORITY_INTEGRITY_FAILED",
+        message,
+        false,
+        "Quarantine the database and restore the exact receipt-bound authoritative evidence from a verified backup.",
     )
 }
 
@@ -4433,7 +5081,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("migration succeeds");
 
-        assert_eq!(store.migration_version().expect("migration version"), 10);
+        assert_eq!(store.migration_version().expect("migration version"), 11);
         assert_eq!(store.journal_mode().expect("journal mode"), "wal");
         assert_eq!(store.integrity_check().expect("integrity"), "ok");
         store.schema_check().expect("required schema exists");
@@ -4447,7 +5095,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("first migration succeeds");
         store.migrate().expect("second migration succeeds");
-        assert_eq!(store.migration_version().expect("migration version"), 10);
+        assert_eq!(store.migration_version().expect("migration version"), 11);
     }
 
     #[test]
@@ -4479,7 +5127,7 @@ mod tests {
         assert_eq!(store.migration_version().expect("legacy version"), 7);
 
         store.migrate().expect("forward migration succeeds");
-        assert_eq!(store.migration_version().expect("current version"), 10);
+        assert_eq!(store.migration_version().expect("current version"), 11);
         assert!(
             store
                 .connection
@@ -4510,6 +5158,32 @@ mod tests {
                 )
                 .expect("verifier job input column")
         );
+        for column in ["publication_receipt_hash", "publication_stage_hash"] {
+            assert!(
+                store
+                    .connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('evidence') WHERE name = ?1)",
+                        [column],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .expect("publication authority projection column"),
+                "missing evidence projection {column}"
+            );
+        }
+        for column in ["subject_object_id", "subject_version_hash"] {
+            assert!(
+                store
+                    .connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('publication_ingestion_receipts') WHERE name = ?1)",
+                        [column],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .expect("publication receipt subject projection column"),
+                "missing publication receipt projection {column}"
+            );
+        }
     }
 
     #[test]
@@ -4522,7 +5196,12 @@ mod tests {
             current_publication_subject(&mut store, "publication-receipt-current");
         let canonical_artifact =
             register_lean_artifact(&mut store, b"canonical", "publication-canonical-artifact");
-        let stage = publication_stage();
+        let stage = publication_stage_for_subject(
+            &mut store,
+            &current_subject,
+            PublicationOutcome::Proof,
+            "publication-receipt-current",
+        );
 
         let first_stage = store
             .register_publication_stage(&stage, "publication-test", "publication-stage-first")
@@ -4715,7 +5394,12 @@ mod tests {
         store.migrate().expect("migration succeeds");
         let (current_subject, _) =
             current_publication_subject(&mut store, "publication-receipt-invalid");
-        let stage = publication_stage();
+        let stage = publication_stage_for_subject(
+            &mut store,
+            &current_subject,
+            PublicationOutcome::Proof,
+            "publication-receipt-invalid",
+        );
         let snapshot = store
             .register_publication_stage(&stage, "publication-test", "stage")
             .expect("stage registers");
@@ -4770,8 +5454,18 @@ mod tests {
         let (current_subject, formalization_draft) =
             current_publication_subject(&mut store, "publication-receipt-guards");
 
-        let first_stage = publication_stage();
-        let mut second_stage = publication_stage();
+        let first_stage = publication_stage_for_subject(
+            &mut store,
+            &current_subject,
+            PublicationOutcome::Proof,
+            "publication-receipt-guards-first",
+        );
+        let mut second_stage = publication_stage_for_subject(
+            &mut store,
+            &current_subject,
+            PublicationOutcome::Proof,
+            "publication-receipt-guards-second",
+        );
         second_stage.report_artifact_hash = test_hash("publication-report-second");
         second_stage.attestation_bundle_artifact_hash =
             test_hash("publication-attestation-bundle-second");
@@ -4877,6 +5571,798 @@ mod tests {
         );
     }
 
+    #[test]
+    fn publication_authority_evidence_is_receipt_bound_idempotent_and_immutable() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let fixture = publication_authority_fixture(
+            &mut store,
+            "publication-authority-proof",
+            PublicationOutcome::Proof,
+        );
+        let expected_payload = fixture
+            .commit
+            .evidence_payload()
+            .expect("authority payload derives");
+        assert_eq!(
+            expected_payload.evidence_kind,
+            EvidenceKind::LeanKernelProof
+        );
+        assert_eq!(expected_payload.result, EvidenceResult::Accepted);
+        assert_eq!(
+            expected_payload.authority_class,
+            EvidenceAuthorityClass::Authoritative
+        );
+        assert_eq!(
+            expected_payload.verifier_or_reviewer_identity,
+            format!(
+                "publication-policy:{}",
+                fixture.commit.binding.publication_policy_hash
+            )
+        );
+
+        let first = store
+            .create_publication_authority_evidence(
+                &fixture.commit,
+                "publication-test",
+                "publication-authority-create",
+            )
+            .expect("authority evidence creates");
+        assert_eq!(first.payload, expected_payload);
+        assert_eq!(
+            store
+                .get_publication_stage_by_hash(&fixture.stage.stage_hash)
+                .expect("stage reads by hash"),
+            fixture.stage
+        );
+        assert_eq!(
+            store
+                .get_publication_ingestion_receipt(&fixture.receipt.receipt_hash)
+                .expect("receipt reads by hash"),
+            fixture.receipt
+        );
+        let projections = store
+            .connection
+            .query_row(
+                "SELECT artifact_hash, run_id, job_id, publication_receipt_hash, publication_stage_hash FROM evidence WHERE evidence_id = ?1",
+                [&first.evidence_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .expect("authority projections read");
+        assert_eq!(
+            projections,
+            (
+                None,
+                None,
+                None,
+                Some(fixture.receipt.receipt_hash.clone()),
+                Some(fixture.stage.stage_hash.clone())
+            )
+        );
+        assert_eq!(
+            store
+                .create_publication_authority_evidence(
+                    &fixture.commit,
+                    "publication-test",
+                    "publication-authority-create",
+                )
+                .expect("exact retry succeeds"),
+            first
+        );
+        assert_eq!(
+            store
+                .create_publication_authority_evidence(
+                    &fixture.commit,
+                    "publication-test",
+                    "publication-authority-another-key",
+                )
+                .expect_err("one receipt cannot create authority twice")
+                .code,
+            "MCL_PUBLICATION_AUTHORITY_EXISTS"
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "UPDATE evidence SET created_by = 'rewritten' WHERE evidence_id = ?1",
+                    [&first.evidence_id],
+                )
+                .is_err(),
+            "authority evidence must be immutable"
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "DELETE FROM evidence WHERE evidence_id = ?1",
+                    [&first.evidence_id],
+                )
+                .is_err(),
+            "authority evidence must be durable"
+        );
+
+        drop(store);
+        let mut store = Store::open(&database).expect("database reopens");
+        store.migrate().expect("migration remains idempotent");
+        assert_eq!(
+            store
+                .create_publication_authority_evidence(
+                    &fixture.commit,
+                    "publication-test",
+                    "publication-authority-create",
+                )
+                .expect("restart retry succeeds"),
+            first
+        );
+    }
+
+    #[test]
+    fn publication_authority_maps_refutation_and_rejects_substitution() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let fixture = publication_authority_fixture(
+            &mut store,
+            "publication-authority-refutation",
+            PublicationOutcome::Refutation,
+        );
+        assert_eq!(
+            fixture
+                .commit
+                .evidence_payload()
+                .expect("refutation payload derives")
+                .evidence_kind,
+            EvidenceKind::LeanKernelRefutation
+        );
+
+        let mut incomplete = fixture.commit.clone();
+        incomplete.artifact_hashes.pop();
+        assert_eq!(
+            store
+                .create_publication_authority_evidence(
+                    &incomplete,
+                    "publication-test",
+                    "publication-authority-incomplete",
+                )
+                .expect_err("incomplete retained closure fails")
+                .code,
+            "MCL_PUBLICATION_AUTHORITY_ARTIFACTS_INVALID"
+        );
+
+        let mut substituted_policy = fixture.commit.clone();
+        substituted_policy.binding.publication_policy_hash = test_hash("substituted-policy");
+        assert_eq!(
+            store
+                .create_publication_authority_evidence(
+                    &substituted_policy,
+                    "publication-test",
+                    "publication-authority-substituted-policy",
+                )
+                .expect_err("substituted policy fails")
+                .code,
+            "MCL_PUBLICATION_AUTHORITY_BINDING_INVALID"
+        );
+
+        let mut wrong_outcome = fixture.commit.clone();
+        wrong_outcome.outcome = PublicationOutcome::Proof;
+        assert_eq!(
+            store
+                .create_publication_authority_evidence(
+                    &wrong_outcome,
+                    "publication-test",
+                    "publication-authority-wrong-outcome",
+                )
+                .expect_err("claim polarity controls the outcome")
+                .code,
+            "MCL_PUBLICATION_OUTCOME_MISMATCH"
+        );
+
+        let created = store
+            .create_publication_authority_evidence(
+                &fixture.commit,
+                "publication-test",
+                "publication-authority-refutation-create",
+            )
+            .expect("refutation authority creates");
+        assert_eq!(
+            created.payload.evidence_kind,
+            EvidenceKind::LeanKernelRefutation
+        );
+        assert_eq!(
+            store
+                .create_publication_authority_evidence(
+                    &fixture.commit,
+                    "different-publication-actor",
+                    "publication-authority-refutation-create",
+                )
+                .expect_err("an idempotency key cannot change actor")
+                .code,
+            "MCL_IDEMPOTENCY_CONFLICT"
+        );
+    }
+
+    #[test]
+    fn publication_authority_rejects_same_environment_subject_substitution() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let fixture = publication_authority_fixture(
+            &mut store,
+            "publication-authority-subject-a",
+            PublicationOutcome::Proof,
+        );
+        let shared_environment = fixture.formalization_draft.payload["environment_hash"]
+            .as_str()
+            .expect("fixture environment")
+            .to_owned();
+        let (substituted_subject, substituted_draft) =
+            current_publication_subject_for_outcome_in_environment(
+                &mut store,
+                "publication-authority-subject-b",
+                PublicationOutcome::Proof,
+                &shared_environment,
+            );
+        assert_ne!(fixture.commit.subject, substituted_subject);
+        assert_eq!(
+            fixture.formalization_draft.payload["environment_hash"],
+            substituted_draft.payload["environment_hash"],
+            "the adversarial subjects deliberately share one environment"
+        );
+        assert_eq!(
+            fixture.formalization_draft.payload["claim_polarity"],
+            substituted_draft.payload["claim_polarity"],
+            "the adversarial subjects deliberately share one polarity"
+        );
+
+        assert_eq!(
+            store
+                .register_publication_ingestion_receipt(
+                    &fixture.stage.stage_hash,
+                    &substituted_subject,
+                    &fixture.receipt.verification,
+                    fixture.receipt.raw_verification_byte_size,
+                    fixture.receipt.receipt_byte_size,
+                    "publication-test",
+                    "publication-authority-subject-a-receipt",
+                )
+                .expect_err("receipt retry cannot substitute its request subject")
+                .code,
+            "MCL_PUBLICATION_RECEIPT_SUBJECT_MISMATCH"
+        );
+
+        let mut substituted_commit = fixture.commit.clone();
+        substituted_commit.subject = substituted_subject.clone();
+        assert_eq!(
+            store
+                .create_publication_authority_evidence(
+                    &substituted_commit,
+                    "publication-test",
+                    "publication-authority-substituted-subject",
+                )
+                .expect_err("same-environment formalization substitution fails")
+                .code,
+            "MCL_PUBLICATION_AUTHORITY_SUBJECT_MISMATCH"
+        );
+
+        let substituted_payload = substituted_commit
+            .evidence_payload()
+            .expect("substituted payload remains structurally valid");
+        assert!(
+            raw_insert_publication_authority_evidence(
+                &store,
+                &substituted_payload,
+                Some(&fixture.receipt.receipt_hash),
+                Some(&fixture.stage.stage_hash),
+            )
+            .is_err(),
+            "the SQL gate must bind evidence to the receipt and retained request subject"
+        );
+
+        let evidence = store
+            .create_publication_authority_evidence(
+                &fixture.commit,
+                "publication-test",
+                "publication-authority-exact-subject",
+            )
+            .expect("the exact retained request subject creates authority");
+        store
+            .connection
+            .execute_batch("DROP TRIGGER publication_ingestion_receipts_reject_update;")
+            .expect("test bypasses receipt immutability");
+        store
+            .connection
+            .execute(
+                "UPDATE publication_ingestion_receipts SET subject_object_id = ?1, subject_version_hash = ?2 WHERE receipt_hash = ?3",
+                params![
+                    substituted_subject.object_id,
+                    substituted_subject.version_hash,
+                    fixture.receipt.receipt_hash,
+                ],
+            )
+            .expect("test corrupts the receipt subject binding");
+        assert_eq!(
+            store
+                .get_evidence(&evidence.evidence_id)
+                .expect_err("read-time validation rejects subject rebinding")
+                .code,
+            "MCL_PUBLICATION_AUTHORITY_INTEGRITY_FAILED"
+        );
+    }
+
+    #[test]
+    fn publication_authority_rechecks_subject_head_inside_the_transaction() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let fixture = publication_authority_fixture(
+            &mut store,
+            "publication-authority-stale",
+            PublicationOutcome::Proof,
+        );
+        let mut successor = fixture.formalization_draft.clone();
+        successor.payload["formalization_notes"] =
+            json!("state changed after publication receipt ingestion");
+        store
+            .version_record(
+                &fixture.commit.subject.object_id,
+                &fixture.commit.subject.version_hash,
+                &successor,
+                "publication-test",
+                "publication-authority-successor",
+            )
+            .expect("formalization head advances");
+        assert_eq!(
+            store
+                .create_publication_authority_evidence(
+                    &fixture.commit,
+                    "publication-test",
+                    "publication-authority-after-head-change",
+                )
+                .expect_err("stale publication cannot grant authority")
+                .code,
+            "MCL_PUBLICATION_SUBJECT_STALE"
+        );
+    }
+
+    #[test]
+    fn publication_authority_insert_trigger_rejects_forged_gate_inputs() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let fixture = publication_authority_fixture(
+            &mut store,
+            "publication-authority-trigger",
+            PublicationOutcome::Proof,
+        );
+        let payload = fixture
+            .commit
+            .evidence_payload()
+            .expect("authority payload derives");
+
+        assert!(
+            raw_insert_publication_authority_evidence(&store, &payload, None, None).is_err(),
+            "authority evidence without receipt projections must fail"
+        );
+
+        let metadata = serde_json::to_value(&payload).expect("authority payload serializes");
+        assert!(
+            raw_insert_publication_authority_metadata_as_actor(
+                &store,
+                &payload,
+                &metadata,
+                Some(&fixture.receipt.receipt_hash),
+                Some(&fixture.stage.stage_hash),
+                "   ",
+            )
+            .is_err(),
+            "authority evidence requires nonblank actor attribution"
+        );
+        let mut unknown_top_level = metadata.clone();
+        unknown_top_level
+            .as_object_mut()
+            .expect("payload object")
+            .insert("caller_override".to_owned(), json!(true));
+        assert!(
+            raw_insert_publication_authority_metadata(
+                &store,
+                &payload,
+                &unknown_top_level,
+                Some(&fixture.receipt.receipt_hash),
+                Some(&fixture.stage.stage_hash),
+            )
+            .is_err(),
+            "authority metadata cannot add a top-level key"
+        );
+        let mut unknown_subject = metadata.clone();
+        unknown_subject["subject"]
+            .as_object_mut()
+            .expect("subject object")
+            .insert("caller_override".to_owned(), json!(true));
+        assert!(
+            raw_insert_publication_authority_metadata(
+                &store,
+                &payload,
+                &unknown_subject,
+                Some(&fixture.receipt.receipt_hash),
+                Some(&fixture.stage.stage_hash),
+            )
+            .is_err(),
+            "authority subject cannot add an unknown key"
+        );
+        let mut unknown_binding = metadata.clone();
+        unknown_binding["publication_authority"]
+            .as_object_mut()
+            .expect("binding object")
+            .insert("caller_override".to_owned(), json!(true));
+        assert!(
+            raw_insert_publication_authority_metadata(
+                &store,
+                &payload,
+                &unknown_binding,
+                Some(&fixture.receipt.receipt_hash),
+                Some(&fixture.stage.stage_hash),
+            )
+            .is_err(),
+            "authority binding cannot add an unknown key"
+        );
+        let mut mismatched_verifier = metadata.clone();
+        mismatched_verifier["verifier_or_reviewer_identity"] = json!("caller:authority");
+        assert!(
+            raw_insert_publication_authority_metadata(
+                &store,
+                &payload,
+                &mismatched_verifier,
+                Some(&fixture.receipt.receipt_hash),
+                Some(&fixture.stage.stage_hash),
+            )
+            .is_err(),
+            "authority verifier metadata must match its SQL projection"
+        );
+        let mut unsorted_artifacts = metadata.clone();
+        unsorted_artifacts["artifact_hashes"]
+            .as_array_mut()
+            .expect("artifact array")
+            .swap(0, 1);
+        assert!(
+            raw_insert_publication_authority_metadata(
+                &store,
+                &payload,
+                &unsorted_artifacts,
+                Some(&fixture.receipt.receipt_hash),
+                Some(&fixture.stage.stage_hash),
+            )
+            .is_err(),
+            "authority artifact projections must remain strictly sorted"
+        );
+
+        let mut substituted_policy = payload.clone();
+        let substituted_hash = test_hash("trigger-substituted-policy");
+        substituted_policy
+            .publication_authority
+            .as_mut()
+            .expect("authority binding")
+            .publication_policy_hash = substituted_hash.clone();
+        substituted_policy.verifier_or_reviewer_identity =
+            format!("publication-policy:{substituted_hash}");
+        assert!(
+            raw_insert_publication_authority_evidence(
+                &store,
+                &substituted_policy,
+                Some(&fixture.receipt.receipt_hash),
+                Some(&fixture.stage.stage_hash),
+            )
+            .is_err(),
+            "authority evidence cannot substitute the staged policy"
+        );
+
+        let mut incomplete = payload;
+        incomplete.artifact_hashes.pop();
+        assert!(
+            raw_insert_publication_authority_evidence(
+                &store,
+                &incomplete,
+                Some(&fixture.receipt.receipt_hash),
+                Some(&fixture.stage.stage_hash),
+            )
+            .is_err(),
+            "authority evidence cannot omit a retained closure artifact"
+        );
+
+        store
+            .create_publication_authority_evidence(
+                &fixture.commit,
+                "publication-test",
+                "publication-authority-trigger-valid",
+            )
+            .expect("the exact Store path passes the closed insert gate");
+    }
+
+    #[test]
+    fn publication_authority_reads_fail_closed_on_projection_tampering() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let fixture = publication_authority_fixture(
+            &mut store,
+            "publication-authority-tamper",
+            PublicationOutcome::Proof,
+        );
+        let evidence = store
+            .create_publication_authority_evidence(
+                &fixture.commit,
+                "publication-test",
+                "publication-authority-before-tamper",
+            )
+            .expect("authority evidence creates");
+        store
+            .connection
+            .execute_batch("DROP TRIGGER evidence_reject_update;")
+            .expect("test bypasses evidence immutability");
+        store
+            .connection
+            .execute(
+                "UPDATE evidence SET publication_stage_hash = NULL WHERE evidence_id = ?1",
+                [&evidence.evidence_id],
+            )
+            .expect("test corrupts the stage projection");
+        assert_eq!(
+            store
+                .get_evidence(&evidence.evidence_id)
+                .expect_err("projection corruption fails closed")
+                .code,
+            "MCL_EVIDENCE_INTEGRITY_FAILED"
+        );
+    }
+
+    struct PublicationAuthorityFixture {
+        commit: PublicationAuthorityCommit,
+        stage: PublicationStageSnapshot,
+        receipt: PublicationIngestionReceiptSnapshot,
+        formalization_draft: RecordDraft,
+    }
+
+    fn publication_authority_fixture(
+        store: &mut Store,
+        label: &str,
+        outcome: PublicationOutcome,
+    ) -> PublicationAuthorityFixture {
+        let (subject, formalization_draft) =
+            current_publication_subject_for_outcome(store, label, outcome);
+        let stage = publication_stage_for_subject(store, &subject, outcome, label);
+        let stage = store
+            .register_publication_stage(&stage, "publication-test", &format!("{label}-stage"))
+            .expect("authority stage registers");
+        let mut verification = publication_verification(&stage.stage);
+        verification.raw_verification_hash = test_hash(&format!("{label}-raw-verification"));
+        let receipt_byte_size =
+            canonical_json(&serde_json::to_value(&verification).expect("verification serializes"))
+                .expect("verification canonicalizes")
+                .len() as u64;
+        let receipt = store
+            .register_publication_ingestion_receipt(
+                &stage.stage_hash,
+                &subject,
+                &verification,
+                123,
+                receipt_byte_size,
+                "publication-test",
+                &format!("{label}-receipt"),
+            )
+            .expect("authority receipt registers");
+        let binding = PublicationAuthorityBinding {
+            schema_version: crate::domain::evidence::PUBLICATION_AUTHORITY_BINDING_SCHEMA_VERSION
+                .to_owned(),
+            ingestion_receipt_hash: receipt.receipt_hash.clone(),
+            stage_hash: stage.stage_hash.clone(),
+            report_artifact_hash: stage.stage.report_artifact_hash.clone(),
+            retained_closure_artifact_hash: stage.stage.retained_closure_artifact_hash.clone(),
+            attestation_bundle_artifact_hash: stage.stage.attestation_bundle_artifact_hash.clone(),
+            raw_verification_hash: receipt.verification.raw_verification_hash.clone(),
+            publication_request_hash: publication_stage_role_artifact_hash(
+                &stage,
+                PublicationRetainedArtifactRole::PublicationRequest,
+            )
+            .expect("stage has publication request")
+            .to_owned(),
+            publication_policy_hash: publication_stage_role_artifact_hash(
+                &stage,
+                PublicationRetainedArtifactRole::PublicationPolicy,
+            )
+            .expect("stage has publication policy")
+            .to_owned(),
+        };
+        let commit = PublicationAuthorityCommit {
+            subject,
+            outcome,
+            environment_hash: formalization_draft.payload["environment_hash"]
+                .as_str()
+                .expect("formalization environment")
+                .to_owned(),
+            binding,
+            artifact_hashes: publication_authority_artifact_hashes(&stage, &receipt),
+        };
+        PublicationAuthorityFixture {
+            commit,
+            stage,
+            receipt,
+            formalization_draft,
+        }
+    }
+
+    fn raw_insert_publication_authority_evidence(
+        store: &Store,
+        payload: &EvidencePayload,
+        publication_receipt_hash: Option<&str>,
+        publication_stage_hash: Option<&str>,
+    ) -> rusqlite::Result<usize> {
+        raw_insert_publication_authority_metadata(
+            store,
+            payload,
+            &serde_json::to_value(payload).expect("authority payload serializes"),
+            publication_receipt_hash,
+            publication_stage_hash,
+        )
+    }
+
+    fn raw_insert_publication_authority_metadata(
+        store: &Store,
+        payload: &EvidencePayload,
+        metadata: &Value,
+        publication_receipt_hash: Option<&str>,
+        publication_stage_hash: Option<&str>,
+    ) -> rusqlite::Result<usize> {
+        raw_insert_publication_authority_metadata_as_actor(
+            store,
+            payload,
+            metadata,
+            publication_receipt_hash,
+            publication_stage_hash,
+            "publication-test",
+        )
+    }
+
+    fn raw_insert_publication_authority_metadata_as_actor(
+        store: &Store,
+        payload: &EvidencePayload,
+        metadata: &Value,
+        publication_receipt_hash: Option<&str>,
+        publication_stage_hash: Option<&str>,
+        actor: &str,
+    ) -> rusqlite::Result<usize> {
+        let payload_json = canonical_string(metadata).expect("authority payload canonicalizes");
+        let evidence_hash = test_hash(&payload_json);
+        let artifact_hashes_json = serde_json::to_string(
+            metadata["artifact_hashes"]
+                .as_array()
+                .expect("authority artifact array"),
+        )
+        .expect("artifacts serialize");
+        store.connection.execute(
+            "INSERT INTO evidence(evidence_id, subject_object_id, subject_version_hash, evidence_kind, result, authority_class, run_id, environment_hash, artifact_hash, metadata_json, created_at, superseded_by, evidence_hash, job_id, artifact_hashes_json, verifier_identity, created_by, stale_reason, publication_receipt_hash, publication_stage_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL, ?8, unixepoch(), NULL, ?9, NULL, ?10, ?11, ?12, NULL, ?13, ?14)",
+            params![
+                Uuid::now_v7().to_string(),
+                payload.subject.object_id,
+                payload.subject.version_hash,
+                payload.evidence_kind.as_str(),
+                payload.result.as_str(),
+                payload.authority_class.as_str(),
+                payload.environment_hash,
+                payload_json,
+                evidence_hash,
+                artifact_hashes_json,
+                payload.verifier_or_reviewer_identity,
+                actor,
+                publication_receipt_hash,
+                publication_stage_hash,
+            ],
+        )
+    }
+
+    fn publication_stage_for_subject(
+        store: &mut Store,
+        subject: &ExactVersionReference,
+        outcome: PublicationOutcome,
+        label: &str,
+    ) -> PublicationStage {
+        let formalization = store
+            .get_record_version(&subject.version_hash)
+            .expect("publication subject reads");
+        let formalization: FormalizationPayload =
+            serde_json::from_value(formalization.payload).expect("formalization decodes");
+        let source_commit_sha = test_hash(&format!("{label}-source-commit"))[..40].to_owned();
+        let source_tree_sha = test_hash(&format!("{label}-source-tree"))[..40].to_owned();
+        let request = PublicationRequest {
+            schema_version: crate::domain::publication::PUBLICATION_REQUEST_SCHEMA_VERSION
+                .to_owned(),
+            subject: subject.clone(),
+            outcome,
+            diagnostic_evidence_id: Uuid::now_v7().to_string(),
+            diagnostic_evidence_hash: test_hash(&format!("{label}-diagnostic")),
+            proof_closure_evidence_id: Uuid::now_v7().to_string(),
+            proof_closure_evidence_hash: test_hash(&format!("{label}-proof-closure")),
+            axiom_audit_evidence_id: Uuid::now_v7().to_string(),
+            axiom_audit_evidence_hash: test_hash(&format!("{label}-axiom-audit")),
+            environment_hash: formalization.environment_hash,
+            module_artifact_hash: formalization.module_artifact_hash,
+            declaration_name: formalization.declaration_name,
+            policy_hash: test_hash(&format!("{label}-policy")),
+            source_commit_sha: source_commit_sha.clone(),
+            source_tree_sha: source_tree_sha.clone(),
+        };
+        let request_bytes =
+            canonical_json(&serde_json::to_value(&request).expect("request serializes"))
+                .expect("request canonicalizes");
+        let request_hash = request.request_hash().expect("request hashes");
+        assert_eq!(
+            request_hash,
+            test_hash(&String::from_utf8_lossy(&request_bytes))
+        );
+        let metadata = ArtifactMetadata {
+            schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION.to_owned(),
+            media_type: ArtifactMediaType::Json,
+            creation_source: ArtifactCreationSource::Generated,
+            license_expression: None,
+            restriction: ArtifactRestriction::Private,
+            semantic_metadata: BTreeMap::from([
+                ("artifact_role".to_owned(), "publication_request".to_owned()),
+                ("request_hash".to_owned(), request_hash.clone()),
+                (
+                    "formalization_object_id".to_owned(),
+                    subject.object_id.clone(),
+                ),
+                (
+                    "formalization_version_hash".to_owned(),
+                    subject.version_hash.clone(),
+                ),
+                ("source_commit_sha".to_owned(), source_commit_sha),
+                ("source_tree_sha".to_owned(), source_tree_sha),
+            ]),
+        };
+        store
+            .register_publication_request_artifact(
+                &request_hash,
+                request_bytes.len() as u64,
+                &metadata,
+                &request,
+                "publication-test",
+                &format!("{label}-request-artifact"),
+            )
+            .expect("publication request artifact registers");
+
+        let mut stage = publication_stage();
+        stage.report_artifact_hash = test_hash(&format!("{label}-report"));
+        stage.retained_closure_artifact_hash = test_hash(&format!("{label}-closure"));
+        stage.attestation_bundle_artifact_hash = test_hash(&format!("{label}-bundle"));
+        for (index, artifact) in stage.retained_artifacts.iter_mut().enumerate() {
+            artifact.identity_hash = test_hash(&format!("{label}-identity-{index}"));
+            artifact.artifact_hash = test_hash(&format!("{label}-artifact-{index}"));
+        }
+        let retained_request = stage
+            .retained_artifacts
+            .iter_mut()
+            .find(|artifact| artifact.role == PublicationRetainedArtifactRole::PublicationRequest)
+            .expect("stage request role");
+        retained_request.identity_hash = request_hash.clone();
+        retained_request.artifact_hash = request_hash;
+        retained_request.byte_size = request_bytes.len() as u64;
+        stage
+    }
+
     fn publication_stage() -> PublicationStage {
         PublicationStage {
             schema_version: crate::domain::publication::PUBLICATION_STAGE_SCHEMA_VERSION.to_owned(),
@@ -4935,13 +6421,14 @@ mod tests {
         store: &mut Store,
         label: &str,
     ) -> (ExactVersionReference, RecordDraft) {
-        let claim_snapshot = store
-            .create_record(
-                &claim(&format!("Publication receipt fixture {label}")),
-                "publication-test",
-                &format!("{label}-claim"),
-            )
-            .expect("publication receipt claim creates");
+        current_publication_subject_for_outcome(store, label, PublicationOutcome::Proof)
+    }
+
+    fn current_publication_subject_for_outcome(
+        store: &mut Store,
+        label: &str,
+        outcome: PublicationOutcome,
+    ) -> (ExactVersionReference, RecordDraft) {
         let environment = store
             .register_environment(
                 &environment_manifest(),
@@ -4949,6 +6436,27 @@ mod tests {
                 &format!("{label}-environment"),
             )
             .expect("publication receipt environment registers");
+        current_publication_subject_for_outcome_in_environment(
+            store,
+            label,
+            outcome,
+            &environment.environment_hash,
+        )
+    }
+
+    fn current_publication_subject_for_outcome_in_environment(
+        store: &mut Store,
+        label: &str,
+        outcome: PublicationOutcome,
+        environment_hash: &str,
+    ) -> (ExactVersionReference, RecordDraft) {
+        let claim_snapshot = store
+            .create_record(
+                &claim(&format!("Publication receipt fixture {label}")),
+                "publication-test",
+                &format!("{label}-claim"),
+            )
+            .expect("publication receipt claim creates");
         let module_source =
             format!("theorem publicationReceiptFixture : True := by trivial\n-- {label}\n");
         let module =
@@ -4956,11 +6464,14 @@ mod tests {
         let mut draft = formalization(
             &claim_snapshot,
             "True",
-            &environment.environment_hash,
+            environment_hash,
             &module.artifact_hash,
             &[],
         );
-        draft.payload["claim_polarity"] = json!("claim");
+        draft.payload["claim_polarity"] = json!(match outcome {
+            PublicationOutcome::Proof => "claim",
+            PublicationOutcome::Refutation => "negation",
+        });
         draft.payload["declaration_name"] = json!("MathOS.publicationReceiptFixture");
         let snapshot = store
             .create_record(
@@ -6260,6 +7771,7 @@ mod tests {
             supersedes_evidence_id: None,
             stale: false,
             stale_reason: None,
+            publication_authority: None,
         };
         let mismatched_formalization = store
             .create_record(
@@ -6409,6 +7921,7 @@ mod tests {
             supersedes_evidence_id: None,
             stale: false,
             stale_reason: None,
+            publication_authority: None,
         };
         let audit_payloads = [
             audit_payload(EvidenceKind::ProofClosureScan),

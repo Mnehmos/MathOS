@@ -178,6 +178,8 @@ pub struct VerifyRequest {
     #[serde(default)]
     attestation_bundle_artifact_hash: Option<String>,
     #[serde(default)]
+    publication_receipt_hash: Option<String>,
+    #[serde(default)]
     actor: Option<String>,
     #[serde(default)]
     idempotency_key: Option<String>,
@@ -192,6 +194,7 @@ pub enum VerifyAction {
     FidelityStatus,
     PreparePublication,
     IngestPublication,
+    PromotePublicationAuthority,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -250,9 +253,9 @@ impl MathOsMcp {
                 "claim_actions": ["propose", "version"],
                 "formalization_actions": ["propose", "version"],
                 "research_actions": ["start", "observe", "submit"],
-                "verify_actions": ["review_fidelity", "fidelity_status", "prepare_publication", "ingest_publication"],
+                "verify_actions": ["review_fidelity", "fidelity_status", "prepare_publication", "ingest_publication", "promote_publication_authority"],
                 "mutations": true,
-                "authoritative_verification": false,
+                "authoritative_verification": true,
                 "transport": "stdio",
                 "protocol_version": PROTOCOL_VERSION.as_str()
             })),
@@ -307,7 +310,7 @@ impl MathOsMcp {
     }
 
     #[tool(
-        description = "Create role-separated statement-fidelity evidence, read its derived status, prepare a non-authoritative publication request, or ingest a staged protected attestation by exact CAS hashes. Closed actions: review_fidelity, fidelity_status, prepare_publication, ingest_publication. This never grants proof authority."
+        description = "Create role-separated statement-fidelity evidence, read its derived status, prepare and ingest non-authoritative publication records, or promote one fully replayed receipt to exact formalization proof/refutation authority. Closed actions: review_fidelity, fidelity_status, prepare_publication, ingest_publication, promote_publication_authority. Promotion accepts only a receipt hash plus attribution; source-claim truth remains separately derived."
     )]
     fn verify(&self, Parameters(request): Parameters<VerifyRequest>) -> CallToolResult {
         result_to_tool(self.execute_verify(request))
@@ -534,6 +537,11 @@ impl MathOsMcp {
                     "attestation_bundle_artifact_hash",
                     "review_fidelity",
                 )?;
+                reject_present(
+                    request.publication_receipt_hash,
+                    "publication_receipt_hash",
+                    "review_fidelity",
+                )?;
                 to_value(application.review_fidelity(
                     &review,
                     &actor,
@@ -594,6 +602,11 @@ impl MathOsMcp {
                     "attestation_bundle_artifact_hash",
                     "fidelity_status",
                 )?;
+                reject_present(
+                    request.publication_receipt_hash,
+                    "publication_receipt_hash",
+                    "fidelity_status",
+                )?;
                 let formalization = crate::domain::schemas::ExactVersionReference {
                     object_id: required(
                         request.formalization_object_id,
@@ -618,6 +631,11 @@ impl MathOsMcp {
                 reject_present(
                     request.attestation_bundle_artifact_hash,
                     "attestation_bundle_artifact_hash",
+                    "prepare_publication",
+                )?;
+                reject_present(
+                    request.publication_receipt_hash,
+                    "publication_receipt_hash",
                     "prepare_publication",
                 )?;
                 let formalization = crate::domain::schemas::ExactVersionReference {
@@ -720,6 +738,11 @@ impl MathOsMcp {
                     "source_tree_sha",
                     "ingest_publication",
                 )?;
+                reject_present(
+                    request.publication_receipt_hash,
+                    "publication_receipt_hash",
+                    "ingest_publication",
+                )?;
                 let report_artifact_hash = required(
                     request.report_artifact_hash,
                     "report_artifact_hash",
@@ -739,6 +762,73 @@ impl MathOsMcp {
                 to_value(application.ingest_publication(
                     &report_artifact_hash,
                     &attestation_bundle_artifact_hash,
+                    &actor,
+                    &idempotency_key,
+                    request.dry_run,
+                )?)
+                .map_err(serialization_error)
+            }
+            VerifyAction::PromotePublicationAuthority => {
+                reject_present(request.request, "request", "promote_publication_authority")?;
+                reject_present(
+                    request.formalization_object_id,
+                    "formalization_object_id",
+                    "promote_publication_authority",
+                )?;
+                reject_present(
+                    request.formalization_version_hash,
+                    "formalization_version_hash",
+                    "promote_publication_authority",
+                )?;
+                reject_present(request.outcome, "outcome", "promote_publication_authority")?;
+                reject_present(
+                    request.diagnostic_evidence_id,
+                    "diagnostic_evidence_id",
+                    "promote_publication_authority",
+                )?;
+                reject_present(
+                    request.proof_closure_evidence_id,
+                    "proof_closure_evidence_id",
+                    "promote_publication_authority",
+                )?;
+                reject_present(
+                    request.axiom_audit_evidence_id,
+                    "axiom_audit_evidence_id",
+                    "promote_publication_authority",
+                )?;
+                reject_present(
+                    request.source_commit_sha,
+                    "source_commit_sha",
+                    "promote_publication_authority",
+                )?;
+                reject_present(
+                    request.source_tree_sha,
+                    "source_tree_sha",
+                    "promote_publication_authority",
+                )?;
+                reject_present(
+                    request.report_artifact_hash,
+                    "report_artifact_hash",
+                    "promote_publication_authority",
+                )?;
+                reject_present(
+                    request.attestation_bundle_artifact_hash,
+                    "attestation_bundle_artifact_hash",
+                    "promote_publication_authority",
+                )?;
+                let publication_receipt_hash = required(
+                    request.publication_receipt_hash,
+                    "publication_receipt_hash",
+                    "promote_publication_authority",
+                )?;
+                let actor = required(request.actor, "actor", "promote_publication_authority")?;
+                let idempotency_key = required(
+                    request.idempotency_key,
+                    "idempotency_key",
+                    "promote_publication_authority",
+                )?;
+                to_value(application.promote_publication_authority(
+                    &publication_receipt_hash,
                     &actor,
                     &idempotency_key,
                     request.dry_run,

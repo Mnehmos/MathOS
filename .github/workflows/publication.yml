@@ -128,7 +128,7 @@ jobs:
             "${RUNNER_TEMP}/publication-candidate/publication-report.json" \
             "${CANDIDATE_BUNDLE_PATH}" \
             "${RUNNER_TEMP}/publication-candidate-attestation-verification"
-      - name: Stage and ingest the exact candidate through MathOS
+      - name: Stage, ingest, and promote the exact candidate through MathOS
         shell: bash
         env:
           CANDIDATE_BUNDLE_PATH: ${{ steps.attest_candidate.outputs.bundle-path }}

@@ -30,6 +30,7 @@ pub use environment::{
 };
 pub use evidence::{
     EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult, EvidenceSnapshot,
+    PublicationAuthorityBinding,
 };
 pub use fidelity::{
     AmbiguityDisposition, DefinitionMapping, FidelityReviewHistoryEntry, FidelityReviewLevel,
