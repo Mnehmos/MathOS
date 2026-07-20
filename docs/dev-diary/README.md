@@ -42,3 +42,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 32. [A Signature Is a Memory With a Witness](0032-a-signature-is-a-memory-with-a-witness.md)
 33. [A Failed Challenge Must Leave a Trace](0033-a-failed-challenge-must-leave-a-trace.md)
 34. [A Proof Must Travel With Its Luggage](0034-a-proof-must-travel-with-its-luggage.md)
+35. [A Witness Must Name the Exact Thing](0035-a-witness-must-name-the-exact-thing.md)
