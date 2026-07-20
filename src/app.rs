@@ -5601,19 +5601,46 @@ mod tests {
 
     #[test]
     fn publication_authority_requires_an_explicit_passed_report() {
-        let (mut report, _) = candidate_documents();
+        let (report, _) = candidate_documents();
         validate_publication_authority_report(&report).expect("passed protected report");
 
+        let mut rejected_reports = Vec::new();
         for classification in [
             PublicationClassification::Rejected,
             PublicationClassification::Failed,
         ] {
-            report.classification = classification;
+            let mut rejected = report.clone();
+            rejected.classification = classification;
+            rejected_reports.push(("classification", rejected));
+        }
+
+        let mut rejected = report.clone();
+        rejected.clean_checkout = false;
+        rejected_reports.push(("clean checkout", rejected));
+
+        let mut rejected = report.clone();
+        rejected.dependency_closure_complete = false;
+        rejected_reports.push(("dependency closure", rejected));
+
+        let mut rejected = report.clone();
+        rejected.network_isolation_enforced = false;
+        rejected_reports.push(("network isolation", rejected));
+
+        let mut rejected = report.clone();
+        rejected.memory_limit_enforced = false;
+        rejected_reports.push(("memory limit", rejected));
+
+        let mut rejected = report.clone();
+        rejected.authoritative = true;
+        rejected_reports.push(("pre-existing authority", rejected));
+
+        for (failed_condition, rejected) in rejected_reports {
             assert_eq!(
-                validate_publication_authority_report(&report)
-                    .expect_err("non-passed reports cannot cross the authority gate")
+                validate_publication_authority_report(&rejected)
+                    .expect_err("failed condition cannot cross the authority gate")
                     .code,
-                "MCL_PUBLICATION_AUTHORITY_REPORT_NOT_PASSED"
+                "MCL_PUBLICATION_AUTHORITY_REPORT_NOT_PASSED",
+                "{failed_condition} must fail closed"
             );
         }
     }
