@@ -14,7 +14,7 @@ readonly MAX_SAFE_JSON_INTEGER=9007199254740991
 readonly REPOSITORY="Mnehmos/MathOS"
 readonly WORKFLOW_PATH=".github/workflows/publication.yml"
 readonly SOURCE_REF="refs/heads/main"
-readonly RUNNER_ENVIRONMENT="github_hosted"
+readonly REPORT_RUNNER_ENVIRONMENT="github_hosted"
 readonly LEAN_TOOLCHAIN="leanprover/lean4:v4.32.0"
 readonly DECLARATION_NAME="MathOS.Publication.smoke"
 readonly MODULE_FIXTURE="fixtures/publication/Smoke.lean"
@@ -111,7 +111,7 @@ done
   || die "$EXIT_CONTEXT" "publication workflow ref does not bind the protected main workflow"
 [[ "$PUBLICATION_SOURCE_REF" == "$SOURCE_REF" ]] \
   || die "$EXIT_CONTEXT" "publication source ref must be exactly refs/heads/main"
-[[ "$PUBLICATION_RUNNER_ENVIRONMENT" == "$RUNNER_ENVIRONMENT" ]] \
+[[ "$PUBLICATION_RUNNER_ENVIRONMENT" == "$REPORT_RUNNER_ENVIRONMENT" ]] \
   || die "$EXIT_CONTEXT" "publication runner environment does not match policy"
 [[ "$PUBLICATION_SOURCE_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] \
   || die "$EXIT_CONTEXT" "publication source commit must be one lowercase 40-hex Git identity"
