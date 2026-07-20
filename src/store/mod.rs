@@ -14,9 +14,10 @@ use crate::domain::schemas::{
     ExactVersionReference, FormalizationPayload, validate_record_payload,
 };
 use crate::domain::{
-    ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest,
-    EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult,
-    EvidenceSnapshot, LeanAuditJobSnapshot, LeanAuditRequest, RecordDraft, RecordKind,
+    ArtifactCreationSource, ArtifactMediaType, ArtifactMetadata, ArtifactRestriction,
+    ArtifactSnapshot, EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest, EnvironmentSnapshot,
+    EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult, EvidenceSnapshot,
+    LeanAuditJobSnapshot, LeanAuditRequest, PublicationRequest, RecordDraft, RecordKind,
     RecordSnapshot, VerifierJobRequest, VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
@@ -469,10 +470,93 @@ impl Store {
         actor: &str,
         idempotency_key: &str,
     ) -> Result<ArtifactSnapshot, AppError> {
+        self.register_artifact_with_policy(
+            artifact_hash,
+            byte_size,
+            metadata,
+            actor,
+            idempotency_key,
+            "artifact.register",
+            false,
+            None,
+        )
+    }
+
+    pub fn register_publication_request_artifact(
+        &mut self,
+        artifact_hash: &str,
+        byte_size: u64,
+        metadata: &ArtifactMetadata,
+        request: &PublicationRequest,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<ArtifactSnapshot, AppError> {
+        request.validate()?;
+        let request_hash = request.request_hash()?;
+        if artifact_hash != request_hash
+            || metadata.media_type != ArtifactMediaType::Json
+            || metadata.creation_source != ArtifactCreationSource::Generated
+            || metadata.restriction != ArtifactRestriction::Private
+            || metadata
+                .semantic_metadata
+                .get("artifact_role")
+                .is_none_or(|value| value != "publication_request")
+            || metadata
+                .semantic_metadata
+                .get("request_hash")
+                .is_none_or(|value| value != &request_hash)
+            || metadata
+                .semantic_metadata
+                .get("formalization_object_id")
+                .is_none_or(|value| value != &request.subject.object_id)
+            || metadata
+                .semantic_metadata
+                .get("formalization_version_hash")
+                .is_none_or(|value| value != &request.subject.version_hash)
+            || metadata
+                .semantic_metadata
+                .get("source_commit_sha")
+                .is_none_or(|value| value != &request.source_commit_sha)
+            || metadata
+                .semantic_metadata
+                .get("source_tree_sha")
+                .is_none_or(|value| value != &request.source_tree_sha)
+        {
+            return Err(AppError::new(
+                "MCL_PUBLICATION_REQUEST_ARTIFACT_INVALID",
+                "publication request artifact metadata does not bind the exact canonical request",
+                false,
+                "Create publication request artifacts only through the controlled application path.",
+            ));
+        }
+        self.register_artifact_with_policy(
+            artifact_hash,
+            byte_size,
+            metadata,
+            actor,
+            idempotency_key,
+            "artifact.register_publication_request",
+            true,
+            Some(&request.subject),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn register_artifact_with_policy(
+        &mut self,
+        artifact_hash: &str,
+        byte_size: u64,
+        metadata: &ArtifactMetadata,
+        actor: &str,
+        idempotency_key: &str,
+        operation: &'static str,
+        accept_matching_existing: bool,
+        required_current_subject: Option<&ExactVersionReference>,
+    ) -> Result<ArtifactSnapshot, AppError> {
         validate_mutation_inputs(actor, idempotency_key)?;
         self.validate_artifact_registration(artifact_hash, byte_size, metadata)?;
         let input_hash = value_hash(&json!({
-            "operation": "artifact.register",
+            "operation": operation,
             "artifact_hash": artifact_hash,
             "byte_size": byte_size,
             "metadata": metadata,
@@ -500,22 +584,63 @@ impl Store {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| AppError::database("start artifact registration", error))?;
-        if let Some(existing) = read_idempotent_result(
-            &transaction,
-            "artifact.register",
-            idempotency_key,
-            &input_hash,
-        )? {
+        if let Some(subject) = required_current_subject {
+            let current = transaction
+                .query_row(
+                    "SELECT record_type, head_version_hash FROM records WHERE object_id = ?1 AND tombstoned = 0",
+                    [&subject.object_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .optional()
+                .map_err(|error| {
+                    AppError::database("validate publication request subject head", error)
+                })?;
+            if current.as_ref().is_none_or(|(kind, head)| {
+                kind != "formalization" || head.as_deref() != Some(subject.version_hash.as_str())
+            }) {
+                return Err(AppError::new(
+                    "MCL_PUBLICATION_SUBJECT_STALE",
+                    "publication subject is no longer the current canonical formalization version",
+                    false,
+                    "Select the current formalization head and reproduce its exact diagnostic and audit evidence.",
+                ));
+            }
+        }
+        if let Some(existing) =
+            read_idempotent_result(&transaction, operation, idempotency_key, &input_hash)?
+        {
             return Ok(existing);
         }
-        if transaction
+        let artifact_exists = transaction
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM artifacts WHERE artifact_hash = ?1)",
                 [artifact_hash],
                 |row| row.get::<_, bool>(0),
             )
-            .map_err(|error| AppError::database("search registered artifact", error))?
-        {
+            .map_err(|error| AppError::database("search registered artifact", error))?;
+        if artifact_exists && accept_matching_existing {
+            let existing = read_artifact(&transaction, artifact_hash)?;
+            if !artifact_snapshot_matches_metadata(&existing, metadata, byte_size) {
+                return Err(AppError::new(
+                    "MCL_ARTIFACT_METADATA_CONFLICT",
+                    format!("existing artifact {artifact_hash} has incompatible metadata"),
+                    false,
+                    "Quarantine the conflicting artifact and inspect its provenance.",
+                ));
+            }
+            write_idempotent_result(
+                &transaction,
+                operation,
+                idempotency_key,
+                &input_hash,
+                &existing,
+            )?;
+            transaction
+                .commit()
+                .map_err(|error| AppError::database("commit artifact registration", error))?;
+            return Ok(existing);
+        }
+        if artifact_exists {
             return Err(AppError::new(
                 "MCL_ARTIFACT_EXISTS",
                 format!("artifact {artifact_hash} is already registered"),
@@ -541,7 +666,7 @@ impl Store {
         let snapshot = read_artifact(&transaction, artifact_hash)?;
         write_idempotent_result(
             &transaction,
-            "artifact.register",
+            operation,
             idempotency_key,
             &input_hash,
             &snapshot,
@@ -3245,6 +3370,19 @@ fn read_artifact(
     })
 }
 
+fn artifact_snapshot_matches_metadata(
+    artifact: &ArtifactSnapshot,
+    metadata: &ArtifactMetadata,
+    byte_size: u64,
+) -> bool {
+    artifact.byte_size == byte_size
+        && artifact.media_type == metadata.media_type
+        && artifact.creation_source == metadata.creation_source
+        && artifact.license_expression == metadata.license_expression
+        && artifact.restriction == metadata.restriction
+        && artifact.semantic_metadata == metadata.semantic_metadata
+}
+
 fn read_snapshot(
     connection: &Connection,
     object_id: &str,
@@ -4508,6 +4646,217 @@ mod tests {
             }),
             searchable_text: theorem_type.to_owned(),
         }
+    }
+
+    #[test]
+    fn publication_request_registration_is_head_bound_and_idempotent_for_existing_cas_identity() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let claim = store
+            .create_record(
+                &claim("Publication registration"),
+                "author",
+                "publication-claim",
+            )
+            .expect("claim created");
+        let environment = store
+            .register_environment(
+                &environment_manifest(),
+                "environment-author",
+                "publication-environment",
+            )
+            .expect("environment registers");
+        let module = register_lean_artifact(
+            &mut store,
+            b"theorem publicationFixture : True := by trivial\n",
+            "publication-module",
+        );
+        let mut formalization_draft = formalization(
+            &claim,
+            "True",
+            &environment.environment_hash,
+            &module.artifact_hash,
+            &[],
+        );
+        formalization_draft.payload["claim_polarity"] = json!("claim");
+        formalization_draft.payload["declaration_name"] = json!("MathOS.publicationFixture");
+        let formalization = store
+            .create_record(
+                &formalization_draft,
+                "formalizer",
+                "publication-formalization",
+            )
+            .expect("formalization created");
+        let request = PublicationRequest {
+            schema_version: crate::domain::publication::PUBLICATION_REQUEST_SCHEMA_VERSION
+                .to_owned(),
+            subject: ExactVersionReference {
+                object_id: formalization.object_id.clone(),
+                version_hash: formalization.version_hash.clone(),
+            },
+            outcome: crate::domain::PublicationOutcome::Proof,
+            diagnostic_evidence_id: Uuid::now_v7().to_string(),
+            diagnostic_evidence_hash: "1".repeat(64),
+            proof_closure_evidence_id: Uuid::now_v7().to_string(),
+            proof_closure_evidence_hash: "2".repeat(64),
+            axiom_audit_evidence_id: Uuid::now_v7().to_string(),
+            axiom_audit_evidence_hash: "3".repeat(64),
+            environment_hash: environment.environment_hash,
+            module_artifact_hash: module.artifact_hash,
+            declaration_name: "MathOS.publicationFixture".to_owned(),
+            policy_hash: "4".repeat(64),
+            source_commit_sha: "5".repeat(40),
+            source_tree_sha: "6".repeat(40),
+        };
+        let materialize = |request: &PublicationRequest| {
+            let bytes = canonical_json(
+                &serde_json::to_value(request).expect("request serializes for test"),
+            )
+            .expect("request canonicalizes");
+            let hash = format!("{:x}", Sha256::digest(&bytes));
+            assert_eq!(hash, request.request_hash().expect("request hash"));
+            let metadata = ArtifactMetadata {
+                schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION
+                    .to_owned(),
+                media_type: ArtifactMediaType::Json,
+                creation_source: ArtifactCreationSource::Generated,
+                license_expression: None,
+                restriction: ArtifactRestriction::Private,
+                semantic_metadata: BTreeMap::from([
+                    ("artifact_role".to_owned(), "publication_request".to_owned()),
+                    ("request_hash".to_owned(), hash.clone()),
+                    (
+                        "formalization_object_id".to_owned(),
+                        request.subject.object_id.clone(),
+                    ),
+                    (
+                        "formalization_version_hash".to_owned(),
+                        request.subject.version_hash.clone(),
+                    ),
+                    (
+                        "source_commit_sha".to_owned(),
+                        request.source_commit_sha.clone(),
+                    ),
+                    (
+                        "source_tree_sha".to_owned(),
+                        request.source_tree_sha.clone(),
+                    ),
+                ]),
+            };
+            (bytes, hash, metadata)
+        };
+
+        let (bytes, hash, metadata) = materialize(&request);
+        let first = store
+            .register_publication_request_artifact(
+                &hash,
+                bytes.len() as u64,
+                &metadata,
+                &request,
+                "publisher",
+                "publication-request-a",
+            )
+            .expect("publication request registers");
+        assert_eq!(
+            store
+                .register_publication_request_artifact(
+                    &hash,
+                    bytes.len() as u64,
+                    &metadata,
+                    &request,
+                    "publisher",
+                    "publication-request-a",
+                )
+                .expect("exact publication retry"),
+            first
+        );
+        assert_eq!(
+            store
+                .register_publication_request_artifact(
+                    &hash,
+                    bytes.len() as u64,
+                    &metadata,
+                    &request,
+                    "publisher",
+                    "publication-request-a-second-receipt",
+                )
+                .expect("matching existing request records a second exact receipt"),
+            first
+        );
+        let mut mismatched_metadata = metadata.clone();
+        mismatched_metadata
+            .semantic_metadata
+            .insert("request_hash".to_owned(), "8".repeat(64));
+        assert_eq!(
+            store
+                .register_publication_request_artifact(
+                    &hash,
+                    bytes.len() as u64,
+                    &mismatched_metadata,
+                    &request,
+                    "publisher",
+                    "publication-request-bad-metadata",
+                )
+                .expect_err("request metadata mismatch fails closed")
+                .code,
+            "MCL_PUBLICATION_REQUEST_ARTIFACT_INVALID"
+        );
+
+        let mut other_request = request.clone();
+        other_request.source_tree_sha = "7".repeat(40);
+        let (other_bytes, other_hash, other_metadata) = materialize(&other_request);
+        store
+            .register_publication_request_artifact(
+                &other_hash,
+                other_bytes.len() as u64,
+                &other_metadata,
+                &other_request,
+                "publisher",
+                "publication-request-b",
+            )
+            .expect("second publication request registers");
+        assert_eq!(
+            store
+                .register_publication_request_artifact(
+                    &other_hash,
+                    other_bytes.len() as u64,
+                    &other_metadata,
+                    &other_request,
+                    "publisher",
+                    "publication-request-a",
+                )
+                .expect_err("used key cannot target an already-existing second request")
+                .code,
+            "MCL_IDEMPOTENCY_CONFLICT"
+        );
+
+        let mut successor_draft = formalization_draft;
+        successor_draft.payload["formalization_notes"] = json!("superseding exact version");
+        store
+            .version_record(
+                &formalization.object_id,
+                &formalization.version_hash,
+                &successor_draft,
+                "formalizer",
+                "publication-formalization-successor",
+            )
+            .expect("formalization is superseded");
+        assert_eq!(
+            store
+                .register_publication_request_artifact(
+                    &hash,
+                    bytes.len() as u64,
+                    &metadata,
+                    &request,
+                    "publisher",
+                    "publication-request-stale",
+                )
+                .expect_err("stale request cannot register")
+                .code,
+            "MCL_PUBLICATION_SUBJECT_STALE"
+        );
     }
 
     #[test]

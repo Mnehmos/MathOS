@@ -18,8 +18,8 @@ use serde_json::{Value, json, to_value};
 use crate::app::Application;
 use crate::config::ResolvedConfig;
 use crate::domain::{
-    EdgeKind, FidelityReviewRequest, GraphTraversalRequest, RecordDraft, RecordKind, RunEventDraft,
-    RunEventKind, RunKind, TraversalDirection,
+    EdgeKind, FidelityReviewRequest, GraphTraversalRequest, PublicationOutcome, RecordDraft,
+    RecordKind, RunEventDraft, RunEventKind, RunKind, TraversalDirection,
 };
 use crate::error::AppError;
 
@@ -162,6 +162,18 @@ pub struct VerifyRequest {
     #[serde(default)]
     formalization_version_hash: Option<String>,
     #[serde(default)]
+    outcome: Option<String>,
+    #[serde(default)]
+    diagnostic_evidence_id: Option<String>,
+    #[serde(default)]
+    proof_closure_evidence_id: Option<String>,
+    #[serde(default)]
+    axiom_audit_evidence_id: Option<String>,
+    #[serde(default)]
+    source_commit_sha: Option<String>,
+    #[serde(default)]
+    source_tree_sha: Option<String>,
+    #[serde(default)]
     actor: Option<String>,
     #[serde(default)]
     idempotency_key: Option<String>,
@@ -174,6 +186,7 @@ pub struct VerifyRequest {
 pub enum VerifyAction {
     ReviewFidelity,
     FidelityStatus,
+    PreparePublication,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -232,7 +245,7 @@ impl MathOsMcp {
                 "claim_actions": ["propose", "version"],
                 "formalization_actions": ["propose", "version"],
                 "research_actions": ["start", "observe", "submit"],
-                "verify_actions": ["review_fidelity", "fidelity_status"],
+                "verify_actions": ["review_fidelity", "fidelity_status", "prepare_publication"],
                 "mutations": true,
                 "authoritative_verification": false,
                 "transport": "stdio",
@@ -289,7 +302,7 @@ impl MathOsMcp {
     }
 
     #[tool(
-        description = "Create role-separated statement-fidelity evidence or read its derived status. Closed actions: review_fidelity, fidelity_status. This never proves a theorem."
+        description = "Create role-separated statement-fidelity evidence, read its derived status, or prepare a non-authoritative publication request from exact controlled evidence. Closed actions: review_fidelity, fidelity_status, prepare_publication. This never grants proof authority."
     )]
     fn verify(&self, Parameters(request): Parameters<VerifyRequest>) -> CallToolResult {
         result_to_tool(self.execute_verify(request))
@@ -480,6 +493,32 @@ impl MathOsMcp {
                     "formalization_version_hash",
                     "review_fidelity",
                 )?;
+                reject_present(request.outcome, "outcome", "review_fidelity")?;
+                reject_present(
+                    request.diagnostic_evidence_id,
+                    "diagnostic_evidence_id",
+                    "review_fidelity",
+                )?;
+                reject_present(
+                    request.proof_closure_evidence_id,
+                    "proof_closure_evidence_id",
+                    "review_fidelity",
+                )?;
+                reject_present(
+                    request.axiom_audit_evidence_id,
+                    "axiom_audit_evidence_id",
+                    "review_fidelity",
+                )?;
+                reject_present(
+                    request.source_commit_sha,
+                    "source_commit_sha",
+                    "review_fidelity",
+                )?;
+                reject_present(
+                    request.source_tree_sha,
+                    "source_tree_sha",
+                    "review_fidelity",
+                )?;
                 to_value(application.review_fidelity(
                     &review,
                     &actor,
@@ -504,6 +543,32 @@ impl MathOsMcp {
                     "idempotency_key",
                     "fidelity_status",
                 )?;
+                reject_present(request.outcome, "outcome", "fidelity_status")?;
+                reject_present(
+                    request.diagnostic_evidence_id,
+                    "diagnostic_evidence_id",
+                    "fidelity_status",
+                )?;
+                reject_present(
+                    request.proof_closure_evidence_id,
+                    "proof_closure_evidence_id",
+                    "fidelity_status",
+                )?;
+                reject_present(
+                    request.axiom_audit_evidence_id,
+                    "axiom_audit_evidence_id",
+                    "fidelity_status",
+                )?;
+                reject_present(
+                    request.source_commit_sha,
+                    "source_commit_sha",
+                    "fidelity_status",
+                )?;
+                reject_present(
+                    request.source_tree_sha,
+                    "source_tree_sha",
+                    "fidelity_status",
+                )?;
                 let formalization = crate::domain::schemas::ExactVersionReference {
                     object_id: required(
                         request.formalization_object_id,
@@ -517,6 +582,70 @@ impl MathOsMcp {
                     )?,
                 };
                 to_value(application.fidelity_status(&formalization)?).map_err(serialization_error)
+            }
+            VerifyAction::PreparePublication => {
+                reject_present(request.request, "request", "prepare_publication")?;
+                let formalization = crate::domain::schemas::ExactVersionReference {
+                    object_id: required(
+                        request.formalization_object_id,
+                        "formalization_object_id",
+                        "prepare_publication",
+                    )?,
+                    version_hash: required(
+                        request.formalization_version_hash,
+                        "formalization_version_hash",
+                        "prepare_publication",
+                    )?,
+                };
+                let outcome = PublicationOutcome::from_str(&required(
+                    request.outcome,
+                    "outcome",
+                    "prepare_publication",
+                )?)?;
+                let diagnostic_evidence_id = required(
+                    request.diagnostic_evidence_id,
+                    "diagnostic_evidence_id",
+                    "prepare_publication",
+                )?;
+                let proof_closure_evidence_id = required(
+                    request.proof_closure_evidence_id,
+                    "proof_closure_evidence_id",
+                    "prepare_publication",
+                )?;
+                let axiom_audit_evidence_id = required(
+                    request.axiom_audit_evidence_id,
+                    "axiom_audit_evidence_id",
+                    "prepare_publication",
+                )?;
+                let source_commit_sha = required(
+                    request.source_commit_sha,
+                    "source_commit_sha",
+                    "prepare_publication",
+                )?;
+                let source_tree_sha = required(
+                    request.source_tree_sha,
+                    "source_tree_sha",
+                    "prepare_publication",
+                )?;
+                let actor = required(request.actor, "actor", "prepare_publication")?;
+                let idempotency_key = required(
+                    request.idempotency_key,
+                    "idempotency_key",
+                    "prepare_publication",
+                )?;
+                to_value(application.prepare_publication_request(
+                    &formalization,
+                    outcome,
+                    &diagnostic_evidence_id,
+                    &proof_closure_evidence_id,
+                    &axiom_audit_evidence_id,
+                    &source_commit_sha,
+                    &source_tree_sha,
+                    &actor,
+                    &idempotency_key,
+                    request.dry_run,
+                )?)
+                .map_err(serialization_error)
             }
         }
     }

@@ -8,9 +8,9 @@ use serde_json::{Value, to_value};
 use crate::app::{Application, root_exists};
 use crate::config::ResolvedConfig;
 use crate::domain::{
-    ArtifactMetadata, EdgeDraft, EdgeKind, EnvironmentManifest, GraphTraversalRequest, RecordDraft,
-    RecordKind, RecordSnapshot, RunEventDraft, RunEventKind, RunKind, TraversalDirection,
-    VerifierJobRequest,
+    ArtifactMetadata, EdgeDraft, EdgeKind, EnvironmentManifest, GraphTraversalRequest,
+    PublicationOutcome, RecordDraft, RecordKind, RecordSnapshot, RunEventDraft, RunEventKind,
+    RunKind, TraversalDirection, VerifierJobRequest,
 };
 use crate::error::AppError;
 
@@ -176,6 +176,7 @@ enum VerifyAction {
     PromoteAudit(VerifyPromoteDiagnosticOptions),
     ReviewFidelity(ReviewFidelityOptions),
     FidelityStatus(FidelityStatusOptions),
+    PreparePublication(VerifyPreparePublicationOptions),
 }
 
 #[derive(Debug, Args)]
@@ -260,6 +261,36 @@ struct VerifyAuditOptions {
 
     #[arg(long, default_value_t = 0)]
     priority: i32,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct VerifyPreparePublicationOptions {
+    #[arg(long)]
+    formalization_object_id: String,
+
+    #[arg(long)]
+    formalization_version_hash: String,
+
+    #[arg(long)]
+    outcome: String,
+
+    #[arg(long)]
+    diagnostic_evidence_id: String,
+
+    #[arg(long)]
+    proof_closure_evidence_id: String,
+
+    #[arg(long)]
+    axiom_audit_evidence_id: String,
+
+    #[arg(long)]
+    source_commit_sha: String,
+
+    #[arg(long)]
+    source_tree_sha: String,
 
     #[command(flatten)]
     mutation: MutationOptions,
@@ -665,6 +696,26 @@ fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<Cli
             },
         )?)
         .expect("fidelity status is serializable"),
+        VerifyAction::PreparePublication(options) => {
+            let subject = crate::domain::schemas::ExactVersionReference {
+                object_id: options.formalization_object_id,
+                version_hash: options.formalization_version_hash,
+            };
+            let outcome = PublicationOutcome::from_str(&options.outcome)?;
+            to_value(application.prepare_publication_request(
+                &subject,
+                outcome,
+                &options.diagnostic_evidence_id,
+                &options.proof_closure_evidence_id,
+                &options.axiom_audit_evidence_id,
+                &options.source_commit_sha,
+                &options.source_tree_sha,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("publication request preparation is serializable")
+        }
     };
     Ok(CliOutcome {
         value,

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 
 use super::RecordKind;
@@ -140,11 +140,33 @@ pub enum FormalSystem {
     Lean4,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormalizationClaimPolarity {
+    Claim,
+    Negation,
+}
+
+fn deserialize_claim_polarity<'de, D>(
+    deserializer: D,
+) -> Result<Option<FormalizationClaimPolarity>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    FormalizationClaimPolarity::deserialize(deserializer).map(Some)
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FormalizationPayload {
     pub claim_version: ExactVersionReference,
     pub formal_system: FormalSystem,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_claim_polarity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub claim_polarity: Option<FormalizationClaimPolarity>,
     pub environment_hash: String,
     pub module_artifact_hash: String,
     pub declaration_name: String,
@@ -267,6 +289,7 @@ pub fn formalization_schema() -> Value {
         "properties": {
             "claim_version": exact_reference_schema(),
             "formal_system": {"enum": ["lean4"]},
+            "claim_polarity": {"enum": ["claim", "negation"]},
             "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "module_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "declaration_name": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES},
@@ -630,5 +653,69 @@ mod tests {
             );
             payload.as_object_mut().expect("object").remove(prohibited);
         }
+    }
+
+    #[test]
+    fn formalization_claim_polarity_is_typed_and_identity_bearing() {
+        let mut payload = json!({
+            "claim_version": {"object_id": "claim", "version_hash": "a".repeat(64)},
+            "formal_system": "lean4",
+            "claim_polarity": "claim",
+            "environment_hash": "b".repeat(64),
+            "module_artifact_hash": "c".repeat(64),
+            "declaration_name": "MathOS.Example",
+            "exact_theorem_type": "True",
+            "declaration_hash": "d".repeat(64),
+            "import_manifest": [],
+            "formalization_notes": "typed publication polarity",
+            "fidelity_evidence_references": [],
+            "verification_evidence_references": []
+        });
+        validate_record_payload(
+            RecordKind::Formalization,
+            FORMALIZATION_SCHEMA_VERSION,
+            &payload,
+        )
+        .expect("claim-polarity formalization");
+        let claim_hash =
+            crate::canonical::record_version_hash(FORMALIZATION_SCHEMA_VERSION, &payload)
+                .expect("claim polarity hash");
+
+        payload["claim_polarity"] = json!("negation");
+        validate_record_payload(
+            RecordKind::Formalization,
+            FORMALIZATION_SCHEMA_VERSION,
+            &payload,
+        )
+        .expect("negation-polarity formalization");
+        assert_ne!(
+            crate::canonical::record_version_hash(FORMALIZATION_SCHEMA_VERSION, &payload)
+                .expect("negation polarity hash"),
+            claim_hash
+        );
+
+        payload["claim_polarity"] = json!("unknown");
+        assert_eq!(
+            validate_record_payload(
+                RecordKind::Formalization,
+                FORMALIZATION_SCHEMA_VERSION,
+                &payload,
+            )
+            .expect_err("unknown polarity fails closed")
+            .code,
+            "MCL_SCHEMA_VALIDATION_FAILED"
+        );
+
+        payload["claim_polarity"] = Value::Null;
+        assert_eq!(
+            validate_record_payload(
+                RecordKind::Formalization,
+                FORMALIZATION_SCHEMA_VERSION,
+                &payload,
+            )
+            .expect_err("explicit null polarity fails closed")
+            .code,
+            "MCL_SCHEMA_VALIDATION_FAILED"
+        );
     }
 }

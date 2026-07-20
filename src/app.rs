@@ -8,10 +8,11 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::artifacts::ArtifactStore;
-use crate::canonical::canonical_json;
+use crate::canonical::{canonical_json, record_version_hash};
 use crate::config::ResolvedConfig;
 use crate::domain::schemas::{
-    ClaimPayload, ExactVersionReference, FormalizationPayload, SourcePayload, SourceType,
+    ClaimPayload, ExactVersionReference, FormalizationClaimPolarity, FormalizationPayload,
+    SourcePayload, SourceType, validate_record_payload,
 };
 use crate::domain::{
     ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeSnapshot, EnvironmentManifest,
@@ -19,9 +20,10 @@ use crate::domain::{
     EvidenceSnapshot, FidelityReviewHistoryEntry, FidelityReviewReport, FidelityReviewRequest,
     FidelityStatus, FidelityStatusSnapshot, FidelityVerdict, GraphTraversalHit,
     GraphTraversalRequest, LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditReport,
-    LeanAuditRequest, RecordDraft, RecordKind, RecordSnapshot, RunChainReport, RunEventDraft,
-    RunEventSnapshot, RunKind, RunSnapshot, VerifierExecutionClassification,
-    VerifierExecutionReport, VerifierJobRequest, VerifierJobSnapshot,
+    LeanAuditRequest, PublicationOutcome, PublicationRequest, RecordDraft, RecordKind,
+    RecordSnapshot, RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
+    VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
+    VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
 use crate::store::Store;
@@ -127,6 +129,15 @@ pub struct AuditEvidencePromotionOutcome {
     pub dry_run: bool,
     pub proposed_evidence_hashes: Vec<String>,
     pub evidence: Option<Vec<EvidenceSnapshot>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PublicationRequestPreparationOutcome {
+    pub dry_run: bool,
+    pub proposed_request_hash: String,
+    pub proposed_artifact_hash: String,
+    pub request: PublicationRequest,
+    pub artifact: Option<ArtifactSnapshot>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1294,6 +1305,365 @@ impl Application {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_publication_request(
+        &mut self,
+        subject: &ExactVersionReference,
+        outcome: PublicationOutcome,
+        diagnostic_evidence_id: &str,
+        proof_closure_evidence_id: &str,
+        axiom_audit_evidence_id: &str,
+        source_commit_sha: &str,
+        source_tree_sha: &str,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<PublicationRequestPreparationOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let current = self.store.get_record(&subject.object_id)?;
+        if current.version_hash != subject.version_hash {
+            return Err(publication_preparation_error(
+                "MCL_PUBLICATION_SUBJECT_STALE",
+                "publication subject is no longer the current canonical formalization version",
+                "Select the current formalization head and reproduce its exact diagnostic and audit evidence.",
+            ));
+        }
+        let formalization = self.store.get_record_version(&subject.version_hash)?;
+        if formalization.object_id != subject.object_id
+            || formalization.kind != RecordKind::Formalization
+        {
+            return Err(publication_preparation_error(
+                "MCL_PUBLICATION_SUBJECT_INVALID",
+                "publication subject is not the requested exact formalization version",
+                "Use one exact canonical formalization object and version.",
+            ));
+        }
+        validate_record_payload(
+            formalization.kind,
+            &formalization.schema_version,
+            &formalization.payload,
+        )
+        .map_err(|error| {
+            publication_preparation_error(
+                "MCL_PUBLICATION_SUBJECT_INVALID",
+                format!(
+                    "stored formalization payload fails validation: {}",
+                    error.message
+                ),
+                "Quarantine the invalid formalization and restore a verified backup.",
+            )
+        })?;
+        if record_version_hash(&formalization.schema_version, &formalization.payload)?
+            != subject.version_hash
+        {
+            return Err(publication_preparation_error(
+                "MCL_PUBLICATION_SUBJECT_INVALID",
+                "stored formalization payload does not reproduce its exact version identity",
+                "Quarantine the invalid formalization and restore a verified backup.",
+            ));
+        }
+        let formal_payload: FormalizationPayload = serde_json::from_value(formalization.payload)
+            .map_err(|error| {
+                publication_preparation_error(
+                    "MCL_PUBLICATION_SUBJECT_INVALID",
+                    format!("stored formalization payload is invalid: {error}"),
+                    "Quarantine the invalid formalization and restore a verified backup.",
+                )
+            })?;
+        let bound_outcome = match formal_payload.claim_polarity {
+            Some(FormalizationClaimPolarity::Claim) => PublicationOutcome::Proof,
+            Some(FormalizationClaimPolarity::Negation) => PublicationOutcome::Refutation,
+            None => {
+                return Err(publication_preparation_error(
+                    "MCL_PUBLICATION_OUTCOME_UNBOUND",
+                    "formalization does not declare whether its exact theorem proves the claim or its negation",
+                    "Create a new exact formalization version with typed claim_polarity before publication.",
+                ));
+            }
+        };
+        if outcome != bound_outcome {
+            return Err(publication_preparation_error(
+                "MCL_PUBLICATION_OUTCOME_MISMATCH",
+                format!(
+                    "requested {} outcome conflicts with the formalization's typed claim polarity",
+                    outcome.as_str()
+                ),
+                format!(
+                    "Use outcome `{}` or create and reverify a new exact formalization with the intended polarity.",
+                    bound_outcome.as_str()
+                ),
+            ));
+        }
+        let environment = self
+            .store
+            .get_environment(&formal_payload.environment_hash)?;
+        let module = self.verify_artifact(&formal_payload.module_artifact_hash)?;
+        if module.artifact.media_type != crate::domain::ArtifactMediaType::LeanSource {
+            return Err(publication_preparation_error(
+                "MCL_PUBLICATION_ARTIFACT_INVALID",
+                "publication formalization does not resolve to verified Lean source bytes",
+                "Restore the exact registered Lean module before preparing publication.",
+            ));
+        }
+
+        let diagnostic = self.store.get_evidence(diagnostic_evidence_id)?;
+        let diagnostic_job_id = validate_publication_evidence(
+            &diagnostic,
+            subject,
+            EvidenceKind::LeanElaboration,
+            &formal_payload,
+        )?;
+        let proof_closure = self.store.get_evidence(proof_closure_evidence_id)?;
+        let proof_closure_job_id = validate_publication_evidence(
+            &proof_closure,
+            subject,
+            EvidenceKind::ProofClosureScan,
+            &formal_payload,
+        )?;
+        let axiom_audit = self.store.get_evidence(axiom_audit_evidence_id)?;
+        let axiom_audit_job_id = validate_publication_evidence(
+            &axiom_audit,
+            subject,
+            EvidenceKind::AxiomAudit,
+            &formal_payload,
+        )?;
+        if proof_closure_job_id != axiom_audit_job_id
+            || proof_closure.payload.artifact_hashes != axiom_audit.payload.artifact_hashes
+            || proof_closure.payload.verifier_or_reviewer_identity
+                != axiom_audit.payload.verifier_or_reviewer_identity
+        {
+            return Err(publication_preparation_error(
+                "MCL_PUBLICATION_EVIDENCE_MISMATCH",
+                "proof-closure and axiom-audit evidence do not form one exact audit pair",
+                "Select the two accepted evidence records promoted from one terminal audit job.",
+            ));
+        }
+
+        let diagnostic_report_hash = self.verify_evidence_artifacts_and_find_report(
+            &diagnostic,
+            &diagnostic_job_id,
+            "verifier_report",
+        )?;
+        let diagnostic_job = self.store.get_verifier_job(&diagnostic_job_id)?;
+        let diagnostic_report: VerifierExecutionReport = serde_json::from_slice(
+            &self.artifacts.read(&diagnostic_report_hash)?,
+        )
+        .map_err(|error| {
+            publication_preparation_error(
+                "MCL_PUBLICATION_EVIDENCE_INVALID",
+                format!("diagnostic verifier report is invalid: {error}"),
+                "Quarantine the diagnostic evidence and rerun the exact verifier job.",
+            )
+        })?;
+        diagnostic_report.validate().map_err(|error| {
+            publication_preparation_error(
+                "MCL_PUBLICATION_EVIDENCE_INVALID",
+                error.message,
+                "Quarantine the diagnostic evidence and rerun the exact verifier job.",
+            )
+        })?;
+        if diagnostic_job.state != VerifierJobState::Succeeded
+            || diagnostic_job.request.environment_hash != formal_payload.environment_hash
+            || diagnostic_job.request.module_artifact_hash != formal_payload.module_artifact_hash
+            || diagnostic_job.request.declaration_name != formal_payload.declaration_name
+            || diagnostic_job.result_artifact_hash.as_deref()
+                != Some(diagnostic_report_hash.as_str())
+            || diagnostic_report.job_id != diagnostic_job.job_id
+            || diagnostic_report.environment_hash != formal_payload.environment_hash
+            || diagnostic_report.module_artifact_hash != formal_payload.module_artifact_hash
+            || diagnostic_report.declaration_name != formal_payload.declaration_name
+            || diagnostic_report.classification != VerifierExecutionClassification::Elaborated
+            || diagnostic_report.trust_profile != environment.manifest.trust_profile
+            || diagnostic_report.authoritative
+            || diagnostic.payload.artifact_hashes
+                != report_artifact_closure(
+                    &formal_payload.module_artifact_hash,
+                    &diagnostic_report_hash,
+                    diagnostic_report.stdout_artifact_hash.as_deref(),
+                    diagnostic_report.stderr_artifact_hash.as_deref(),
+                )
+        {
+            return Err(publication_preparation_error(
+                "MCL_PUBLICATION_EVIDENCE_MISMATCH",
+                "diagnostic evidence does not reproduce one accepted exact verifier result",
+                "Select current accepted elaboration evidence for the exact formalization.",
+            ));
+        }
+
+        let audit_report_hash = self.verify_evidence_artifacts_and_find_report(
+            &proof_closure,
+            &proof_closure_job_id,
+            "audit_report",
+        )?;
+        let audit_job = self.store.get_audit_job(&proof_closure_job_id)?;
+        let audit_report: LeanAuditReport =
+            serde_json::from_slice(&self.artifacts.read(&audit_report_hash)?).map_err(|error| {
+                publication_preparation_error(
+                    "MCL_PUBLICATION_EVIDENCE_INVALID",
+                    format!("audit report is invalid: {error}"),
+                    "Quarantine the audit evidence and rerun the exact audit job.",
+                )
+            })?;
+        let audit_policy = crate::domain::audit::committed_audit_policy()?;
+        let audit_policy_hash = audit_policy.policy_hash()?;
+        audit_report
+            .validate_against_policy(&audit_policy)
+            .map_err(|error| {
+                publication_preparation_error(
+                    "MCL_PUBLICATION_EVIDENCE_INVALID",
+                    error.message,
+                    "Quarantine the audit evidence and rerun the exact audit job.",
+                )
+            })?;
+        if audit_job.state != VerifierJobState::Succeeded
+            || audit_job.request.subject != *subject
+            || audit_job.request.diagnostic_evidence_id != diagnostic.evidence_id
+            || audit_job.request.diagnostic_evidence_hash != diagnostic.evidence_hash
+            || audit_job.request.environment_hash != formal_payload.environment_hash
+            || audit_job.request.module_artifact_hash != formal_payload.module_artifact_hash
+            || audit_job.request.declaration_name != formal_payload.declaration_name
+            || audit_job.request.policy_hash != audit_policy_hash
+            || audit_job.result_artifact_hash.as_deref() != Some(audit_report_hash.as_str())
+            || audit_report.job_id != audit_job.job_id
+            || audit_report.request_hash != audit_job.canonical_input_hash
+            || audit_report.subject != *subject
+            || audit_report.diagnostic_evidence_hash != diagnostic.evidence_hash
+            || audit_report.environment_hash != formal_payload.environment_hash
+            || audit_report.module_artifact_hash != formal_payload.module_artifact_hash
+            || audit_report.declaration_name != formal_payload.declaration_name
+            || audit_report.policy_hash != audit_job.request.policy_hash
+            || audit_report.classification != LeanAuditClassification::Passed
+            || audit_report.trust_profile != environment.manifest.trust_profile
+            || audit_report.authoritative
+            || proof_closure.payload.artifact_hashes
+                != report_artifact_closure(
+                    &formal_payload.module_artifact_hash,
+                    &audit_report_hash,
+                    audit_report.stdout_artifact_hash.as_deref(),
+                    audit_report.stderr_artifact_hash.as_deref(),
+                )
+        {
+            return Err(publication_preparation_error(
+                "MCL_PUBLICATION_EVIDENCE_MISMATCH",
+                "audit evidence does not reproduce one accepted audit of the selected diagnostic",
+                "Select the accepted proof-closure and axiom-audit pair derived from that diagnostic.",
+            ));
+        }
+        self.verify_evidence_artifacts_and_find_report(
+            &axiom_audit,
+            &axiom_audit_job_id,
+            "audit_report",
+        )?;
+
+        let policy = crate::domain::publication::committed_publication_policy()?;
+        let request = PublicationRequest {
+            schema_version: crate::domain::publication::PUBLICATION_REQUEST_SCHEMA_VERSION
+                .to_owned(),
+            subject: subject.clone(),
+            outcome,
+            diagnostic_evidence_id: diagnostic.evidence_id,
+            diagnostic_evidence_hash: diagnostic.evidence_hash,
+            proof_closure_evidence_id: proof_closure.evidence_id,
+            proof_closure_evidence_hash: proof_closure.evidence_hash,
+            axiom_audit_evidence_id: axiom_audit.evidence_id,
+            axiom_audit_evidence_hash: axiom_audit.evidence_hash,
+            environment_hash: formal_payload.environment_hash,
+            module_artifact_hash: formal_payload.module_artifact_hash,
+            declaration_name: formal_payload.declaration_name,
+            policy_hash: policy.policy_hash()?,
+            source_commit_sha: source_commit_sha.to_owned(),
+            source_tree_sha: source_tree_sha.to_owned(),
+        };
+        let proposed_request_hash = request.request_hash()?;
+        let request_bytes = canonical_json(&serde_json::to_value(&request).map_err(|error| {
+            publication_preparation_error(
+                "MCL_PUBLICATION_REQUEST_INVALID",
+                error.to_string(),
+                "Report this deterministic publication request serialization defect.",
+            )
+        })?)?;
+        let proposed_artifact_hash = format!("{:x}", Sha256::digest(&request_bytes));
+        if proposed_artifact_hash != proposed_request_hash {
+            return Err(publication_preparation_error(
+                "MCL_PUBLICATION_REQUEST_INVALID",
+                "publication request identities disagree across canonical encodings",
+                "Report this deterministic publication request hashing defect.",
+            ));
+        }
+        let metadata = ArtifactMetadata {
+            schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION.to_owned(),
+            media_type: crate::domain::ArtifactMediaType::Json,
+            creation_source: crate::domain::ArtifactCreationSource::Generated,
+            license_expression: None,
+            restriction: crate::domain::ArtifactRestriction::Private,
+            semantic_metadata: BTreeMap::from([
+                ("artifact_role".to_owned(), "publication_request".to_owned()),
+                ("request_hash".to_owned(), proposed_request_hash.clone()),
+                (
+                    "formalization_object_id".to_owned(),
+                    subject.object_id.clone(),
+                ),
+                (
+                    "formalization_version_hash".to_owned(),
+                    subject.version_hash.clone(),
+                ),
+                ("source_commit_sha".to_owned(), source_commit_sha.to_owned()),
+                ("source_tree_sha".to_owned(), source_tree_sha.to_owned()),
+            ]),
+        };
+        metadata.validate_bytes(&request_bytes)?;
+        self.store.validate_artifact_registration(
+            &proposed_artifact_hash,
+            request_bytes.len() as u64,
+            &metadata,
+        )?;
+        match self.store.get_artifact(&proposed_artifact_hash) {
+            Ok(existing)
+                if artifact_matches_metadata(&existing, &metadata, request_bytes.len()) =>
+            {
+                self.verify_artifact(&proposed_artifact_hash)?;
+            }
+            Ok(_) => {
+                return Err(publication_preparation_error(
+                    "MCL_ARTIFACT_METADATA_CONFLICT",
+                    format!(
+                        "existing publication request artifact {proposed_artifact_hash} has incompatible metadata"
+                    ),
+                    "Quarantine the conflicting artifact and inspect its provenance.",
+                ));
+            }
+            Err(error) if error.code == "MCL_ARTIFACT_NOT_FOUND" => {}
+            Err(error) => return Err(error),
+        }
+        let artifact = if dry_run {
+            None
+        } else {
+            let stored_hash = self.artifacts.put(&request_bytes)?;
+            if stored_hash != proposed_artifact_hash {
+                return Err(publication_preparation_error(
+                    "MCL_ARTIFACT_INTEGRITY_FAILED",
+                    "content-addressed store returned an unexpected publication request identity",
+                    "Quarantine the artifact store and restore a verified backup.",
+                ));
+            }
+            Some(self.store.register_publication_request_artifact(
+                &stored_hash,
+                request_bytes.len() as u64,
+                &metadata,
+                &request,
+                actor,
+                &format!("{idempotency_key}:publication-request"),
+            )?)
+        };
+        Ok(PublicationRequestPreparationOutcome {
+            dry_run,
+            proposed_request_hash,
+            proposed_artifact_hash,
+            request,
+            artifact,
+        })
+    }
+
     pub fn work_one_verifier_job(
         &mut self,
         worker: &str,
@@ -1790,6 +2160,44 @@ impl Application {
         }
     }
 
+    fn verify_evidence_artifacts_and_find_report(
+        &self,
+        evidence: &EvidenceSnapshot,
+        job_id: &str,
+        artifact_role: &str,
+    ) -> Result<String, AppError> {
+        let mut reports = Vec::new();
+        for hash in &evidence.payload.artifact_hashes {
+            let verified = self.verify_artifact(hash)?;
+            let artifact = verified.artifact;
+            if artifact.media_type == crate::domain::ArtifactMediaType::Json
+                && artifact.creation_source == crate::domain::ArtifactCreationSource::Verifier
+                && artifact.restriction == crate::domain::ArtifactRestriction::Private
+                && artifact
+                    .semantic_metadata
+                    .get("job_id")
+                    .is_some_and(|value| value == job_id)
+                && artifact
+                    .semantic_metadata
+                    .get("artifact_role")
+                    .is_some_and(|value| value == artifact_role)
+            {
+                reports.push(hash.clone());
+            }
+        }
+        let [report] = reports.as_slice() else {
+            return Err(publication_preparation_error(
+                "MCL_PUBLICATION_EVIDENCE_INVALID",
+                format!(
+                    "evidence {} does not retain exactly one controlled {artifact_role}",
+                    evidence.evidence_id
+                ),
+                "Quarantine the evidence and reproduce it from one controlled terminal job.",
+            ));
+        };
+        Ok(report.clone())
+    }
+
     fn ensure_review_artifact(
         &mut self,
         bytes: &[u8],
@@ -2000,6 +2408,72 @@ impl Application {
     pub fn verify_run_chain(&self, run_id: &str) -> Result<RunChainReport, AppError> {
         self.store.verify_run_chain(run_id)
     }
+}
+
+fn validate_publication_evidence(
+    evidence: &EvidenceSnapshot,
+    subject: &ExactVersionReference,
+    expected_kind: EvidenceKind,
+    formalization: &FormalizationPayload,
+) -> Result<String, AppError> {
+    if evidence.payload.subject != *subject
+        || evidence.payload.evidence_kind != expected_kind
+        || evidence.payload.result != EvidenceResult::Accepted
+        || evidence.payload.authority_class != EvidenceAuthorityClass::Diagnostic
+        || evidence.payload.producing_run_id.is_some()
+        || evidence.payload.producing_job_id.is_none()
+        || evidence.payload.environment_hash.as_deref()
+            != Some(formalization.environment_hash.as_str())
+        || !evidence
+            .payload
+            .artifact_hashes
+            .iter()
+            .any(|hash| hash == &formalization.module_artifact_hash)
+        || evidence.payload.stale
+        || evidence.payload.stale_reason.is_some()
+    {
+        return Err(publication_preparation_error(
+            "MCL_PUBLICATION_EVIDENCE_INVALID",
+            format!(
+                "evidence {} is not current accepted {} evidence for the exact formalization",
+                evidence.evidence_id,
+                expected_kind.as_str()
+            ),
+            "Select current accepted diagnostic evidence produced by the controlled verifier and audit paths.",
+        ));
+    }
+    evidence.payload.producing_job_id.clone().ok_or_else(|| {
+        publication_preparation_error(
+            "MCL_PUBLICATION_EVIDENCE_INVALID",
+            "publication evidence has no producing job identity",
+            "Reproduce the evidence through a controlled verifier or audit job.",
+        )
+    })
+}
+
+fn report_artifact_closure(
+    module_artifact_hash: &str,
+    report_artifact_hash: &str,
+    stdout_artifact_hash: Option<&str>,
+    stderr_artifact_hash: Option<&str>,
+) -> Vec<String> {
+    let mut artifacts = vec![
+        module_artifact_hash.to_owned(),
+        report_artifact_hash.to_owned(),
+    ];
+    artifacts.extend(stdout_artifact_hash.map(str::to_owned));
+    artifacts.extend(stderr_artifact_hash.map(str::to_owned));
+    artifacts.sort();
+    artifacts.dedup();
+    artifacts
+}
+
+fn publication_preparation_error(
+    code: &'static str,
+    message: impl Into<String>,
+    corrective_action: impl Into<String>,
+) -> AppError {
+    AppError::new(code, message, false, corrective_action)
 }
 
 fn validate_attribution(actor: &str, idempotency_key: &str) -> Result<(), AppError> {

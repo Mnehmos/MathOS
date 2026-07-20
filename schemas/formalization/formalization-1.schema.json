@@ -16,6 +16,7 @@
       }
     },
     "formal_system": {"enum": ["lean4"]},
+    "claim_polarity": {"enum": ["claim", "negation"]},
     "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "module_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "declaration_name": {"type": "string", "minLength": 1, "maxLength": 1048576},

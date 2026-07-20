@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -47,6 +49,31 @@ pub enum PublicationRunnerEnvironment {
 pub enum PublicationOutcome {
     Proof,
     Refutation,
+}
+
+impl PublicationOutcome {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Proof => "proof",
+            Self::Refutation => "refutation",
+        }
+    }
+}
+
+impl FromStr for PublicationOutcome {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "proof" => Ok(Self::Proof),
+            "refutation" => Ok(Self::Refutation),
+            _ => Err(publication_error(
+                "MCL_PUBLICATION_OUTCOME_INVALID",
+                format!("unknown publication outcome `{value}`"),
+                "Use exactly `proof` or `refutation`.",
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -287,6 +314,21 @@ impl PublicationAttestationVerification {
     }
 }
 
+pub fn committed_publication_policy() -> Result<PublicationPolicy, AppError> {
+    let policy: PublicationPolicy = serde_json::from_str(include_str!(
+        "../../policies/lean-publication-1.json"
+    ))
+    .map_err(|error| {
+        publication_error(
+            "MCL_PUBLICATION_POLICY_INVALID",
+            format!("committed publication policy is invalid: {error}"),
+            "Restore the reviewed publication policy from a verified source revision.",
+        )
+    })?;
+    policy.validate()?;
+    Ok(policy)
+}
+
 pub fn publication_policy_schema() -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -501,8 +543,7 @@ mod tests {
     use super::*;
 
     fn policy() -> PublicationPolicy {
-        serde_json::from_str(include_str!("../../policies/lean-publication-1.json"))
-            .expect("committed publication policy")
+        committed_publication_policy().expect("committed publication policy")
     }
 
     fn request() -> PublicationRequest {
@@ -701,6 +742,27 @@ mod tests {
         assert_eq!(
             policy.policy_hash().expect("committed policy hash"),
             include_str!("../../policies/lean-publication-1.sha256").trim()
+        );
+    }
+
+    #[test]
+    fn publication_outcomes_have_one_closed_cli_vocabulary() {
+        for (value, outcome) in [
+            ("proof", PublicationOutcome::Proof),
+            ("refutation", PublicationOutcome::Refutation),
+        ] {
+            assert_eq!(
+                value.parse::<PublicationOutcome>().expect("known outcome"),
+                outcome
+            );
+            assert_eq!(outcome.as_str(), value);
+        }
+        assert_eq!(
+            "proved"
+                .parse::<PublicationOutcome>()
+                .expect_err("unknown outcome fails closed")
+                .code,
+            "MCL_PUBLICATION_OUTCOME_INVALID"
         );
     }
 }
