@@ -179,6 +179,8 @@ enum VerifyAction {
     PromoteAudit(VerifyPromoteDiagnosticOptions),
     ReviewFidelity(ReviewFidelityOptions),
     FidelityStatus(FidelityStatusOptions),
+    /// Derive the research status of one exact claim version.
+    ClaimStatus(ClaimStatusOptions),
     PreparePublication(VerifyPreparePublicationOptions),
     ValidatePublicationCandidate(VerifyValidatePublicationCandidateOptions),
     StagePublicationCandidate(VerifyStagePublicationCandidateOptions),
@@ -239,7 +241,10 @@ struct VerifyEvidenceOptions {
 
 #[derive(Debug, Args)]
 struct ReviewFidelityOptions {
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Closed fidelity_review_request/1 or fidelity_review_request/2 JSON object"
+    )]
     request_json: String,
 
     #[command(flatten)]
@@ -253,6 +258,15 @@ struct FidelityStatusOptions {
 
     #[arg(long)]
     formalization_version_hash: String,
+}
+
+#[derive(Debug, Args)]
+struct ClaimStatusOptions {
+    #[arg(long)]
+    claim_object_id: String,
+
+    #[arg(long)]
+    claim_version_hash: String,
 }
 
 #[derive(Debug, Args)]
@@ -730,13 +744,13 @@ fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<Cli
         )?)
         .expect("audit evidence promotion is serializable"),
         VerifyAction::ReviewFidelity(options) => {
-            let request: crate::domain::FidelityReviewRequest =
+            let request: crate::domain::VersionedFidelityReviewRequest =
                 serde_json::from_str(&options.request_json).map_err(|error| {
                     AppError::new(
                         "MCL_FIDELITY_JSON_INVALID",
                         error.to_string(),
                         false,
-                        "Supply one closed fidelity_review_request/1 JSON object.",
+                        "Supply one closed fidelity_review_request/1 or fidelity_review_request/2 JSON object.",
                     )
                 })?;
             to_value(application.review_fidelity(
@@ -754,6 +768,13 @@ fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<Cli
             },
         )?)
         .expect("fidelity status is serializable"),
+        VerifyAction::ClaimStatus(options) => to_value(application.claim_research_status(
+            &crate::domain::schemas::ExactVersionReference {
+                object_id: options.claim_object_id,
+                version_hash: options.claim_version_hash,
+            },
+        )?)
+        .expect("claim research status is serializable"),
         VerifyAction::PreparePublication(options) => {
             let subject = crate::domain::schemas::ExactVersionReference {
                 object_id: options.formalization_object_id,

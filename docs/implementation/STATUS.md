@@ -1,6 +1,6 @@
 # Implementation Status
 
-Last updated: 2026-07-20
+Last updated: 2026-07-21
 
 ## Release truth
 
@@ -10,7 +10,11 @@ The binding contract is the root [SPEC.md](../../SPEC.md). The former Python fin
 
 ## Current phase
 
-Phase 3 formalization now has one independently audited protected proof-authority record. The next boundary is derived mathematical status from exact current authority plus exact current fidelity.
+Phase 3 formalization has one independently audited protected proof-authority record. Issue [#38](https://github.com/Mnehmos/MathOS/issues/38) is implementing the next boundary: live mathematical status derived from exact current authority plus exact current fidelity, without a truth-status mutation path.
+
+The issue #38 candidate preserves fidelity v1 identities, adds polarity-aware fidelity request/report v2, and introduces one closed `claim_research_status/1` response shared by CLI and MCP. The application rehashes exact source, claim, and every current formalization; strictly replays the complete fidelity history and every receipt-bound authority chain; captures and rechecks source, claim, formalization, fidelity, and authority identities; and returns exact witnesses or explicit nonqualification reasons. Full local proof and refutation fixtures establish that authority without fidelity remains `open`, v1 cannot support source disproof, v2 logical-negation fidelity plus protected refutation derives `disproved`, a moved source head invalidates a formerly terminal witness as `open/source_version_not_current`, and changed heads or missing CAS fail closed. The protected workflow candidate now retains an `open` CLI result after authority and a terminal CLI result only after a separate reviewer role submits verified v2 fidelity. Remote merged-tree evidence is intentionally pending.
+
+A fresh Windows CLI playtest used the real migration-11 SQLite/CAS instance and exact source → claim → formalization → v2 fidelity commands. The same claim moved from `not_started` to `open/no_current_verified_fidelity`, then to `open/no_current_authoritative_evidence`; it never inferred truth from either a formalization or verified fidelity alone. Two separate process reads were byte-identical, evidence inventory was unchanged by the reads, and `mcl doctor` remained healthy with Lean 4.32.0 visible. Full terminal proof/refutation behavior is exercised by the application fixtures and will receive protected CLI evidence only after merge.
 
 Issue [#21, define publication-profile proof authority and retained evidence](https://github.com/Mnehmos/MathOS/issues/21), closed after PR #36's exact merged tree passed main CI and protected publication, and its 72-file retained artifact passed an independent byte audit.
 
@@ -34,7 +38,7 @@ PR [#23](https://github.com/Mnehmos/MathOS/pull/23) passed all five checks in ru
 
 PR [#26](https://github.com/Mnehmos/MathOS/pull/26) corrected the attestation policy's `jq` object iteration. All five PR checks passed in run `29709569292` on exact tree `e5b0bcbf4eacf9cb402d87b04b5dc9b0431134f2`, and the PR merged as `6b4a0f22d3498a4cb0c8dab744da7f9a09993fd8`.
 
-Canonical authority checkpoint: merge commit `0ef8a132dfb99e63238325ac035de948e893f791`, tree `f3ed084c9c495de68e20a5a9cdda818fd4637d6b`. Source-claim truth remains unavailable pending the separate derived-status gate.
+Canonical authority checkpoint: merge commit `0ef8a132dfb99e63238325ac035de948e893f791`, tree `f3ed084c9c495de68e20a5a9cdda818fd4637d6b`. Source-claim truth remains unavailable on canonical `main` pending merge and protected audit of issue #38.
 
 ## Completed criteria with evidence
 

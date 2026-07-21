@@ -215,6 +215,13 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
         ]
     );
     assert!(tools.iter().all(|tool| tool["inputSchema"].is_object()));
+    let verify_description = tools
+        .iter()
+        .find(|tool| tool["name"] == "verify")
+        .and_then(|tool| tool["description"].as_str())
+        .expect("verify tool description");
+    assert!(verify_description.contains("fidelity_review_request/1"));
+    assert!(verify_description.contains("fidelity_review_request/2"));
     for forbidden in ["shell", "sql", "mark_proved", "sampling", "publish"] {
         assert!(!names.contains(&forbidden));
     }
@@ -257,6 +264,7 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
         json!([
             "review_fidelity",
             "fidelity_status",
+            "claim_status",
             "prepare_publication",
             "ingest_publication",
             "promote_publication_authority"
@@ -266,6 +274,78 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
         capabilities["result"]["structuredContent"]["authoritative_verification"],
         true
     );
+    assert_eq!(
+        capabilities["result"]["structuredContent"]["claim_research_status"],
+        "derived_read_only"
+    );
+
+    let incomplete_claim_status = server.call(3121, "verify", json!({"action": "claim_status"}));
+    assert_eq!(incomplete_claim_status["result"]["isError"], true);
+    assert_eq!(
+        incomplete_claim_status["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_REQUIRED"
+    );
+
+    let missing_claim_status = server.call(
+        3122,
+        "verify",
+        json!({
+            "action": "claim_status",
+            "claim_object_id": "01900000-0000-7000-8000-000000000000",
+            "claim_version_hash": "a".repeat(64)
+        }),
+    );
+    assert_eq!(missing_claim_status["result"]["isError"], true);
+    assert_eq!(
+        missing_claim_status["result"]["structuredContent"]["code"],
+        "MCL_RECORD_VERSION_NOT_FOUND"
+    );
+
+    let forbidden_claim_status_fields = [
+        ("request", json!({})),
+        (
+            "formalization_object_id",
+            json!("01900000-0000-7000-8000-000000000001"),
+        ),
+        ("formalization_version_hash", json!("b".repeat(64))),
+        ("outcome", json!("proof")),
+        (
+            "diagnostic_evidence_id",
+            json!("01900000-0000-7000-8000-000000000002"),
+        ),
+        (
+            "proof_closure_evidence_id",
+            json!("01900000-0000-7000-8000-000000000003"),
+        ),
+        (
+            "axiom_audit_evidence_id",
+            json!("01900000-0000-7000-8000-000000000004"),
+        ),
+        ("source_commit_sha", json!("1".repeat(40))),
+        ("source_tree_sha", json!("2".repeat(40))),
+        ("report_artifact_hash", json!("3".repeat(64))),
+        ("attestation_bundle_artifact_hash", json!("4".repeat(64))),
+        ("publication_receipt_hash", json!("5".repeat(64))),
+        ("actor", json!("caller")),
+        ("idempotency_key", json!("caller-selected-read")),
+        ("dry_run", json!(false)),
+        ("request", Value::Null),
+        ("dry_run", Value::Null),
+    ];
+    for (offset, (field, value)) in forbidden_claim_status_fields.into_iter().enumerate() {
+        let mut arguments = json!({
+            "action": "claim_status",
+            "claim_object_id": "01900000-0000-7000-8000-000000000000",
+            "claim_version_hash": "a".repeat(64)
+        });
+        arguments[field] = value;
+        let rejected = server.call(3130 + offset as i64, "verify", arguments);
+        assert_eq!(rejected["result"]["isError"], true, "field {field}");
+        assert_eq!(
+            rejected["result"]["structuredContent"]["code"], "MCL_MCP_FIELD_FORBIDDEN",
+            "field {field}"
+        );
+    }
 
     let caller_authored_request = server.call(
         313,
@@ -692,6 +772,39 @@ fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs(
     let claim_id = claim["object_id"].as_str().expect("claim object ID");
     let claim_hash = claim["version_hash"].as_str().expect("claim hash");
 
+    let cli_claim_status = mcl_owned(
+        root.path(),
+        &[
+            "verify".to_owned(),
+            "claim-status".to_owned(),
+            "--claim-object-id".to_owned(),
+            claim_id.to_owned(),
+            "--claim-version-hash".to_owned(),
+            claim_hash.to_owned(),
+        ],
+    );
+    assert!(
+        cli_claim_status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_claim_status.stderr)
+    );
+    let cli_claim_status: Value =
+        serde_json::from_slice(&cli_claim_status.stdout).expect("CLI claim status JSON");
+    let mcp_claim_status = server.call(
+        141,
+        "verify",
+        json!({
+            "action": "claim_status",
+            "claim_object_id": claim_id,
+            "claim_version_hash": claim_hash
+        }),
+    );
+    assert_eq!(mcp_claim_status["result"]["isError"], false);
+    assert_eq!(
+        mcp_claim_status["result"]["structuredContent"],
+        cli_claim_status
+    );
+
     let formalization_payload = json!({
         "claim_version": {"object_id": claim_id, "version_hash": claim_hash},
         "formal_system": "lean4",
@@ -1022,6 +1135,35 @@ fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs(
     assert_eq!(
         erased_ambiguity["result"]["structuredContent"]["code"],
         "MCL_FIDELITY_AMBIGUITY_INVALID"
+    );
+    let null_dry_run = server.call(
+        361,
+        "verify",
+        json!({
+            "action": "review_fidelity",
+            "request": review_request.clone(),
+            "actor": "independent-reviewer",
+            "idempotency_key": "fidelity-null-dry-run",
+            "dry_run": null
+        }),
+    );
+    assert_eq!(null_dry_run["result"]["isError"], true);
+    assert_eq!(
+        null_dry_run["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_INVALID"
+    );
+    let still_unreviewed = server.call(
+        362,
+        "verify",
+        json!({
+            "action": "fidelity_status",
+            "formalization_object_id": formalization_id,
+            "formalization_version_hash": formalization_hash
+        }),
+    );
+    assert_eq!(
+        still_unreviewed["result"]["structuredContent"]["status"],
+        "unreviewed"
     );
     let review_arguments = |dry_run: bool, key: &str| {
         let mut arguments = vec![

@@ -120,6 +120,62 @@ fn init_creates_real_storage_and_health_passes() {
 }
 
 #[test]
+fn claim_status_cli_exposes_exact_read_only_help_and_fails_closed_for_a_missing_claim() {
+    let root = TempDir::new().expect("temporary root");
+    let help = mcl(&root, &["verify", "claim-status", "--help"]);
+    assert!(
+        help.status.success(),
+        "{}",
+        String::from_utf8_lossy(&help.stderr)
+    );
+    let help = String::from_utf8(help.stdout).expect("help is UTF-8");
+    assert!(help.contains("--claim-object-id <CLAIM_OBJECT_ID>"));
+    assert!(help.contains("--claim-version-hash <CLAIM_VERSION_HASH>"));
+    for forbidden in ["--actor", "--idempotency-key", "--dry-run", "--outcome"] {
+        assert!(
+            !help.contains(forbidden),
+            "claim-status exposed {forbidden}"
+        );
+    }
+
+    let fidelity_help = mcl(&root, &["verify", "review-fidelity", "--help"]);
+    assert!(fidelity_help.status.success());
+    let fidelity_help = String::from_utf8(fidelity_help.stdout).expect("help is UTF-8");
+    assert!(fidelity_help.contains("fidelity_review_request/1"));
+    assert!(fidelity_help.contains("fidelity_review_request/2"));
+
+    let initialized = mcl(
+        &root,
+        &[
+            "init",
+            "--actor",
+            "claim-status-test",
+            "--idempotency-key",
+            "claim-status-init",
+        ],
+    );
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let missing = mcl(
+        &root,
+        &[
+            "verify",
+            "claim-status",
+            "--claim-object-id",
+            "01900000-0000-7000-8000-000000000000",
+            "--claim-version-hash",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ],
+    );
+    assert!(!missing.status.success());
+    let error: Value = serde_json::from_slice(&missing.stderr).expect("missing claim error JSON");
+    assert_eq!(error["code"], "MCL_RECORD_VERSION_NOT_FOUND");
+}
+
+#[test]
 fn environment_cli_registers_dry_runs_retries_and_survives_restart() {
     let root = TempDir::new().expect("temporary root");
     assert!(

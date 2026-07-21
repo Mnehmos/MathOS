@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/research/claim-research-status/1",
+  "title": "MathOS Claim Research Status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "claim", "status", "witnesses", "nonqualifications"],
+  "properties": {
+    "schema_version": {"const": "claim_research_status/1"},
+    "claim": {"$ref": "#/$defs/exact_version_reference"},
+    "status": {"enum": ["not_started", "active", "open", "conditionally_resolved", "proved", "disproved", "malformed", "ambiguous", "superseded"]},
+    "witnesses": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"$ref": "#/$defs/witness"}
+    },
+    "nonqualifications": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"$ref": "#/$defs/nonqualification"}
+    }
+  },
+  "$defs": {
+    "exact_version_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "format": "uuid"},
+        "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "witness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["formalization", "kind", "reviewed_source_relation", "fidelity_request_schema_version", "fidelity_evidence_id", "fidelity_evidence_hash", "fidelity_report_artifact_hash", "authority_evidence_id", "authority_evidence_hash", "publication_receipt_hash"],
+      "properties": {
+        "formalization": {"$ref": "#/$defs/exact_version_reference"},
+        "kind": {"enum": ["proof", "refutation"]},
+        "reviewed_source_relation": {"enum": ["claim", "logical_negation"]},
+        "fidelity_request_schema_version": {"enum": ["fidelity_review_request/1", "fidelity_review_request/2"]},
+        "fidelity_evidence_id": {"type": "string", "format": "uuid"},
+        "fidelity_evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "fidelity_report_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "authority_evidence_id": {"type": "string", "format": "uuid"},
+        "authority_evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "publication_receipt_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "nonqualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["formalization", "reason", "fidelity_evidence_id", "authority_evidence_id"],
+      "properties": {
+        "formalization": {"$ref": "#/$defs/exact_version_reference"},
+        "reason": {"enum": ["source_version_not_current", "no_current_verified_fidelity", "fidelity_relation_unbound", "fidelity_relation_mismatch", "no_current_authoritative_evidence", "authority_kind_mismatch", "source_ambiguity_unresolved", "source_ambiguity_preserved"]},
+        "fidelity_evidence_id": {"type": ["string", "null"], "format": "uuid"},
+        "authority_evidence_id": {"type": ["string", "null"], "format": "uuid"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"reason": {"const": "source_version_not_current"}}},
+          "then": {"properties": {
+            "fidelity_evidence_id": {"type": "null"},
+            "authority_evidence_id": {"type": "null"}
+          }}
+        },
+        {
+          "if": {"properties": {"reason": {"enum": ["fidelity_relation_unbound", "fidelity_relation_mismatch", "no_current_authoritative_evidence", "source_ambiguity_preserved"]}}},
+          "then": {"properties": {
+            "fidelity_evidence_id": {"type": "string", "format": "uuid"},
+            "authority_evidence_id": {"type": "null"}
+          }}
+        },
+        {
+          "if": {"properties": {"reason": {"const": "authority_kind_mismatch"}}},
+          "then": {"properties": {
+            "fidelity_evidence_id": {"type": "string", "format": "uuid"},
+            "authority_evidence_id": {"type": "string", "format": "uuid"}
+          }}
+        },
+        {
+          "if": {"properties": {"reason": {"enum": ["no_current_verified_fidelity", "source_ambiguity_unresolved"]}}},
+          "then": {"properties": {"authority_evidence_id": {"type": "null"}}}
+        }
+      ]
+    }
+  }
+}

@@ -20,19 +20,19 @@ use crate::domain::schemas::{
 use crate::domain::{
     ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeSnapshot, EnvironmentManifest,
     EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult,
-    EvidenceSnapshot, FidelityReviewHistoryEntry, FidelityReviewReport, FidelityReviewRequest,
-    FidelityStatus, FidelityStatusSnapshot, FidelityVerdict, GraphTraversalHit,
-    GraphTraversalRequest, LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditReport,
-    LeanAuditRequest, PublicationAttestationVerification, PublicationAuthorityBinding,
-    PublicationClassification, PublicationIngestionReceiptSnapshot, PublicationOutcome,
-    PublicationReport, PublicationRequest, PublicationRetainedArtifactRole,
-    PublicationRetainedClosure, PublicationStage, PublicationStageArtifact,
-    PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot, RunChainReport,
-    RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot, VerifierExecutionClassification,
-    VerifierExecutionReport, VerifierJobRequest, VerifierJobSnapshot, VerifierJobState,
+    EvidenceSnapshot, FidelityReviewHistoryEntry, FidelityReviewReport, FidelityStatus,
+    FidelityStatusSnapshot, FidelityVerdict, GraphTraversalHit, GraphTraversalRequest,
+    LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditReport, LeanAuditRequest,
+    PublicationAttestationVerification, PublicationAuthorityBinding, PublicationClassification,
+    PublicationIngestionReceiptSnapshot, PublicationOutcome, PublicationReport, PublicationRequest,
+    PublicationRetainedArtifactRole, PublicationRetainedClosure, PublicationStage,
+    PublicationStageArtifact, PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot,
+    RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
+    VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
+    VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
-use crate::store::{PublicationAuthorityCommit, Store};
+use crate::store::{ClaimStatusReadBasis, PublicationAuthorityCommit, Store};
 
 const DOCTOR_CANARY: &[u8] = b"mcl doctor artifact integrity canary v1";
 const MAX_RETAINED_JSON_BYTES: usize = 1_048_576;
@@ -188,12 +188,17 @@ pub struct PublicationAuthorityPromotionOutcome {
     pub evidence: Option<EvidenceSnapshot>,
 }
 
+struct RevalidatedPublicationAuthority {
+    receipt_hash: String,
+    commit: PublicationAuthorityCommit,
+}
+
 #[derive(Debug, Serialize)]
 pub struct FidelityReviewOutcome {
     pub dry_run: bool,
     pub proposed_report_artifact_hash: String,
     pub proposed_evidence_hash: String,
-    pub report: FidelityReviewReport,
+    pub report: crate::domain::fidelity::VersionedFidelityReviewReport,
     pub evidence: Option<EvidenceSnapshot>,
 }
 
@@ -804,14 +809,14 @@ impl Application {
 
     pub fn review_fidelity(
         &mut self,
-        request: &FidelityReviewRequest,
+        request: &crate::domain::fidelity::VersionedFidelityReviewRequest,
         actor: &str,
         idempotency_key: &str,
         dry_run: bool,
     ) -> Result<FidelityReviewOutcome, AppError> {
         validate_attribution(actor, idempotency_key)?;
         request.validate()?;
-        if request.reviewer_identity != actor {
+        if request.reviewer_identity() != actor {
             return Err(AppError::new(
                 "MCL_FIDELITY_REVIEWER_MISMATCH",
                 "reviewer identity must equal the attributed actor",
@@ -821,16 +826,18 @@ impl Application {
         }
         let source = self
             .store
-            .get_record_version(&request.source.version_hash)?;
-        let claim = self.store.get_record_version(&request.claim.version_hash)?;
+            .get_record_version(&request.source().version_hash)?;
+        let claim = self
+            .store
+            .get_record_version(&request.claim().version_hash)?;
         let formalization = self
             .store
-            .get_record_version(&request.formalization.version_hash)?;
-        if source.object_id != request.source.object_id
+            .get_record_version(&request.formalization().version_hash)?;
+        if source.object_id != request.source().object_id
             || source.kind != RecordKind::Source
-            || claim.object_id != request.claim.object_id
+            || claim.object_id != request.claim().object_id
             || claim.kind != RecordKind::Claim
-            || formalization.object_id != request.formalization.object_id
+            || formalization.object_id != request.formalization().object_id
             || formalization.kind != RecordKind::Formalization
         {
             return Err(AppError::new(
@@ -844,8 +851,8 @@ impl Application {
         let claim_payload: ClaimPayload = decode_review_payload(claim.payload, "claim")?;
         let formal_payload: FormalizationPayload =
             decode_review_payload(formalization.payload, "formalization")?;
-        if claim_payload.source_reference != request.source
-            || formal_payload.claim_version != request.claim
+        if claim_payload.source_reference != *request.source()
+            || formal_payload.claim_version != *request.claim()
         {
             return Err(AppError::new(
                 "MCL_FIDELITY_LINEAGE_MISMATCH",
@@ -855,7 +862,7 @@ impl Application {
             ));
         }
         if !claim_payload.ambiguity_notes.is_empty()
-            && request.ambiguity_disposition == crate::domain::AmbiguityDisposition::NoAmbiguity
+            && request.ambiguity_disposition() == crate::domain::AmbiguityDisposition::NoAmbiguity
         {
             return Err(AppError::new(
                 "MCL_FIDELITY_AMBIGUITY_INVALID",
@@ -864,9 +871,10 @@ impl Application {
                 "Preserve, resolve, or leave the recorded ambiguity explicitly unresolved.",
             ));
         }
-        if (request.review_level == crate::domain::FidelityReviewLevel::SourcePaperCorrespondence
+        if (request.review_level() == crate::domain::FidelityReviewLevel::SourcePaperCorrespondence
             && source_payload.source_type != SourceType::Paper)
-            || (request.review_level == crate::domain::FidelityReviewLevel::BenchmarkHashAlignment
+            || (request.review_level()
+                == crate::domain::FidelityReviewLevel::BenchmarkHashAlignment
                 && (source_payload.source_type != SourceType::Benchmark
                     || source_payload.content_hash.is_none()))
         {
@@ -877,12 +885,24 @@ impl Application {
                 "Use a paper source for paper correspondence or a content-hashed benchmark source for benchmark alignment.",
             ));
         }
-        let current = self.fidelity_status(&request.formalization)?;
+        if request.reviewed_source_relation().is_some_and(|relation| {
+            !relation.matches_formalization_polarity(formal_payload.claim_polarity)
+        }) {
+            return Err(AppError::new(
+                "MCL_FIDELITY_RELATION_MISMATCH",
+                "reviewed source relation does not match the immutable formalization polarity",
+                false,
+                "Review the claim for claim polarity or its logical negation for negation polarity.",
+            ));
+        }
+        let current = self.fidelity_status(request.formalization())?;
         let may_be_exact_retry = current
             .history
             .iter()
-            .any(|entry| entry.report.request == *request);
-        if request.supersedes_evidence_id != current.head_evidence_id && !may_be_exact_retry {
+            .any(|entry| entry.report.request() == *request);
+        if request.supersedes_evidence_id() != current.head_evidence_id.as_deref()
+            && !may_be_exact_retry
+        {
             return Err(AppError::new(
                 "MCL_FIDELITY_REVIEW_CONFLICT",
                 "fidelity review does not supersede the current exact evidence head",
@@ -890,8 +910,8 @@ impl Application {
                 "Reload fidelity status and retry against the current evidence head.",
             ));
         }
-        self.store.get_run(&request.producing_run_id)?;
-        for hash in &request.supporting_artifact_hashes {
+        self.store.get_run(request.producing_run_id())?;
+        for hash in request.supporting_artifact_hashes() {
             let artifact = self.store.get_artifact(hash)?;
             if artifact.creation_source == crate::domain::ArtifactCreationSource::HumanReview
                 && artifact
@@ -908,14 +928,33 @@ impl Application {
             }
             self.artifacts.read(hash)?;
         }
-        let report = FidelityReviewReport {
-            schema_version: crate::domain::fidelity::FIDELITY_REVIEW_REPORT_SCHEMA_VERSION
-                .to_owned(),
-            request_hash: request.request_hash()?,
-            request: request.clone(),
-            formalization_author: formalization.created_by,
-            exact_theorem_type: formal_payload.exact_theorem_type,
-            declaration_hash: formal_payload.declaration_hash,
+        let report = match request {
+            crate::domain::fidelity::VersionedFidelityReviewRequest::V1(request) => {
+                crate::domain::fidelity::VersionedFidelityReviewReport::V1(FidelityReviewReport {
+                    schema_version: crate::domain::fidelity::FIDELITY_REVIEW_REPORT_SCHEMA_VERSION
+                        .to_owned(),
+                    request_hash: request.request_hash()?,
+                    request: request.clone(),
+                    formalization_author: formalization.created_by.clone(),
+                    exact_theorem_type: formal_payload.exact_theorem_type.clone(),
+                    declaration_hash: formal_payload.declaration_hash.clone(),
+                })
+            }
+            crate::domain::fidelity::VersionedFidelityReviewRequest::V2(request) => {
+                crate::domain::fidelity::VersionedFidelityReviewReport::V2(
+                    crate::domain::fidelity::FidelityReviewReportV2 {
+                        schema_version:
+                            crate::domain::fidelity::FIDELITY_REVIEW_REPORT_V2_SCHEMA_VERSION
+                                .to_owned(),
+                        request_hash: request.request_hash()?,
+                        request: request.clone(),
+                        reviewed_source_relation: request.reviewed_source_relation,
+                        formalization_author: formalization.created_by.clone(),
+                        exact_theorem_type: formal_payload.exact_theorem_type.clone(),
+                        declaration_hash: formal_payload.declaration_hash.clone(),
+                    },
+                )
+            }
         };
         report.validate()?;
         let report_bytes = canonical_json(&serde_json::to_value(&report).map_err(|error| {
@@ -927,26 +966,26 @@ impl Application {
             )
         })?)?;
         let proposed_report_artifact_hash = format!("{:x}", Sha256::digest(&report_bytes));
-        let mut artifact_hashes = request.supporting_artifact_hashes.clone();
+        let mut artifact_hashes = request.supporting_artifact_hashes().to_vec();
         artifact_hashes.push(proposed_report_artifact_hash.clone());
         artifact_hashes.sort();
         artifact_hashes.dedup();
         let payload = EvidencePayload {
             schema_version: crate::domain::evidence::EVIDENCE_SCHEMA_VERSION.to_owned(),
-            subject: request.formalization.clone(),
+            subject: request.formalization().clone(),
             evidence_kind: EvidenceKind::StatementFidelityReview,
-            result: if request.verdict == FidelityVerdict::Rejected {
+            result: if request.verdict() == FidelityVerdict::Rejected {
                 EvidenceResult::Rejected
             } else {
                 EvidenceResult::Accepted
             },
             authority_class: EvidenceAuthorityClass::Reviewed,
-            producing_run_id: Some(request.producing_run_id.clone()),
+            producing_run_id: Some(request.producing_run_id().to_owned()),
             producing_job_id: None,
             artifact_hashes,
             verifier_or_reviewer_identity: actor.to_owned(),
             environment_hash: None,
-            supersedes_evidence_id: request.supersedes_evidence_id.clone(),
+            supersedes_evidence_id: request.supersedes_evidence_id().map(str::to_owned),
             stale: false,
             stale_reason: None,
             publication_authority: None,
@@ -968,7 +1007,7 @@ impl Application {
                         "fidelity_review_report".to_owned(),
                     ),
                     ("reviewer_identity".to_owned(), actor.to_owned()),
-                    ("request_hash".to_owned(), report.request_hash.clone()),
+                    ("request_hash".to_owned(), report.request_hash().to_owned()),
                 ]),
             };
             self.ensure_review_artifact(
@@ -1005,6 +1044,19 @@ impl Application {
             ));
         }
         let evidence = self.store.list_fidelity_evidence(formalization)?;
+        self.fidelity_status_from_evidence(formalization, evidence)
+    }
+
+    fn fidelity_status_from_evidence(
+        &self,
+        formalization: &ExactVersionReference,
+        mut evidence: Vec<EvidenceSnapshot>,
+    ) -> Result<FidelityStatusSnapshot, AppError> {
+        evidence.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.evidence_id.cmp(&right.evidence_id))
+        });
         if evidence.is_empty() {
             return Ok(FidelityStatusSnapshot {
                 formalization: formalization.clone(),
@@ -1044,7 +1096,7 @@ impl Application {
         for entry in evidence.into_iter().rev() {
             let (report_artifact_hash, report) = self.read_fidelity_report(&entry)?;
             let status = if entry.evidence_id == head_evidence_id {
-                let status = fidelity_status_from_verdict(report.request.verdict);
+                let status = fidelity_status_from_verdict(report.request().verdict());
                 head_status = Some(status);
                 status
             } else {
@@ -1068,13 +1120,346 @@ impl Application {
         })
     }
 
+    pub fn claim_research_status(
+        &mut self,
+        claim: &ExactVersionReference,
+    ) -> Result<crate::domain::ClaimResearchStatusSnapshot, AppError> {
+        use crate::domain::{
+            AmbiguityDisposition, ClaimResearchStatusNonqualification,
+            ClaimResearchStatusNonqualificationReason, ClaimResearchStatusSnapshot,
+            ClaimResearchStatusWitness, ClaimResearchStatusWitnessKind, ResearchStatus,
+            ReviewedSourceRelation, VersionedFidelityReviewReport,
+        };
+
+        let claim_record =
+            self.read_validated_exact_record(claim, RecordKind::Claim, "claim-status claim")?;
+        let claim_payload: ClaimPayload =
+            decode_review_payload(claim_record.payload, "claim-status claim")?;
+        self.read_validated_exact_record(
+            &claim_payload.source_reference,
+            RecordKind::Source,
+            "claim-status source",
+        )?;
+        let basis = self.store.capture_claim_status_read_basis(claim)?;
+        let empty_snapshot = |status| ClaimResearchStatusSnapshot {
+            schema_version: crate::domain::research_status::CLAIM_RESEARCH_STATUS_SCHEMA_VERSION
+                .to_owned(),
+            claim: claim.clone(),
+            status,
+            witnesses: Vec::new(),
+            nonqualifications: Vec::new(),
+        };
+
+        if basis.current_claim_head_version_hash.as_deref() != Some(&claim.version_hash) {
+            return self
+                .finish_claim_research_status(&basis, empty_snapshot(ResearchStatus::Superseded));
+        }
+        if basis.formalizations.is_empty() {
+            return self
+                .finish_claim_research_status(&basis, empty_snapshot(ResearchStatus::NotStarted));
+        }
+        if basis.current_source_head_version_hash.as_deref()
+            != Some(basis.source.version_hash.as_str())
+        {
+            let nonqualifications = basis
+                .formalizations
+                .iter()
+                .map(|formalization| ClaimResearchStatusNonqualification {
+                    formalization: formalization.formalization.clone(),
+                    reason: ClaimResearchStatusNonqualificationReason::SourceVersionNotCurrent,
+                    fidelity_evidence_id: None,
+                    authority_evidence_id: None,
+                })
+                .collect();
+            return self.finish_claim_research_status(
+                &basis,
+                ClaimResearchStatusSnapshot {
+                    schema_version:
+                        crate::domain::research_status::CLAIM_RESEARCH_STATUS_SCHEMA_VERSION
+                            .to_owned(),
+                    claim: claim.clone(),
+                    status: ResearchStatus::Open,
+                    witnesses: Vec::new(),
+                    nonqualifications,
+                },
+            );
+        }
+
+        let mut witnesses = Vec::new();
+        let mut nonqualifications = Vec::new();
+        for formalization_basis in &basis.formalizations {
+            let formalization = formalization_basis.formalization.clone();
+            let formalization_record = self.read_validated_exact_record(
+                &formalization,
+                RecordKind::Formalization,
+                "claim-status formalization",
+            )?;
+            let formal_payload: FormalizationPayload =
+                decode_review_payload(formalization_record.payload, "claim-status formalization")?;
+            if formal_payload.claim_version != *claim {
+                return Err(claim_status_integrity_error(
+                    "current formalization does not reference the requested exact claim",
+                ));
+            }
+
+            // Read and validate the entire fidelity history, not only the row
+            // that might qualify as its current head.
+            let mut fidelity_evidence =
+                Vec::with_capacity(formalization_basis.fidelity_evidence.len());
+            for identity in &formalization_basis.fidelity_evidence {
+                let evidence = self.store.get_evidence(&identity.evidence_id)?;
+                if evidence.evidence_hash != identity.evidence_hash {
+                    return Err(claim_status_integrity_error(
+                        "captured fidelity evidence identity changed during replay",
+                    ));
+                }
+                fidelity_evidence.push(evidence);
+            }
+            let fidelity = self.fidelity_status_from_evidence(&formalization, fidelity_evidence)?;
+
+            // Likewise, replay every authority row before deciding whether
+            // one deterministic witness can qualify. A corrupt unused row is
+            // still a corrupt relevant truth input and must fail the read.
+            let mut validated_authorities =
+                Vec::with_capacity(formalization_basis.authoritative_evidence.len());
+            for identity in &formalization_basis.authoritative_evidence {
+                let evidence = self.store.get_evidence(&identity.evidence_id)?;
+                if evidence.evidence_hash != identity.evidence_hash {
+                    return Err(claim_status_integrity_error(
+                        "captured authority evidence identity changed during replay",
+                    ));
+                }
+                let commit = self.revalidate_publication_authority_evidence(&evidence)?;
+                let kind = match commit.outcome {
+                    PublicationOutcome::Proof => EvidenceKind::LeanKernelProof,
+                    PublicationOutcome::Refutation => EvidenceKind::LeanKernelRefutation,
+                };
+                validated_authorities.push((evidence, kind));
+            }
+            let has_authority_proof = validated_authorities
+                .iter()
+                .any(|(_, kind)| *kind == EvidenceKind::LeanKernelProof);
+            let has_authority_refutation = validated_authorities
+                .iter()
+                .any(|(_, kind)| *kind == EvidenceKind::LeanKernelRefutation);
+            if has_authority_proof && has_authority_refutation {
+                return Err(claim_status_integrity_error(
+                    "one exact formalization has both proof and refutation authority",
+                ));
+            }
+
+            let head = fidelity.head_evidence_id.as_deref().and_then(|head_id| {
+                fidelity
+                    .history
+                    .iter()
+                    .find(|entry| entry.evidence.evidence_id == head_id)
+            });
+            let verified_head = head.filter(|entry| {
+                entry.status == FidelityStatus::Verified
+                    && !entry.evidence.payload.stale
+                    && entry.evidence.payload.result == EvidenceResult::Accepted
+                    && entry.evidence.payload.authority_class == EvidenceAuthorityClass::Reviewed
+            });
+            let Some(fidelity_head) = verified_head else {
+                let reason = if claim_payload.ambiguity_notes.is_empty() {
+                    ClaimResearchStatusNonqualificationReason::NoCurrentVerifiedFidelity
+                } else {
+                    ClaimResearchStatusNonqualificationReason::SourceAmbiguityUnresolved
+                };
+                nonqualifications.push(ClaimResearchStatusNonqualification {
+                    formalization: formalization.clone(),
+                    reason,
+                    fidelity_evidence_id: head.map(|entry| entry.evidence.evidence_id.clone()),
+                    authority_evidence_id: None,
+                });
+                continue;
+            };
+
+            let request = fidelity_head.report.request();
+            let ambiguity_reason = match request.ambiguity_disposition() {
+                AmbiguityDisposition::Unresolved => {
+                    Some(ClaimResearchStatusNonqualificationReason::SourceAmbiguityUnresolved)
+                }
+                AmbiguityDisposition::PreservedVariants => {
+                    Some(ClaimResearchStatusNonqualificationReason::SourceAmbiguityPreserved)
+                }
+                AmbiguityDisposition::NoAmbiguity | AmbiguityDisposition::ResolvedFromSource => {
+                    None
+                }
+            };
+            if let Some(reason) = ambiguity_reason {
+                nonqualifications.push(ClaimResearchStatusNonqualification {
+                    formalization: formalization.clone(),
+                    reason,
+                    fidelity_evidence_id: Some(fidelity_head.evidence.evidence_id.clone()),
+                    authority_evidence_id: None,
+                });
+                continue;
+            }
+
+            let expected = match formal_payload.claim_polarity {
+                Some(FormalizationClaimPolarity::Claim) => Some((
+                    ClaimResearchStatusWitnessKind::Proof,
+                    ReviewedSourceRelation::Claim,
+                    EvidenceKind::LeanKernelProof,
+                )),
+                Some(FormalizationClaimPolarity::Negation) => Some((
+                    ClaimResearchStatusWitnessKind::Refutation,
+                    ReviewedSourceRelation::LogicalNegation,
+                    EvidenceKind::LeanKernelRefutation,
+                )),
+                None => None,
+            };
+            let Some((witness_kind, expected_relation, expected_authority_kind)) = expected else {
+                nonqualifications.push(ClaimResearchStatusNonqualification {
+                    formalization: formalization.clone(),
+                    reason: ClaimResearchStatusNonqualificationReason::FidelityRelationUnbound,
+                    fidelity_evidence_id: Some(fidelity_head.evidence.evidence_id.clone()),
+                    authority_evidence_id: None,
+                });
+                continue;
+            };
+            let (reviewed_relation, v1_relation_unbound) = match &fidelity_head.report {
+                VersionedFidelityReviewReport::V1(_) => (
+                    ReviewedSourceRelation::Claim,
+                    witness_kind == ClaimResearchStatusWitnessKind::Refutation,
+                ),
+                VersionedFidelityReviewReport::V2(report) => {
+                    (report.reviewed_source_relation, false)
+                }
+            };
+            if v1_relation_unbound {
+                nonqualifications.push(ClaimResearchStatusNonqualification {
+                    formalization: formalization.clone(),
+                    reason: ClaimResearchStatusNonqualificationReason::FidelityRelationUnbound,
+                    fidelity_evidence_id: Some(fidelity_head.evidence.evidence_id.clone()),
+                    authority_evidence_id: None,
+                });
+                continue;
+            }
+            if reviewed_relation != expected_relation {
+                nonqualifications.push(ClaimResearchStatusNonqualification {
+                    formalization: formalization.clone(),
+                    reason: ClaimResearchStatusNonqualificationReason::FidelityRelationMismatch,
+                    fidelity_evidence_id: Some(fidelity_head.evidence.evidence_id.clone()),
+                    authority_evidence_id: None,
+                });
+                continue;
+            }
+
+            let Some((authority, _)) = validated_authorities
+                .iter()
+                .find(|(_, kind)| *kind == expected_authority_kind)
+            else {
+                let (reason, authority_evidence_id) =
+                    if let Some((authority, _)) = validated_authorities.first() {
+                        (
+                            ClaimResearchStatusNonqualificationReason::AuthorityKindMismatch,
+                            Some(authority.evidence_id.clone()),
+                        )
+                    } else {
+                        (
+                        ClaimResearchStatusNonqualificationReason::NoCurrentAuthoritativeEvidence,
+                        None,
+                    )
+                    };
+                nonqualifications.push(ClaimResearchStatusNonqualification {
+                    formalization: formalization.clone(),
+                    reason,
+                    fidelity_evidence_id: Some(fidelity_head.evidence.evidence_id.clone()),
+                    authority_evidence_id,
+                });
+                continue;
+            };
+            let publication_receipt_hash = authority
+                .payload
+                .publication_authority
+                .as_ref()
+                .map(|binding| binding.ingestion_receipt_hash.clone())
+                .ok_or_else(|| {
+                    claim_status_integrity_error(
+                        "revalidated authority evidence has no publication receipt binding",
+                    )
+                })?;
+            witnesses.push(ClaimResearchStatusWitness {
+                formalization: formalization.clone(),
+                kind: witness_kind,
+                reviewed_source_relation: reviewed_relation,
+                fidelity_request_schema_version: request.schema_version().to_owned(),
+                fidelity_evidence_id: fidelity_head.evidence.evidence_id.clone(),
+                fidelity_evidence_hash: fidelity_head.evidence.evidence_hash.clone(),
+                fidelity_report_artifact_hash: fidelity_head.report_artifact_hash.clone(),
+                authority_evidence_id: authority.evidence_id.clone(),
+                authority_evidence_hash: authority.evidence_hash.clone(),
+                publication_receipt_hash,
+            });
+        }
+
+        let has_proof = witnesses
+            .iter()
+            .any(|witness| witness.kind == ClaimResearchStatusWitnessKind::Proof);
+        let has_refutation = witnesses
+            .iter()
+            .any(|witness| witness.kind == ClaimResearchStatusWitnessKind::Refutation);
+        let has_source_ambiguity = nonqualifications.iter().any(|item| {
+            matches!(
+                item.reason,
+                ClaimResearchStatusNonqualificationReason::SourceAmbiguityUnresolved
+                    | ClaimResearchStatusNonqualificationReason::SourceAmbiguityPreserved
+            )
+        });
+        let status = if has_source_ambiguity || (has_proof && has_refutation) {
+            ResearchStatus::Ambiguous
+        } else if has_proof {
+            ResearchStatus::Proved
+        } else if has_refutation {
+            ResearchStatus::Disproved
+        } else {
+            ResearchStatus::Open
+        };
+        self.finish_claim_research_status(
+            &basis,
+            ClaimResearchStatusSnapshot {
+                schema_version:
+                    crate::domain::research_status::CLAIM_RESEARCH_STATUS_SCHEMA_VERSION.to_owned(),
+                claim: claim.clone(),
+                status,
+                witnesses,
+                nonqualifications,
+            },
+        )
+    }
+
+    fn finish_claim_research_status(
+        &self,
+        basis: &ClaimStatusReadBasis,
+        mut snapshot: crate::domain::ClaimResearchStatusSnapshot,
+    ) -> Result<crate::domain::ClaimResearchStatusSnapshot, AppError> {
+        snapshot.sort_components();
+        snapshot.validate()?;
+        self.store.recheck_claim_status_read_basis(basis)?;
+        Ok(snapshot)
+    }
+
     fn read_fidelity_report(
         &self,
         evidence: &EvidenceSnapshot,
-    ) -> Result<(String, FidelityReviewReport), AppError> {
+    ) -> Result<
+        (
+            String,
+            crate::domain::fidelity::VersionedFidelityReviewReport,
+        ),
+        AppError,
+    > {
         let mut reports = Vec::new();
         for hash in &evidence.payload.artifact_hashes {
             let artifact = self.store.get_artifact(hash)?;
+            let bytes = self.artifacts.read(hash)?;
+            if artifact.artifact_hash != *hash || artifact.byte_size != bytes.len() as u64 {
+                return Err(fidelity_integrity_error(format!(
+                    "fidelity artifact {hash} metadata disagrees with its verified CAS bytes"
+                )));
+            }
             if artifact.media_type == crate::domain::ArtifactMediaType::Json
                 && artifact.creation_source == crate::domain::ArtifactCreationSource::HumanReview
                 && artifact.restriction == crate::domain::ArtifactRestriction::Private
@@ -1083,8 +1468,7 @@ impl Application {
                     .get("artifact_role")
                     .is_some_and(|role| role == "fidelity_review_report")
             {
-                let bytes = self.artifacts.read(hash)?;
-                let report: FidelityReviewReport =
+                let report: crate::domain::fidelity::VersionedFidelityReviewReport =
                     serde_json::from_slice(&bytes).map_err(|error| {
                         fidelity_integrity_error(format!(
                             "stored fidelity report is invalid: {error}"
@@ -1096,6 +1480,17 @@ impl Application {
                         error.message
                     ))
                 })?;
+                let canonical =
+                    canonical_json(&serde_json::to_value(&report).map_err(|error| {
+                        fidelity_integrity_error(format!(
+                            "stored fidelity report cannot be serialized: {error}"
+                        ))
+                    })?)?;
+                if canonical != bytes {
+                    return Err(fidelity_integrity_error(
+                        "stored fidelity report is not canonical JSON",
+                    ));
+                }
                 reports.push((hash.clone(), artifact, report));
             }
         }
@@ -1104,24 +1499,117 @@ impl Application {
                 "fidelity evidence does not resolve to exactly one controlled review report",
             ));
         };
-        if report.request.formalization != evidence.payload.subject
-            || report.request.producing_run_id.as_str()
-                != evidence
-                    .payload
-                    .producing_run_id
-                    .as_deref()
-                    .unwrap_or_default()
-            || report.request.supersedes_evidence_id != evidence.payload.supersedes_evidence_id
-            || report.request.reviewer_identity != evidence.payload.verifier_or_reviewer_identity
-            || artifact.semantic_metadata.get("request_hash") != Some(&report.request_hash)
-            || artifact.semantic_metadata.get("reviewer_identity")
-                != Some(&report.request.reviewer_identity)
+        let request = report.request();
+        let expected_result = if request.verdict() == FidelityVerdict::Rejected {
+            EvidenceResult::Rejected
+        } else {
+            EvidenceResult::Accepted
+        };
+        let mut expected_artifact_hashes = request.supporting_artifact_hashes().to_vec();
+        expected_artifact_hashes.push(hash.clone());
+        expected_artifact_hashes.sort();
+        expected_artifact_hashes.dedup();
+        let expected_metadata = BTreeMap::from([
+            (
+                "artifact_role".to_owned(),
+                "fidelity_review_report".to_owned(),
+            ),
+            (
+                "reviewer_identity".to_owned(),
+                request.reviewer_identity().to_owned(),
+            ),
+            ("request_hash".to_owned(), report.request_hash().to_owned()),
+        ]);
+        if evidence.payload.schema_version != crate::domain::evidence::EVIDENCE_SCHEMA_VERSION
+            || evidence.payload.subject != *request.formalization()
+            || evidence.payload.evidence_kind != EvidenceKind::StatementFidelityReview
+            || evidence.payload.result != expected_result
+            || evidence.payload.authority_class != EvidenceAuthorityClass::Reviewed
+            || evidence.payload.producing_run_id.as_deref() != Some(request.producing_run_id())
+            || evidence.payload.producing_job_id.is_some()
+            || evidence.payload.artifact_hashes != expected_artifact_hashes
+            || evidence.payload.verifier_or_reviewer_identity != request.reviewer_identity()
+            || evidence.payload.environment_hash.is_some()
+            || evidence.payload.supersedes_evidence_id.as_deref()
+                != request.supersedes_evidence_id()
+            || evidence.payload.publication_authority.is_some()
+            || evidence.created_by != request.reviewer_identity()
+            || artifact.created_by != request.reviewer_identity()
+            || artifact.semantic_metadata != expected_metadata
         {
             return Err(fidelity_integrity_error(
                 "fidelity report, evidence, and artifact provenance disagree",
             ));
         }
+
+        let source = self.read_validated_exact_record(
+            request.source(),
+            RecordKind::Source,
+            "fidelity source",
+        )?;
+        let claim =
+            self.read_validated_exact_record(request.claim(), RecordKind::Claim, "fidelity claim")?;
+        let formalization = self.read_validated_exact_record(
+            request.formalization(),
+            RecordKind::Formalization,
+            "fidelity formalization",
+        )?;
+        let source_payload: SourcePayload =
+            decode_review_payload(source.payload, "fidelity source")?;
+        let claim_payload: ClaimPayload = decode_review_payload(claim.payload, "fidelity claim")?;
+        let formal_payload: FormalizationPayload =
+            decode_review_payload(formalization.payload, "fidelity formalization")?;
+        if claim_payload.source_reference != *request.source()
+            || formal_payload.claim_version != *request.claim()
+            || report.formalization_author() != formalization.created_by
+            || report.exact_theorem_type() != formal_payload.exact_theorem_type
+            || report.declaration_hash() != formal_payload.declaration_hash
+            || (!claim_payload.ambiguity_notes.is_empty()
+                && request.ambiguity_disposition()
+                    == crate::domain::AmbiguityDisposition::NoAmbiguity)
+            || (request.review_level()
+                == crate::domain::FidelityReviewLevel::SourcePaperCorrespondence
+                && source_payload.source_type != SourceType::Paper)
+            || (request.review_level()
+                == crate::domain::FidelityReviewLevel::BenchmarkHashAlignment
+                && (source_payload.source_type != SourceType::Benchmark
+                    || source_payload.content_hash.is_none()))
+        {
+            return Err(fidelity_integrity_error(
+                "fidelity report does not reproduce its exact canonical lineage",
+            ));
+        }
+        self.store.get_run(request.producing_run_id())?;
         Ok((hash.clone(), report.clone()))
+    }
+
+    fn read_validated_exact_record(
+        &self,
+        reference: &ExactVersionReference,
+        expected_kind: RecordKind,
+        label: &str,
+    ) -> Result<RecordSnapshot, AppError> {
+        let record = self.store.get_record_version(&reference.version_hash)?;
+        if record.object_id != reference.object_id || record.kind != expected_kind {
+            return Err(claim_status_integrity_error(format!(
+                "{label} does not resolve to the requested exact canonical record"
+            )));
+        }
+        validate_record_payload(record.kind, &record.schema_version, &record.payload).map_err(
+            |error| {
+                claim_status_integrity_error(format!(
+                    "{label} failed schema validation: {}",
+                    error.message
+                ))
+            },
+        )?;
+        let rehashed = record_version_hash(&record.schema_version, &record.payload)?;
+        if rehashed != record.version_hash || rehashed != reference.version_hash {
+            return Err(claim_status_integrity_error(format!(
+                "{label} failed canonical version rehashing"
+            )));
+        }
+        Ok(record)
     }
 
     pub fn enqueue_audit_job(
@@ -2148,6 +2636,32 @@ impl Application {
                 "Use a short stable actor identity.",
             ));
         }
+        let validated = self.revalidate_publication_authority_receipt(publication_receipt_hash)?;
+        let proposed_payload = validated.commit.evidence_payload()?;
+        let proposed_evidence_hash = proposed_payload.evidence_hash()?;
+        let evidence_kind = proposed_payload.evidence_kind;
+        let evidence = if dry_run {
+            None
+        } else {
+            Some(self.store.create_publication_authority_evidence(
+                &validated.commit,
+                actor,
+                idempotency_key,
+            )?)
+        };
+        Ok(PublicationAuthorityPromotionOutcome {
+            dry_run,
+            publication_receipt_hash: validated.receipt_hash,
+            proposed_evidence_hash,
+            evidence_kind,
+            evidence,
+        })
+    }
+
+    fn revalidate_publication_authority_receipt(
+        &mut self,
+        publication_receipt_hash: &str,
+    ) -> Result<RevalidatedPublicationAuthority, AppError> {
         let receipt = self
             .store
             .get_publication_ingestion_receipt(publication_receipt_hash)?;
@@ -2248,25 +2762,42 @@ impl Application {
             binding,
             artifact_hashes,
         };
-        let proposed_payload = commit.evidence_payload()?;
-        let proposed_evidence_hash = proposed_payload.evidence_hash()?;
-        let evidence_kind = proposed_payload.evidence_kind;
-        let evidence = if dry_run {
-            None
-        } else {
-            Some(self.store.create_publication_authority_evidence(
-                &commit,
-                actor,
-                idempotency_key,
-            )?)
-        };
-        Ok(PublicationAuthorityPromotionOutcome {
-            dry_run,
-            publication_receipt_hash: receipt.receipt_hash,
-            proposed_evidence_hash,
-            evidence_kind,
-            evidence,
+        Ok(RevalidatedPublicationAuthority {
+            receipt_hash: receipt.receipt_hash,
+            commit,
         })
+    }
+
+    fn revalidate_publication_authority_evidence(
+        &mut self,
+        evidence: &EvidenceSnapshot,
+    ) -> Result<PublicationAuthorityCommit, AppError> {
+        let receipt_hash = evidence
+            .payload
+            .publication_authority
+            .as_ref()
+            .map(|binding| binding.ingestion_receipt_hash.as_str())
+            .ok_or_else(|| {
+                publication_authority_error(
+                    "MCL_PUBLICATION_AUTHORITY_INTEGRITY_FAILED",
+                    "stored authority evidence has no receipt-bound publication authority",
+                    "Quarantine the evidence and restore a verified receipt-bound backup.",
+                )
+            })?;
+        let validated = self.revalidate_publication_authority_receipt(receipt_hash)?;
+        let expected_payload = validated.commit.evidence_payload()?;
+        let expected_hash = expected_payload.evidence_hash()?;
+        if validated.receipt_hash != receipt_hash
+            || evidence.payload != expected_payload
+            || evidence.evidence_hash != expected_hash
+        {
+            return Err(publication_authority_error(
+                "MCL_PUBLICATION_AUTHORITY_INTEGRITY_FAILED",
+                "stored authority evidence differs from the fully revalidated publication closure",
+                "Quarantine the evidence and restore the exact receipt-bound publication closure.",
+            ));
+        }
+        Ok(validated.commit)
     }
 
     fn validate_publication_candidate_against_current_store(
@@ -4510,6 +5041,15 @@ fn fidelity_integrity_error(message: impl Into<String>) -> AppError {
     )
 }
 
+fn claim_status_integrity_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_CLAIM_STATUS_INTEGRITY_FAILED",
+        message,
+        false,
+        "Quarantine the inconsistent claim-status inputs and restore verified canonical, evidence, and artifact backups.",
+    )
+}
+
 fn artifact_matches_metadata(
     artifact: &ArtifactSnapshot,
     metadata: &ArtifactMetadata,
@@ -4835,6 +5375,12 @@ mod tests {
     }
 
     fn local_publication_authority_fixture() -> LocalPublicationAuthorityFixture {
+        local_publication_authority_fixture_for(PublicationOutcome::Proof)
+    }
+
+    fn local_publication_authority_fixture_for(
+        outcome: PublicationOutcome,
+    ) -> LocalPublicationAuthorityFixture {
         let root = tempfile::TempDir::new().expect("publication authority root");
         let config = ResolvedConfig::load(root.path(), None).expect("publication test config");
         Application::initialize(
@@ -4861,8 +5407,25 @@ mod tests {
             .environment
             .expect("persisted environment");
 
-        let declaration_name = "MathOS.Publication.authorityFixture";
-        let module_bytes = b"namespace MathOS.Publication\ntheorem authorityFixture : True := by trivial\nend MathOS.Publication\n";
+        let (declaration_name, module_bytes, informal_statement, logical_shape, polarity, theorem_type) =
+            match outcome {
+                PublicationOutcome::Proof => (
+                    "MathOS.Publication.authorityFixture",
+                    b"namespace MathOS.Publication\ntheorem authorityFixture : True := by trivial\nend MathOS.Publication\n".as_slice(),
+                    "True is inhabited.",
+                    "True",
+                    "claim",
+                    "True",
+                ),
+                PublicationOutcome::Refutation => (
+                    "MathOS.Publication.refutationFixture",
+                    b"namespace MathOS.Publication\ntheorem refutationFixture : Not False := by intro h; exact False.elim h\nend MathOS.Publication\n".as_slice(),
+                    "False is inhabited.",
+                    "False",
+                    "negation",
+                    "Not False",
+                ),
+            };
         let module = application
             .ingest_artifact(
                 module_bytes,
@@ -4902,7 +5465,7 @@ mod tests {
                         "citation_metadata": {},
                         "redaction_class": "private",
                         "provenance_notes": "local authority promotion fixture",
-                        "original_text": "True is inhabited."
+                        "original_text": informal_statement
                     }),
                     searchable_text: "Publication authority fixture".to_owned(),
                 },
@@ -4923,16 +5486,16 @@ mod tests {
                             "object_id": source.object_id,
                             "version_hash": source.version_hash
                         },
-                        "normalized_informal_statement": "True is inhabited.",
+                        "normalized_informal_statement": informal_statement,
                         "claim_kind": "existential",
-                        "logical_shape": "True",
+                        "logical_shape": logical_shape,
                         "assumptions": [],
                         "variables": [],
                         "concept_links": [],
                         "source_citations": [],
                         "ambiguity_notes": []
                     }),
-                    searchable_text: "True is inhabited".to_owned(),
+                    searchable_text: informal_statement.to_owned(),
                 },
                 "publication-authority-test",
                 "publication-authority-claim",
@@ -4952,11 +5515,11 @@ mod tests {
                             "version_hash": claim.version_hash
                         },
                         "formal_system": "lean4",
-                        "claim_polarity": "claim",
+                        "claim_polarity": polarity,
                         "environment_hash": environment.environment_hash,
                         "module_artifact_hash": module.artifact_hash,
                         "declaration_name": declaration_name,
-                        "exact_theorem_type": "True",
+                        "exact_theorem_type": theorem_type,
                         "declaration_hash": "d".repeat(64),
                         "import_manifest": [],
                         "formalization_notes": "local authority promotion fixture",
@@ -5153,7 +5716,7 @@ mod tests {
         let preparation = application
             .prepare_publication_request(
                 &subject,
-                PublicationOutcome::Proof,
+                outcome,
                 &diagnostic.evidence_id,
                 &proof_closure.evidence_id,
                 &axiom_audit.evidence_id,
@@ -5465,6 +6028,366 @@ mod tests {
             .join(&hash[..2])
             .join(&hash[2..4])
             .join(hash)
+    }
+
+    fn fixture_fidelity_lineage(
+        fixture: &LocalPublicationAuthorityFixture,
+    ) -> (
+        ExactVersionReference,
+        ExactVersionReference,
+        FormalizationPayload,
+    ) {
+        let formalization = fixture
+            .application
+            .store
+            .get_record_version(&fixture.request.subject.version_hash)
+            .expect("fixture formalization reads");
+        let formal_payload: FormalizationPayload =
+            serde_json::from_value(formalization.payload).expect("fixture formalization decodes");
+        let claim = fixture
+            .application
+            .store
+            .get_record_version(&formal_payload.claim_version.version_hash)
+            .expect("fixture claim reads");
+        let claim_payload: ClaimPayload =
+            serde_json::from_value(claim.payload).expect("fixture claim decodes");
+        (
+            claim_payload.source_reference,
+            formal_payload.claim_version.clone(),
+            formal_payload,
+        )
+    }
+
+    fn add_fixture_verified_fidelity(
+        fixture: &mut LocalPublicationAuthorityFixture,
+        relation: Option<crate::domain::ReviewedSourceRelation>,
+        key_suffix: &str,
+    ) -> Result<FidelityReviewOutcome, AppError> {
+        let (source, claim, formal_payload) = fixture_fidelity_lineage(fixture);
+        let reviewer = "independent-fidelity-reviewer";
+        let run = fixture
+            .application
+            .create_run(
+                RunKind::LiteratureReview,
+                &json!({}),
+                reviewer,
+                &format!("claim-status-fidelity-run-{key_suffix}"),
+                false,
+            )?
+            .run
+            .expect("persisted fidelity run");
+        let supersedes_evidence_id = fixture
+            .application
+            .fidelity_status(&fixture.request.subject)?
+            .head_evidence_id;
+        let request = match relation {
+            None => crate::domain::VersionedFidelityReviewRequest::V1(
+                crate::domain::FidelityReviewRequest {
+                    schema_version: crate::domain::fidelity::FIDELITY_REVIEW_REQUEST_SCHEMA_VERSION
+                        .to_owned(),
+                    source,
+                    claim,
+                    formalization: fixture.request.subject.clone(),
+                    review_level: crate::domain::FidelityReviewLevel::MathematicalStatement,
+                    verdict: FidelityVerdict::Verified,
+                    reviewer_identity: reviewer.to_owned(),
+                    findings: vec![
+                        "The exact Lean declaration states the reviewed source proposition."
+                            .to_owned(),
+                    ],
+                    ambiguity_disposition: crate::domain::AmbiguityDisposition::NoAmbiguity,
+                    definition_mappings: Vec::new(),
+                    supporting_artifact_hashes: vec![formal_payload.module_artifact_hash],
+                    producing_run_id: run.run_id,
+                    supersedes_evidence_id,
+                },
+            ),
+            Some(reviewed_source_relation) => crate::domain::VersionedFidelityReviewRequest::V2(
+                crate::domain::FidelityReviewRequestV2 {
+                    schema_version:
+                        crate::domain::fidelity::FIDELITY_REVIEW_REQUEST_V2_SCHEMA_VERSION
+                            .to_owned(),
+                    source,
+                    claim,
+                    formalization: fixture.request.subject.clone(),
+                    reviewed_source_relation,
+                    review_level: crate::domain::FidelityReviewLevel::MathematicalStatement,
+                    verdict: FidelityVerdict::Verified,
+                    reviewer_identity: reviewer.to_owned(),
+                    findings: vec![
+                        "The exact Lean declaration states the reviewed source relation."
+                            .to_owned(),
+                    ],
+                    ambiguity_disposition: crate::domain::AmbiguityDisposition::NoAmbiguity,
+                    definition_mappings: Vec::new(),
+                    supporting_artifact_hashes: vec![formal_payload.module_artifact_hash],
+                    producing_run_id: run.run_id,
+                    supersedes_evidence_id,
+                },
+            ),
+        };
+        fixture.application.review_fidelity(
+            &request,
+            reviewer,
+            &format!("claim-status-fidelity-review-{key_suffix}"),
+            false,
+        )
+    }
+
+    #[test]
+    fn claim_status_requires_both_revalidated_fidelity_and_authority_and_survives_restart()
+    -> Result<(), AppError> {
+        use crate::domain::{
+            ClaimResearchStatusNonqualificationReason, ClaimResearchStatusWitnessKind,
+            ResearchStatus,
+        };
+
+        let mut fixture = local_publication_authority_fixture();
+        let (_, claim, _) = fixture_fidelity_lineage(&fixture);
+        let authority = fixture
+            .application
+            .promote_publication_authority(
+                &fixture.receipt.receipt_hash,
+                "publication-authority-test",
+                "claim-status-proof-authority",
+                false,
+            )?
+            .evidence
+            .expect("persisted proof authority");
+
+        let before_fidelity = fixture.application.claim_research_status(&claim)?;
+        assert_eq!(before_fidelity.status, ResearchStatus::Open);
+        assert!(before_fidelity.witnesses.is_empty());
+        assert_eq!(before_fidelity.nonqualifications.len(), 1);
+        assert_eq!(
+            before_fidelity.nonqualifications[0].reason,
+            ClaimResearchStatusNonqualificationReason::NoCurrentVerifiedFidelity
+        );
+
+        let fidelity = add_fixture_verified_fidelity(&mut fixture, None, "proof-v1")?;
+        let fidelity_evidence = fidelity.evidence.expect("persisted fidelity evidence");
+        let proved = fixture.application.claim_research_status(&claim)?;
+        assert_eq!(proved.status, ResearchStatus::Proved);
+        assert!(proved.nonqualifications.is_empty());
+        let [witness] = proved.witnesses.as_slice() else {
+            panic!("one proof witness expected");
+        };
+        assert_eq!(witness.kind, ClaimResearchStatusWitnessKind::Proof);
+        assert_eq!(witness.fidelity_evidence_id, fidelity_evidence.evidence_id);
+        assert_eq!(witness.authority_evidence_id, authority.evidence_id);
+        assert_eq!(
+            witness.publication_receipt_hash,
+            fixture.receipt.receipt_hash
+        );
+
+        let config = ResolvedConfig::load(fixture.root.path(), None)?;
+        drop(fixture.application);
+        let mut reopened = Application::open(&config)?;
+        assert_eq!(reopened.claim_research_status(&claim)?, proved);
+
+        let current_formalization = reopened.get_record(
+            &fixture.request.subject.object_id,
+            Some(&fixture.request.subject.version_hash),
+        )?;
+        let mut successor_formalization_payload = current_formalization.payload.clone();
+        successor_formalization_payload["formalization_notes"] =
+            Value::String("new exact formalization version".to_owned());
+        reopened.version_record(
+            &current_formalization.object_id,
+            &current_formalization.version_hash,
+            &RecordDraft {
+                kind: RecordKind::Formalization,
+                schema_version: current_formalization.schema_version,
+                payload: successor_formalization_payload,
+                searchable_text: "successor authority fixture".to_owned(),
+            },
+            "publication-authority-test",
+            "claim-status-successor-formalization",
+            false,
+        )?;
+        let changed_formalization = reopened.claim_research_status(&claim)?;
+        assert_eq!(changed_formalization.status, ResearchStatus::Open);
+        assert!(changed_formalization.witnesses.is_empty());
+        assert_eq!(
+            changed_formalization.nonqualifications[0].reason,
+            ClaimResearchStatusNonqualificationReason::NoCurrentVerifiedFidelity
+        );
+
+        let current_claim = reopened.get_record(&claim.object_id, Some(&claim.version_hash))?;
+        let mut successor_claim_payload = current_claim.payload.clone();
+        successor_claim_payload["normalized_informal_statement"] =
+            Value::String("True remains inhabited under a revised exact claim.".to_owned());
+        reopened.version_record(
+            &current_claim.object_id,
+            &current_claim.version_hash,
+            &RecordDraft {
+                kind: RecordKind::Claim,
+                schema_version: current_claim.schema_version,
+                payload: successor_claim_payload,
+                searchable_text: "revised exact claim".to_owned(),
+            },
+            "publication-authority-test",
+            "claim-status-successor-claim",
+            false,
+        )?;
+        let superseded = reopened.claim_research_status(&claim)?;
+        assert_eq!(superseded.status, ResearchStatus::Superseded);
+        assert!(superseded.witnesses.is_empty());
+        assert!(superseded.nonqualifications.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn claim_status_needs_v2_logical_negation_fidelity_before_disproof() -> Result<(), AppError> {
+        use crate::domain::{
+            ClaimResearchStatusNonqualificationReason, ClaimResearchStatusWitnessKind,
+            ResearchStatus, ReviewedSourceRelation,
+        };
+
+        let mut fixture = local_publication_authority_fixture_for(PublicationOutcome::Refutation);
+        let (_, claim, _) = fixture_fidelity_lineage(&fixture);
+        let authority = fixture
+            .application
+            .promote_publication_authority(
+                &fixture.receipt.receipt_hash,
+                "publication-authority-test",
+                "claim-status-refutation-authority",
+                false,
+            )?
+            .evidence
+            .expect("persisted refutation authority");
+        assert_eq!(
+            authority.payload.evidence_kind,
+            EvidenceKind::LeanKernelRefutation
+        );
+
+        let v1 = add_fixture_verified_fidelity(&mut fixture, None, "refutation-v1")?;
+        let v1_evidence = v1.evidence.expect("persisted v1 fidelity");
+        let unbound = fixture.application.claim_research_status(&claim)?;
+        assert_eq!(unbound.status, ResearchStatus::Open);
+        assert!(unbound.witnesses.is_empty());
+        assert_eq!(unbound.nonqualifications.len(), 1);
+        assert_eq!(
+            unbound.nonqualifications[0].reason,
+            ClaimResearchStatusNonqualificationReason::FidelityRelationUnbound
+        );
+        assert_eq!(
+            unbound.nonqualifications[0].fidelity_evidence_id.as_deref(),
+            Some(v1_evidence.evidence_id.as_str())
+        );
+
+        let mismatch = add_fixture_verified_fidelity(
+            &mut fixture,
+            Some(ReviewedSourceRelation::Claim),
+            "refutation-v2-mismatch",
+        )
+        .expect_err("claim relation cannot review a negation formalization");
+        assert_eq!(mismatch.code, "MCL_FIDELITY_RELATION_MISMATCH");
+
+        let v2 = add_fixture_verified_fidelity(
+            &mut fixture,
+            Some(ReviewedSourceRelation::LogicalNegation),
+            "refutation-v2",
+        )?;
+        let v2_evidence = v2.evidence.expect("persisted v2 fidelity");
+        let disproved = fixture.application.claim_research_status(&claim)?;
+        assert_eq!(disproved.status, ResearchStatus::Disproved);
+        assert!(disproved.nonqualifications.is_empty());
+        let [witness] = disproved.witnesses.as_slice() else {
+            panic!("one refutation witness expected");
+        };
+        assert_eq!(witness.kind, ClaimResearchStatusWitnessKind::Refutation);
+        assert_eq!(
+            witness.reviewed_source_relation,
+            ReviewedSourceRelation::LogicalNegation
+        );
+        assert_eq!(witness.fidelity_evidence_id, v2_evidence.evidence_id);
+        assert_eq!(witness.authority_evidence_id, authority.evidence_id);
+        Ok(())
+    }
+
+    #[test]
+    fn claim_status_invalidates_terminal_witness_when_source_head_moves() -> Result<(), AppError> {
+        use crate::domain::{ClaimResearchStatusNonqualificationReason, ResearchStatus};
+
+        let mut fixture = local_publication_authority_fixture();
+        let (source, claim, _) = fixture_fidelity_lineage(&fixture);
+        fixture.application.promote_publication_authority(
+            &fixture.receipt.receipt_hash,
+            "publication-authority-test",
+            "claim-status-source-head-authority",
+            false,
+        )?;
+        add_fixture_verified_fidelity(&mut fixture, None, "source-head-proof-v1")?;
+        assert_eq!(
+            fixture.application.claim_research_status(&claim)?.status,
+            ResearchStatus::Proved
+        );
+
+        let current_source = fixture
+            .application
+            .get_record(&source.object_id, Some(&source.version_hash))?;
+        let mut successor_payload = current_source.payload.clone();
+        successor_payload["provenance_notes"] =
+            Value::String("source object advanced after the reviewed claim".to_owned());
+        fixture.application.version_record(
+            &current_source.object_id,
+            &current_source.version_hash,
+            &RecordDraft {
+                kind: RecordKind::Source,
+                schema_version: current_source.schema_version,
+                payload: successor_payload,
+                searchable_text: "successor source version".to_owned(),
+            },
+            "publication-authority-test",
+            "claim-status-successor-source",
+            false,
+        )?;
+
+        let open = fixture.application.claim_research_status(&claim)?;
+        assert_eq!(open.status, ResearchStatus::Open);
+        assert!(open.witnesses.is_empty());
+        let [nonqualification] = open.nonqualifications.as_slice() else {
+            panic!("one source-currentness nonqualification expected");
+        };
+        assert_eq!(
+            nonqualification.reason,
+            ClaimResearchStatusNonqualificationReason::SourceVersionNotCurrent
+        );
+        assert!(nonqualification.fidelity_evidence_id.is_none());
+        assert!(nonqualification.authority_evidence_id.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn claim_status_fails_closed_when_a_current_fidelity_cas_artifact_is_missing()
+    -> Result<(), AppError> {
+        use crate::domain::ResearchStatus;
+
+        let mut fixture = local_publication_authority_fixture();
+        let (_, claim, _) = fixture_fidelity_lineage(&fixture);
+        fixture.application.promote_publication_authority(
+            &fixture.receipt.receipt_hash,
+            "publication-authority-test",
+            "claim-status-missing-cas-authority",
+            false,
+        )?;
+        let fidelity = add_fixture_verified_fidelity(&mut fixture, None, "missing-cas-proof-v1")?;
+        assert_eq!(
+            fixture.application.claim_research_status(&claim)?.status,
+            ResearchStatus::Proved
+        );
+
+        let report_path =
+            fixture_cas_path(fixture.root.path(), &fidelity.proposed_report_artifact_hash);
+        fs::remove_file(report_path).expect("test removes exact fidelity report CAS object");
+        let error = fixture
+            .application
+            .claim_research_status(&claim)
+            .expect_err("missing current fidelity report must fail closed");
+        assert_ne!(error.code, "MCL_CLAIM_STATUS_READ_CONFLICT");
+        assert!(!error.retryable);
+        Ok(())
     }
 
     #[test]

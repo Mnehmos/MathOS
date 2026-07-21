@@ -1,6 +1,6 @@
 # MathOS 1.0.0 Release Checklist
 
-Last updated: 2026-07-20
+Last updated: 2026-07-21
 
 This checklist mirrors section 30 of [SPEC.md](../../SPEC.md). A checked item requires linked mechanical and manual evidence. Partial Phase 1 work is recorded below but does not check a release item whose complete wording is not yet satisfied.
 
@@ -26,6 +26,8 @@ Phase 2 evidence: `mcl init` and storage health work locally and in Windows and 
 Phase 3 fidelity evidence: closed request and report types distinguish all specified review levels, attestation, benchmark alignment, verified review, rejection, ambiguity disposition, definition mappings, and exact source, claim, formalization, run, artifact, and supersession references. Reviews persist through one shared CLI and MCP application path. Controlled private reports bind human-review provenance, derived status follows one compare-and-swap evidence head, and superseded reviews remain visible. Self-verification, stale heads, missing artifacts, substituted lineage, erased ambiguity, report corruption, restart, and retry paths are tested. Fidelity is only one part of the full claim lifecycle, so the complete core lifecycle criteria remain unchecked.
 
 Remote fidelity evidence: GitHub Actions run `29706138708` passed fresh Linux, Windows, storage, Python, and real pinned Lean jobs on exact tree `80b1d2e92e81192a2863bb445a7bef872fc21b72`. Issue #20 is closed. At that checkpoint proof authority and derived mathematical status were absent; the authority evidence below now supplies only the former, so the complete lifecycle criteria remain unchecked.
+
+Phase 3 derived-status candidate: issue #38 preserves fidelity v1 canonical identity, adds closed polarity-aware fidelity v2, and derives one exact claim's live status through the same CLI/MCP application service. Callers provide only exact claim identity. The Store automatically captures every current formalization plus source/claim/formalization/fidelity/authority heads in one read snapshot; the application rehashes canonical records and all fidelity CAS, fully replays every receipt-bound protected authority chain, then rejects mixed-time reads on basis change. Proof/refutation fixtures, v1-negation refusal, v2 relation mismatch, superseded claim and formalization heads, moved-source invalidation, restart determinism, and missing-CAS failure are covered locally. The protected publication workflow is prepared to retain `open` after authority and `proved` or `disproved` only after role-separated verified v2 fidelity. The checklist remains open until exact merged-tree CI and protected artifacts are audited, and because the broader counterexample/repair/open lifecycle is still incomplete.
 
 ## Verification
 
