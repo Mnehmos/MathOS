@@ -31,7 +31,7 @@ No inversion, contrapositive, repaired statement, weakened theorem, or changed h
 
 ### Currentness and replay
 
-The service first schema-validates and canonically rehashes the exact claim and source records. If the requested claim version is not its object's current head, it returns `superseded` without allowing historical witnesses to affect current truth.
+The service first schema-validates and canonically rehashes the exact claim and source records. If the requested claim version is not its object's current head, it returns `superseded` without allowing historical witnesses to affect current truth. If a current claim still points to a source version that is no longer that source object's live head, current formalizations return `open/source_version_not_current`; historical fidelity and authority cannot keep terminal truth live.
 
 For a current claim, the Store enumerates every bounded current formalization head that names that exact claim version in deterministic order. The caller cannot select a convenient variant. No current formalization yields `not_started`.
 
@@ -49,11 +49,12 @@ Status precedence is deterministic:
 
 1. a non-current requested claim version is `superseded`;
 2. a current claim with no current formalization is `not_started`;
-3. a current formalization whose fidelity preserves source variants or leaves source ambiguity unresolved makes the claim `ambiguous`;
-4. qualifying proof and refutation witnesses on distinct current formalizations together are `ambiguous` and both witness sets are returned;
-5. one or more qualifying proofs and no qualifying refutation yields `proved`;
-6. one or more qualifying refutations and no qualifying proof yields `disproved`;
-7. otherwise the claim is `open`, with deterministic explicit nonqualification reasons.
+3. a current claim whose exact source version is no longer the source object's live head is `open`, with `source_version_not_current` for every current formalization;
+4. a current formalization whose fidelity preserves source variants or leaves source ambiguity unresolved makes the claim `ambiguous`;
+5. qualifying proof and refutation witnesses on distinct current formalizations together are `ambiguous` and both witness sets are returned;
+6. one or more qualifying proofs and no qualifying refutation yields `proved`;
+7. one or more qualifying refutations and no qualifying proof yields `disproved`;
+8. otherwise the claim is `open`, with deterministic explicit nonqualification reasons.
 
 `resolved_from_source` may qualify because it is an explicit role-separated review of the exact source/claim/formalization bridge. `preserved_variants` and `unresolved` may not. Claim ambiguity notes alone do not override `not_started` when no formalization exists.
 

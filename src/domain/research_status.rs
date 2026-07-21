@@ -87,6 +87,7 @@ impl ClaimResearchStatusWitnessKind {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaimResearchStatusNonqualificationReason {
+    SourceVersionNotCurrent,
     NoCurrentVerifiedFidelity,
     FidelityRelationUnbound,
     FidelityRelationMismatch,
@@ -99,6 +100,7 @@ pub enum ClaimResearchStatusNonqualificationReason {
 impl ClaimResearchStatusNonqualificationReason {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::SourceVersionNotCurrent => "source_version_not_current",
             Self::NoCurrentVerifiedFidelity => "no_current_verified_fidelity",
             Self::FidelityRelationUnbound => "fidelity_relation_unbound",
             Self::FidelityRelationMismatch => "fidelity_relation_mismatch",
@@ -183,6 +185,9 @@ impl ClaimResearchStatusWitness {
 impl ClaimResearchStatusNonqualification {
     pub fn validate(&self) -> Result<(), AppError> {
         let locators_match_reason = match self.reason {
+            ClaimResearchStatusNonqualificationReason::SourceVersionNotCurrent => {
+                self.fidelity_evidence_id.is_none() && self.authority_evidence_id.is_none()
+            }
             ClaimResearchStatusNonqualificationReason::NoCurrentVerifiedFidelity
             | ClaimResearchStatusNonqualificationReason::SourceAmbiguityUnresolved => {
                 self.authority_evidence_id.is_none()
@@ -374,11 +379,18 @@ pub fn claim_research_status_schema() -> Value {
                 "required": ["formalization", "reason", "fidelity_evidence_id", "authority_evidence_id"],
                 "properties": {
                     "formalization": {"$ref": "#/$defs/exact_version_reference"},
-                    "reason": {"enum": ["no_current_verified_fidelity", "fidelity_relation_unbound", "fidelity_relation_mismatch", "no_current_authoritative_evidence", "authority_kind_mismatch", "source_ambiguity_unresolved", "source_ambiguity_preserved"]},
+                    "reason": {"enum": ["source_version_not_current", "no_current_verified_fidelity", "fidelity_relation_unbound", "fidelity_relation_mismatch", "no_current_authoritative_evidence", "authority_kind_mismatch", "source_ambiguity_unresolved", "source_ambiguity_preserved"]},
                     "fidelity_evidence_id": {"type": ["string", "null"], "format": "uuid"},
                     "authority_evidence_id": {"type": ["string", "null"], "format": "uuid"}
                 },
                 "allOf": [
+                    {
+                        "if": {"properties": {"reason": {"const": "source_version_not_current"}}},
+                        "then": {"properties": {
+                            "fidelity_evidence_id": {"type": "null"},
+                            "authority_evidence_id": {"type": "null"}
+                        }}
+                    },
                     {
                         "if": {"properties": {"reason": {"enum": ["fidelity_relation_unbound", "fidelity_relation_mismatch", "no_current_authoritative_evidence", "source_ambiguity_preserved"]}}},
                         "then": {"properties": {
@@ -703,6 +715,17 @@ mod tests {
         item.authority_evidence_id = None;
         item.validate()
             .expect("verified fidelity and absent authority are explicit");
+
+        item.reason = ClaimResearchStatusNonqualificationReason::SourceVersionNotCurrent;
+        assert_eq!(
+            item.validate()
+                .expect_err("a stale source head must not retain a fidelity locator")
+                .code,
+            "MCL_CLAIM_RESEARCH_STATUS_INVALID"
+        );
+        item.fidelity_evidence_id = None;
+        item.validate()
+            .expect("source currentness is derived without selecting evidence");
     }
 
     #[test]

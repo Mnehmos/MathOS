@@ -1158,6 +1158,32 @@ impl Application {
             return self
                 .finish_claim_research_status(&basis, empty_snapshot(ResearchStatus::NotStarted));
         }
+        if basis.current_source_head_version_hash.as_deref()
+            != Some(basis.source.version_hash.as_str())
+        {
+            let nonqualifications = basis
+                .formalizations
+                .iter()
+                .map(|formalization| ClaimResearchStatusNonqualification {
+                    formalization: formalization.formalization.clone(),
+                    reason: ClaimResearchStatusNonqualificationReason::SourceVersionNotCurrent,
+                    fidelity_evidence_id: None,
+                    authority_evidence_id: None,
+                })
+                .collect();
+            return self.finish_claim_research_status(
+                &basis,
+                ClaimResearchStatusSnapshot {
+                    schema_version:
+                        crate::domain::research_status::CLAIM_RESEARCH_STATUS_SCHEMA_VERSION
+                            .to_owned(),
+                    claim: claim.clone(),
+                    status: ResearchStatus::Open,
+                    witnesses: Vec::new(),
+                    nonqualifications,
+                },
+            );
+        }
 
         let mut witnesses = Vec::new();
         let mut nonqualifications = Vec::new();
@@ -6277,6 +6303,59 @@ mod tests {
         );
         assert_eq!(witness.fidelity_evidence_id, v2_evidence.evidence_id);
         assert_eq!(witness.authority_evidence_id, authority.evidence_id);
+        Ok(())
+    }
+
+    #[test]
+    fn claim_status_invalidates_terminal_witness_when_source_head_moves() -> Result<(), AppError> {
+        use crate::domain::{ClaimResearchStatusNonqualificationReason, ResearchStatus};
+
+        let mut fixture = local_publication_authority_fixture();
+        let (source, claim, _) = fixture_fidelity_lineage(&fixture);
+        fixture.application.promote_publication_authority(
+            &fixture.receipt.receipt_hash,
+            "publication-authority-test",
+            "claim-status-source-head-authority",
+            false,
+        )?;
+        add_fixture_verified_fidelity(&mut fixture, None, "source-head-proof-v1")?;
+        assert_eq!(
+            fixture.application.claim_research_status(&claim)?.status,
+            ResearchStatus::Proved
+        );
+
+        let current_source = fixture
+            .application
+            .get_record(&source.object_id, Some(&source.version_hash))?;
+        let mut successor_payload = current_source.payload.clone();
+        successor_payload["provenance_notes"] =
+            Value::String("source object advanced after the reviewed claim".to_owned());
+        fixture.application.version_record(
+            &current_source.object_id,
+            &current_source.version_hash,
+            &RecordDraft {
+                kind: RecordKind::Source,
+                schema_version: current_source.schema_version,
+                payload: successor_payload,
+                searchable_text: "successor source version".to_owned(),
+            },
+            "publication-authority-test",
+            "claim-status-successor-source",
+            false,
+        )?;
+
+        let open = fixture.application.claim_research_status(&claim)?;
+        assert_eq!(open.status, ResearchStatus::Open);
+        assert!(open.witnesses.is_empty());
+        let [nonqualification] = open.nonqualifications.as_slice() else {
+            panic!("one source-currentness nonqualification expected");
+        };
+        assert_eq!(
+            nonqualification.reason,
+            ClaimResearchStatusNonqualificationReason::SourceVersionNotCurrent
+        );
+        assert!(nonqualification.fidelity_evidence_id.is_none());
+        assert!(nonqualification.authority_evidence_id.is_none());
         Ok(())
     }
 

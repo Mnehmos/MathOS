@@ -53,11 +53,18 @@
       "required": ["formalization", "reason", "fidelity_evidence_id", "authority_evidence_id"],
       "properties": {
         "formalization": {"$ref": "#/$defs/exact_version_reference"},
-        "reason": {"enum": ["no_current_verified_fidelity", "fidelity_relation_unbound", "fidelity_relation_mismatch", "no_current_authoritative_evidence", "authority_kind_mismatch", "source_ambiguity_unresolved", "source_ambiguity_preserved"]},
+        "reason": {"enum": ["source_version_not_current", "no_current_verified_fidelity", "fidelity_relation_unbound", "fidelity_relation_mismatch", "no_current_authoritative_evidence", "authority_kind_mismatch", "source_ambiguity_unresolved", "source_ambiguity_preserved"]},
         "fidelity_evidence_id": {"type": ["string", "null"], "format": "uuid"},
         "authority_evidence_id": {"type": ["string", "null"], "format": "uuid"}
       },
       "allOf": [
+        {
+          "if": {"properties": {"reason": {"const": "source_version_not_current"}}},
+          "then": {"properties": {
+            "fidelity_evidence_id": {"type": "null"},
+            "authority_evidence_id": {"type": "null"}
+          }}
+        },
         {
           "if": {"properties": {"reason": {"enum": ["fidelity_relation_unbound", "fidelity_relation_mismatch", "no_current_authoritative_evidence", "source_ambiguity_preserved"]}}},
           "then": {"properties": {

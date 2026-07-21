@@ -60,7 +60,7 @@ An exact formalization with no review derives `unreviewed`. Earlier reviews rema
 
 Statement fidelity evidence is reviewed evidence, not proof evidence. It cannot prove or disprove a claim, approve axioms, establish novelty, or authorize publication by itself.
 
-The read-only `claim_research_status/1` service combines the two independent axes. It rehashes the exact source, claim, formalization, fidelity report, supporting artifacts, and full receipt-bound publication closure; enumerates every current formalization automatically; and rechecks the captured Store basis after replay. Only a polarity-consistent pair of current verified fidelity and current protected authority can yield `proved` or `disproved`. Missing or corrupt inputs fail closed. No status field, mutation command, evidence selector, or caller-authored verdict exists.
+The read-only `claim_research_status/1` service combines the two independent axes. It rehashes the exact source, claim, formalization, fidelity report, supporting artifacts, and full receipt-bound publication closure; enumerates every current formalization automatically; and rechecks the captured Store basis after replay. Only a polarity-consistent pair of current verified fidelity and current protected authority can yield `proved` or `disproved`. If the claim's exact source version is no longer that source object's live head, the result is `open/source_version_not_current` and historical witnesses do not qualify. Missing or corrupt inputs fail closed. No status field, mutation command, evidence selector, or caller-authored verdict exists.
 
 ## Commands
 
