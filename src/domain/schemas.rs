@@ -10,8 +10,10 @@ pub const SOURCE_SCHEMA_VERSION: &str = "source/1";
 pub const CLAIM_SCHEMA_VERSION: &str = "claim/1";
 pub const CONCEPT_SCHEMA_VERSION: &str = "concept/1";
 pub const FORMALIZATION_SCHEMA_VERSION: &str = "formalization/1";
+pub const LEARNING_UNIT_SCHEMA_VERSION: &str = "learning_unit/1";
 const MAX_TEXT_BYTES: usize = 1_048_576;
 const MAX_ITEMS: usize = 1_000;
+const MAX_LICENSE_BYTES: usize = 512;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,7 +78,7 @@ pub enum ClaimKind {
     MethodClaim,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExactVersionReference {
     pub object_id: String,
@@ -178,6 +180,91 @@ pub struct FormalizationPayload {
     pub verification_evidence_references: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearningUnitKind {
+    Motivation,
+    Definition,
+    Explanation,
+    Example,
+    Nonexample,
+    Counterexample,
+    Misconception,
+    WorkedProof,
+    Exercise,
+    MasteryCheck,
+    Application,
+    History,
+    FrontierNote,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearningTargetKind {
+    Claim,
+    Concept,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LearningTargetReference {
+    pub kind: LearningTargetKind,
+    pub object_id: String,
+    pub version_hash: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearningUnitReviewState {
+    Draft,
+    Reviewed,
+    Rejected,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LearningUnitReview {
+    pub state: LearningUnitReviewState,
+    pub reviewer: Option<String>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearningUnitTrainingStatus {
+    Ineligible,
+    Quarantined,
+    EligiblePrivate,
+    EligiblePublic,
+    HeldOutEvaluation,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LearningUnitPayload {
+    pub unit_kind: LearningUnitKind,
+    pub target: LearningTargetReference,
+    pub audience_track: String,
+    pub entry_assumptions: Vec<String>,
+    pub learning_objectives: Vec<String>,
+    pub hard_prerequisites: Vec<ExactVersionReference>,
+    pub soft_prerequisites: Vec<ExactVersionReference>,
+    pub grounded_source_references: Vec<ExactVersionReference>,
+    pub content_artifact_hash: String,
+    pub examples: Vec<ExactVersionReference>,
+    pub nonexamples: Vec<ExactVersionReference>,
+    pub counterexamples: Vec<ExactVersionReference>,
+    pub misconceptions: Vec<ExactVersionReference>,
+    pub exercises: Vec<ExactVersionReference>,
+    pub mastery_checks: Vec<ExactVersionReference>,
+    pub formalization_references: Vec<ExactVersionReference>,
+    pub application_references: Vec<ExactVersionReference>,
+    pub frontier_references: Vec<ExactVersionReference>,
+    pub review: LearningUnitReview,
+    pub license_expression: Option<String>,
+    pub training_status: LearningUnitTrainingStatus,
+}
+
 pub fn validate_record_payload(
     kind: RecordKind,
     schema_version: &str,
@@ -204,7 +291,11 @@ pub fn validate_record_payload(
             let formalization: FormalizationPayload = decode(kind, payload)?;
             validate_formalization(&formalization)
         }
-        RecordKind::LearningUnit => Ok(()),
+        RecordKind::LearningUnit => {
+            require_schema_version(kind, schema_version, LEARNING_UNIT_SCHEMA_VERSION)?;
+            let learning_unit: LearningUnitPayload = decode(kind, payload)?;
+            validate_learning_unit(&learning_unit)
+        }
     }
 }
 
@@ -271,7 +362,7 @@ pub fn concept_schema() -> Value {
             "description": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES},
             "subject_domains": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}},
             "formal_declarations": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "object", "additionalProperties": false, "required": ["environment_hash", "declaration_name"], "properties": {"environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "declaration_name": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}}}},
-            "external_taxonomy_crosswalks": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "object", "additionalProperties": false, "required": ["taxonomy_name", "external_id", "source_reference", "license_expression"], "properties": {"taxonomy_name": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}, "external_id": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}, "source_reference": reference.clone(), "license_expression": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}}}},
+            "external_taxonomy_crosswalks": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "object", "additionalProperties": false, "required": ["taxonomy_name", "external_id", "source_reference", "license_expression"], "properties": {"taxonomy_name": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}, "external_id": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}, "source_reference": reference.clone(), "license_expression": {"type": "string", "minLength": 1, "maxLength": MAX_LICENSE_BYTES}}}},
             "pedagogy_metadata_references": {"type": "array", "maxItems": MAX_ITEMS, "items": reference.clone()},
             "provenance_references": {"type": "array", "maxItems": MAX_ITEMS, "items": reference}
         }
@@ -300,6 +391,84 @@ pub fn formalization_schema() -> Value {
             "fidelity_evidence_references": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
             "verification_evidence_references": {"type": "array", "maxItems": MAX_ITEMS, "items": {"type": "string", "minLength": 1, "maxLength": 128}}
         }
+    })
+}
+
+pub fn learning_unit_schema() -> Value {
+    let exact_reference = exact_reference_schema();
+    let reference = json!({"$ref": "#/$defs/exactVersionReference"});
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://mnehmos.ai/mathos/schemas/learning-unit/1",
+        "title": "MathOS Canonical Learning Unit Payload v1",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "unit_kind", "target", "audience_track", "entry_assumptions",
+            "learning_objectives", "hard_prerequisites", "soft_prerequisites",
+            "grounded_source_references", "content_artifact_hash", "examples",
+            "nonexamples", "counterexamples", "misconceptions", "exercises",
+            "mastery_checks", "formalization_references", "application_references",
+            "frontier_references", "review", "license_expression", "training_status"
+        ],
+        "properties": {
+            "unit_kind": {"enum": ["motivation", "definition", "explanation", "example", "nonexample", "counterexample", "misconception", "worked_proof", "exercise", "mastery_check", "application", "history", "frontier_note"]},
+            "target": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "object_id", "version_hash"],
+                "properties": {
+                    "kind": {"enum": ["claim", "concept"]},
+                    "object_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+            },
+            "audience_track": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES},
+            "entry_assumptions": text_array_schema(),
+            "learning_objectives": text_array_schema(),
+            "hard_prerequisites": reference_array_schema(&reference),
+            "soft_prerequisites": reference_array_schema(&reference),
+            "grounded_source_references": reference_array_schema(&reference),
+            "content_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "examples": reference_array_schema(&reference),
+            "nonexamples": reference_array_schema(&reference),
+            "counterexamples": reference_array_schema(&reference),
+            "misconceptions": reference_array_schema(&reference),
+            "exercises": reference_array_schema(&reference),
+            "mastery_checks": reference_array_schema(&reference),
+            "formalization_references": reference_array_schema(&reference),
+            "application_references": reference_array_schema(&reference),
+            "frontier_references": reference_array_schema(&reference),
+            "review": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["state", "reviewer", "notes"],
+                "properties": {
+                    "state": {"enum": ["draft", "reviewed", "rejected"]},
+                    "reviewer": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+                    "notes": text_array_schema()
+                }
+            },
+            "license_expression": {"type": ["string", "null"], "minLength": 1, "maxLength": MAX_LICENSE_BYTES},
+            "training_status": {"enum": ["ineligible", "quarantined", "eligible_private", "eligible_public", "held_out_evaluation"]}
+        },
+        "$defs": {"exactVersionReference": exact_reference}
+    })
+}
+
+fn text_array_schema() -> Value {
+    json!({
+        "type": "array",
+        "maxItems": MAX_ITEMS,
+        "items": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES}
+    })
+}
+
+fn reference_array_schema(reference: &Value) -> Value {
+    json!({
+        "type": "array",
+        "maxItems": MAX_ITEMS,
+        "items": reference
     })
 }
 
@@ -416,11 +585,24 @@ fn validate_concept(concept: &ConceptPayload) -> Result<(), AppError> {
         )?;
         nonempty("formal declaration name", &declaration.declaration_name)?;
     }
+    let mut crosswalk_ids = std::collections::BTreeSet::new();
     for crosswalk in &concept.external_taxonomy_crosswalks {
         nonempty("taxonomy name", &crosswalk.taxonomy_name)?;
         nonempty("taxonomy external ID", &crosswalk.external_id)?;
-        nonempty("taxonomy license", &crosswalk.license_expression)?;
+        validate_license_expression(
+            &crosswalk.license_expression,
+            "MCL_TAXONOMY_LICENSE_INVALID",
+            "taxonomy crosswalk",
+        )?;
         validate_reference(&crosswalk.source_reference, "taxonomy source reference")?;
+        if !crosswalk_ids.insert((&crosswalk.taxonomy_name, &crosswalk.external_id)) {
+            return Err(AppError::new(
+                "MCL_TAXONOMY_CROSSWALK_DUPLICATE",
+                "concept contains a duplicate taxonomy name and external ID",
+                false,
+                "Keep one stable crosswalk per external taxonomy identity.",
+            ));
+        }
     }
     for reference in concept
         .pedagogy_metadata_references
@@ -469,6 +651,235 @@ fn validate_formalization(formalization: &FormalizationPayload) -> Result<(), Ap
         .chain(&formalization.verification_evidence_references)
     {
         bounded_text("formalization evidence reference", reference, 128)?;
+    }
+    Ok(())
+}
+
+fn validate_learning_unit(learning_unit: &LearningUnitPayload) -> Result<(), AppError> {
+    validate_reference(
+        &ExactVersionReference {
+            object_id: learning_unit.target.object_id.clone(),
+            version_hash: learning_unit.target.version_hash.clone(),
+        },
+        "learning unit target",
+    )?;
+    nonempty(
+        "learning unit audience track",
+        &learning_unit.audience_track,
+    )?;
+    valid_hash(
+        &learning_unit.content_artifact_hash,
+        "learning unit content artifact",
+    )?;
+
+    let text_collections = [
+        (
+            "learning unit entry assumptions",
+            &learning_unit.entry_assumptions,
+        ),
+        (
+            "learning unit objectives",
+            &learning_unit.learning_objectives,
+        ),
+        ("learning unit review notes", &learning_unit.review.notes),
+    ];
+    for (label, values) in text_collections {
+        bounded_items(label, values)?;
+        for value in values {
+            nonempty(label, value)?;
+        }
+    }
+    let total_text_bytes = learning_unit.audience_track.len()
+        + learning_unit
+            .entry_assumptions
+            .iter()
+            .chain(&learning_unit.learning_objectives)
+            .chain(&learning_unit.review.notes)
+            .map(String::len)
+            .sum::<usize>()
+        + learning_unit.review.reviewer.as_deref().map_or(0, str::len);
+    if total_text_bytes > MAX_TEXT_BYTES {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_TEXT_LIMIT",
+            "combined learning-unit metadata text exceeds the 1 MiB bound",
+            false,
+            "Move lesson prose into the content artifact and keep metadata concise.",
+        ));
+    }
+    if learning_unit.learning_objectives.is_empty() {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_OBJECTIVE_REQUIRED",
+            "learning units require at least one explicit learning objective",
+            false,
+            "State the observable outcome this unit is intended to teach.",
+        ));
+    }
+    if learning_unit.grounded_source_references.is_empty() {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_GROUNDING_REQUIRED",
+            "learning units require at least one exact grounded source reference",
+            false,
+            "Ground the unit in an exact canonical source version.",
+        ));
+    }
+
+    let reference_collections = [
+        ("hard prerequisites", &learning_unit.hard_prerequisites),
+        ("soft prerequisites", &learning_unit.soft_prerequisites),
+        (
+            "grounded sources",
+            &learning_unit.grounded_source_references,
+        ),
+        ("examples", &learning_unit.examples),
+        ("nonexamples", &learning_unit.nonexamples),
+        ("counterexamples", &learning_unit.counterexamples),
+        ("misconceptions", &learning_unit.misconceptions),
+        ("exercises", &learning_unit.exercises),
+        ("mastery checks", &learning_unit.mastery_checks),
+        ("formalizations", &learning_unit.formalization_references),
+        ("applications", &learning_unit.application_references),
+        ("frontier notes", &learning_unit.frontier_references),
+    ];
+    for (label, references) in reference_collections {
+        bounded_items(label, references)?;
+        let mut unique = std::collections::BTreeSet::new();
+        for reference in references {
+            validate_reference(reference, label)?;
+            if !unique.insert(reference) {
+                return Err(AppError::new(
+                    "MCL_PEDAGOGY_REFERENCE_DUPLICATE",
+                    format!("learning unit {label} contain a duplicate exact reference"),
+                    false,
+                    "Keep each exact canonical reference at most once per field.",
+                ));
+            }
+        }
+    }
+    let total_references = 1
+        + learning_unit.hard_prerequisites.len()
+        + learning_unit.soft_prerequisites.len()
+        + learning_unit.grounded_source_references.len()
+        + learning_unit.examples.len()
+        + learning_unit.nonexamples.len()
+        + learning_unit.counterexamples.len()
+        + learning_unit.misconceptions.len()
+        + learning_unit.exercises.len()
+        + learning_unit.mastery_checks.len()
+        + learning_unit.formalization_references.len()
+        + learning_unit.application_references.len()
+        + learning_unit.frontier_references.len();
+    if total_references > MAX_ITEMS {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_REFERENCE_LIMIT",
+            "combined learning-unit references exceed the 1000-reference bound",
+            false,
+            "Split the unit or reduce its direct grounding and relationship set.",
+        ));
+    }
+    if learning_unit
+        .hard_prerequisites
+        .iter()
+        .any(|reference| learning_unit.soft_prerequisites.contains(reference))
+    {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_PREREQUISITE_AMBIGUOUS",
+            "the same exact learning unit cannot be both a hard and soft prerequisite",
+            false,
+            "Classify each prerequisite as hard or soft, never both.",
+        ));
+    }
+    if learning_unit.hard_prerequisites.len() + learning_unit.soft_prerequisites.len() > 999 {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_PREREQUISITE_LIMIT",
+            "combined hard and soft prerequisites exceed the 999-edge validation bound",
+            false,
+            "Split the curriculum unit or reduce its direct prerequisite set.",
+        ));
+    }
+
+    match learning_unit.review.state {
+        LearningUnitReviewState::Draft => {
+            if learning_unit.review.reviewer.is_some() || !learning_unit.review.notes.is_empty() {
+                return Err(AppError::new(
+                    "MCL_PEDAGOGY_REVIEW_INVALID",
+                    "draft learning units cannot carry reviewer identity or review notes",
+                    false,
+                    "Use the controlled pedagogy review action to record a decision.",
+                ));
+            }
+        }
+        LearningUnitReviewState::Reviewed | LearningUnitReviewState::Rejected => {
+            let reviewer = learning_unit.review.reviewer.as_deref().ok_or_else(|| {
+                AppError::new(
+                    "MCL_PEDAGOGY_REVIEW_INVALID",
+                    "reviewed or rejected learning units require reviewer identity",
+                    false,
+                    "Use the controlled pedagogy review action with actor attribution.",
+                )
+            })?;
+            bounded_text("learning unit reviewer", reviewer, 256)?;
+            if learning_unit.review.notes.is_empty() {
+                return Err(AppError::new(
+                    "MCL_PEDAGOGY_REVIEW_INVALID",
+                    "reviewed or rejected learning units require review notes",
+                    false,
+                    "Record a bounded rationale for the review decision.",
+                ));
+            }
+        }
+    }
+
+    if let Some(license) = &learning_unit.license_expression {
+        validate_license_expression(license, "MCL_PEDAGOGY_LICENSE_INVALID", "learning unit")?;
+    }
+    if matches!(
+        learning_unit.training_status,
+        LearningUnitTrainingStatus::EligiblePrivate | LearningUnitTrainingStatus::EligiblePublic
+    ) && (learning_unit.review.state != LearningUnitReviewState::Reviewed
+        || learning_unit.license_expression.is_none())
+    {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_TRAINING_POLICY",
+            "training-eligible learning units require reviewed state and a resolved license",
+            false,
+            "Complete controlled review and resolve the content license before eligibility.",
+        ));
+    }
+    if learning_unit.review.state == LearningUnitReviewState::Rejected
+        && !matches!(
+            learning_unit.training_status,
+            LearningUnitTrainingStatus::Ineligible | LearningUnitTrainingStatus::Quarantined
+        )
+    {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_TRAINING_POLICY",
+            "rejected learning units cannot be training eligible or held out for evaluation",
+            false,
+            "Mark rejected content ineligible or quarantined.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_license_expression(
+    value: &str,
+    code: &'static str,
+    label: &str,
+) -> Result<(), AppError> {
+    let trimmed = value.trim();
+    let valid = !trimmed.is_empty()
+        && trimmed.len() <= MAX_LICENSE_BYTES
+        && trimmed.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'+' | b'(' | b')' | b' ')
+        })
+        && !matches!(trimmed.to_ascii_lowercase().as_str(), "unknown" | "none");
+    if !valid {
+        return Err(AppError::new(
+            code,
+            format!("{label} license expression is unresolved or malformed"),
+            false,
+            "Supply a concise reviewed SPDX expression.",
+        ));
     }
     Ok(())
 }
@@ -557,10 +968,15 @@ mod tests {
             "../../schemas/formalization/formalization-1.schema.json"
         ))
         .expect("committed formalization schema");
+        let committed_learning_unit: Value = serde_json::from_str(include_str!(
+            "../../schemas/pedagogy/learning-unit-1.schema.json"
+        ))
+        .expect("committed learning-unit schema");
         assert_eq!(committed_source, source_schema());
         assert_eq!(committed_claim, claim_schema());
         assert_eq!(committed_concept, concept_schema());
         assert_eq!(committed_formalization, formalization_schema());
+        assert_eq!(committed_learning_unit, learning_unit_schema());
     }
 
     #[test]
@@ -716,6 +1132,67 @@ mod tests {
             .expect_err("explicit null polarity fails closed")
             .code,
             "MCL_SCHEMA_VALIDATION_FAILED"
+        );
+    }
+
+    #[test]
+    fn learning_units_fail_closed_on_unknown_fields_and_training_policy() {
+        let mut payload = json!({
+            "unit_kind": "explanation",
+            "target": {"kind": "claim", "object_id": "claim", "version_hash": "a".repeat(64)},
+            "audience_track": "Pilot A",
+            "entry_assumptions": [],
+            "learning_objectives": ["Distinguish the original claim from its repair."],
+            "hard_prerequisites": [],
+            "soft_prerequisites": [],
+            "grounded_source_references": [{"object_id": "source", "version_hash": "b".repeat(64)}],
+            "content_artifact_hash": "c".repeat(64),
+            "examples": [],
+            "nonexamples": [],
+            "counterexamples": [],
+            "misconceptions": [],
+            "exercises": [],
+            "mastery_checks": [],
+            "formalization_references": [],
+            "application_references": [],
+            "frontier_references": [],
+            "review": {"state": "draft", "reviewer": null, "notes": []},
+            "license_expression": "CC-BY-4.0",
+            "training_status": "ineligible"
+        });
+        validate_record_payload(
+            RecordKind::LearningUnit,
+            LEARNING_UNIT_SCHEMA_VERSION,
+            &payload,
+        )
+        .expect("well-formed draft");
+
+        payload["authoritative"] = json!(true);
+        assert_eq!(
+            validate_record_payload(
+                RecordKind::LearningUnit,
+                LEARNING_UNIT_SCHEMA_VERSION,
+                &payload,
+            )
+            .expect_err("unknown authority field")
+            .code,
+            "MCL_SCHEMA_VALIDATION_FAILED"
+        );
+        payload
+            .as_object_mut()
+            .expect("learning unit object")
+            .remove("authoritative");
+
+        payload["training_status"] = json!("eligible_public");
+        assert_eq!(
+            validate_record_payload(
+                RecordKind::LearningUnit,
+                LEARNING_UNIT_SCHEMA_VERSION,
+                &payload,
+            )
+            .expect_err("draft cannot be eligible")
+            .code,
+            "MCL_PEDAGOGY_TRAINING_POLICY"
         );
     }
 }

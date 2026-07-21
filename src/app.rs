@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -15,7 +15,9 @@ use crate::canonical::{canonical_json, record_version_hash};
 use crate::config::ResolvedConfig;
 use crate::domain::schemas::{
     CLAIM_SCHEMA_VERSION, ClaimPayload, ExactVersionReference, FormalSystem,
-    FormalizationClaimPolarity, FormalizationPayload, SourcePayload, SourceType,
+    FormalizationClaimPolarity, FormalizationPayload, LEARNING_UNIT_SCHEMA_VERSION,
+    LearningTargetKind, LearningUnitKind, LearningUnitPayload, LearningUnitReviewState,
+    LearningUnitTrainingStatus, RedactionClass, RedistributionStatus, SourcePayload, SourceType,
     validate_record_payload,
 };
 use crate::domain::{
@@ -74,6 +76,45 @@ pub struct RecordMutationOutcome {
 pub struct EdgeMutationOutcome {
     pub dry_run: bool,
     pub edge: Option<EdgeSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LearningUnitValidationReport {
+    pub record: RecordSnapshot,
+    pub content_artifact: ArtifactSnapshot,
+    pub resolved_reference_count: usize,
+    pub review_state: LearningUnitReviewState,
+    pub training_status: LearningUnitTrainingStatus,
+    pub valid: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PedagogyPathMode {
+    Prerequisites,
+    Recommended,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PedagogyPathEntry {
+    pub order: usize,
+    pub depth: u32,
+    pub unit: RecordSnapshot,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PedagogyPathSnapshot {
+    pub mode: PedagogyPathMode,
+    pub include_soft: bool,
+    pub root: ExactVersionReference,
+    pub units: Vec<PedagogyPathEntry>,
+    pub edges: Vec<GraphTraversalHit>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PedagogyLinkPayload {
+    rationale: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -4065,6 +4106,9 @@ impl Application {
         dry_run: bool,
     ) -> Result<RecordMutationOutcome, AppError> {
         validate_attribution(actor, idempotency_key)?;
+        if draft.kind == RecordKind::LearningUnit {
+            self.validate_authored_learning_unit_draft(draft)?;
+        }
         let (proposed_version_hash, record) = if dry_run {
             (self.store.validate_record_create(draft)?, None)
         } else {
@@ -4088,6 +4132,9 @@ impl Application {
         dry_run: bool,
     ) -> Result<RecordMutationOutcome, AppError> {
         validate_attribution(actor, idempotency_key)?;
+        if draft.kind == RecordKind::LearningUnit {
+            self.validate_authored_learning_unit_draft(draft)?;
+        }
         let (proposed_version_hash, record) = if dry_run {
             (
                 self.store
@@ -4141,6 +4188,218 @@ impl Application {
         self.store.search_records(query, limit)
     }
 
+    pub fn validate_learning_unit(
+        &self,
+        object_id: &str,
+        version_hash: &str,
+    ) -> Result<LearningUnitValidationReport, AppError> {
+        let record = self.validate_exact_current_record(
+            &ExactVersionReference {
+                object_id: object_id.to_owned(),
+                version_hash: version_hash.to_owned(),
+            },
+            RecordKind::LearningUnit,
+            "learning unit",
+        )?;
+        let payload = decode_learning_unit(&record.payload)?;
+        let content_artifact = self.validate_learning_unit_dependencies(&payload)?;
+        self.validate_learning_unit_prerequisite_links(&record, &payload)?;
+        Ok(LearningUnitValidationReport {
+            resolved_reference_count: learning_unit_reference_count(&payload),
+            review_state: payload.review.state,
+            training_status: payload.training_status,
+            record,
+            content_artifact,
+            valid: true,
+        })
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "closed review transition has explicit immutable inputs"
+    )]
+    pub fn review_learning_unit(
+        &mut self,
+        object_id: &str,
+        expected_head: &str,
+        decision: LearningUnitReviewState,
+        training_status: LearningUnitTrainingStatus,
+        notes: Vec<String>,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<RecordMutationOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        if !matches!(
+            decision,
+            LearningUnitReviewState::Reviewed | LearningUnitReviewState::Rejected
+        ) {
+            return Err(AppError::new(
+                "MCL_PEDAGOGY_REVIEW_DECISION_INVALID",
+                "pedagogy review can decide only `reviewed` or `rejected`",
+                false,
+                "Revise authored content through `pedagogy version`; use review only for a decision.",
+            ));
+        }
+        let current = self.get_record(object_id, Some(expected_head))?;
+        require_kind(&current, RecordKind::LearningUnit, "learning unit review")?;
+        let mut payload = decode_learning_unit(&current.payload)?;
+        if payload.review.state != LearningUnitReviewState::Draft {
+            return Err(AppError::new(
+                "MCL_PEDAGOGY_REVIEW_TRANSITION_INVALID",
+                "only a draft learning-unit version can receive a review decision",
+                false,
+                "Create a new draft version before recording another review decision.",
+            ));
+        }
+        payload.review.state = decision;
+        payload.review.reviewer = Some(actor.to_owned());
+        payload.review.notes = notes;
+        payload.training_status = training_status;
+        let payload_value = serde_json::to_value(&payload).map_err(|error| {
+            AppError::new(
+                "MCL_PEDAGOGY_SERIALIZATION_FAILED",
+                error.to_string(),
+                false,
+                "Report this deterministic learning-unit serialization defect.",
+            )
+        })?;
+        validate_record_payload(
+            RecordKind::LearningUnit,
+            LEARNING_UNIT_SCHEMA_VERSION,
+            &payload_value,
+        )?;
+        self.validate_learning_unit_dependencies(&payload)?;
+        let draft = RecordDraft {
+            kind: RecordKind::LearningUnit,
+            schema_version: LEARNING_UNIT_SCHEMA_VERSION.to_owned(),
+            searchable_text: learning_unit_searchable_text(&payload),
+            payload: payload_value,
+        };
+        let (proposed_version_hash, record) = if dry_run {
+            (
+                self.store
+                    .validate_record_version(object_id, expected_head, &draft)?,
+                None,
+            )
+        } else {
+            let record = self.store.version_record(
+                object_id,
+                expected_head,
+                &draft,
+                actor,
+                idempotency_key,
+            )?;
+            (record.version_hash.clone(), Some(record))
+        };
+        Ok(RecordMutationOutcome {
+            dry_run,
+            proposed_version_hash,
+            record,
+        })
+    }
+
+    pub fn create_pedagogy_link(
+        &mut self,
+        draft: &EdgeDraft,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<EdgeMutationOutcome, AppError> {
+        if !is_pedagogy_edge(draft.kind) {
+            return Err(AppError::new(
+                "MCL_PEDAGOGY_EDGE_KIND_INVALID",
+                format!("`{}` is not a pedagogy edge kind", draft.kind.as_str()),
+                false,
+                "Use a closed `pedagogy.*` edge kind for pedagogy link.",
+            ));
+        }
+        self.create_edge(draft, actor, idempotency_key, dry_run)
+    }
+
+    pub fn pedagogy_path(
+        &self,
+        root: &ExactVersionReference,
+        mode: PedagogyPathMode,
+        include_soft: bool,
+        max_depth: u32,
+        limit: usize,
+    ) -> Result<PedagogyPathSnapshot, AppError> {
+        if mode == PedagogyPathMode::Recommended && include_soft {
+            return Err(AppError::new(
+                "MCL_PEDAGOGY_PATH_INPUT_INVALID",
+                "recommended paths do not accept soft-prerequisite expansion",
+                false,
+                "Remove `include_soft` or select prerequisite mode.",
+            ));
+        }
+        let root_report = self.validate_learning_unit(&root.object_id, &root.version_hash)?;
+        require_reviewed_path_unit(&root_report.record)?;
+        let mut edge_kinds = match mode {
+            PedagogyPathMode::Prerequisites => vec![EdgeKind::PedagogyHardPrerequisite],
+            PedagogyPathMode::Recommended => vec![EdgeKind::PedagogyRecommendedNext],
+        };
+        if include_soft {
+            edge_kinds.push(EdgeKind::PedagogySoftPrerequisite);
+        }
+        let edges = self.traverse_graph(&GraphTraversalRequest {
+            root_object_id: root.object_id.clone(),
+            root_version_hash: root.version_hash.clone(),
+            direction: TraversalDirection::Outgoing,
+            edge_kinds,
+            max_depth,
+            limit,
+        })?;
+        let mut reached = BTreeMap::from([(root.clone(), 0_u32)]);
+        for hit in &edges {
+            let reference = ExactVersionReference {
+                object_id: hit.edge.target_object_id.clone(),
+                version_hash: hit.edge.target_version_hash.clone(),
+            };
+            let report =
+                self.validate_learning_unit(&reference.object_id, &reference.version_hash)?;
+            require_reviewed_path_unit(&report.record)?;
+            if reference == *root {
+                continue;
+            }
+            reached
+                .entry(reference)
+                .and_modify(|depth| match mode {
+                    PedagogyPathMode::Prerequisites => *depth = (*depth).max(hit.depth),
+                    PedagogyPathMode::Recommended => *depth = (*depth).min(hit.depth),
+                })
+                .or_insert(hit.depth);
+        }
+        let mut ordered = reached.into_iter().collect::<Vec<_>>();
+        ordered.sort_by(
+            |(left_reference, left_depth), (right_reference, right_depth)| {
+                let depth_order = match mode {
+                    PedagogyPathMode::Prerequisites => right_depth.cmp(left_depth),
+                    PedagogyPathMode::Recommended => left_depth.cmp(right_depth),
+                };
+                depth_order.then_with(|| left_reference.cmp(right_reference))
+            },
+        );
+        let units = ordered
+            .into_iter()
+            .enumerate()
+            .map(|(order, (reference, depth))| {
+                Ok(PedagogyPathEntry {
+                    order,
+                    depth,
+                    unit: self.get_record(&reference.object_id, Some(&reference.version_hash))?,
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+        Ok(PedagogyPathSnapshot {
+            mode,
+            include_soft,
+            root: root.clone(),
+            units,
+            edges,
+        })
+    }
+
     pub fn create_edge(
         &mut self,
         draft: &EdgeDraft,
@@ -4149,6 +4408,9 @@ impl Application {
         dry_run: bool,
     ) -> Result<EdgeMutationOutcome, AppError> {
         validate_attribution(actor, idempotency_key)?;
+        if is_pedagogy_edge(draft.kind) {
+            self.validate_pedagogy_edge(draft)?;
+        }
         let edge = if dry_run {
             self.store.validate_edge_create(draft)?;
             None
@@ -4156,6 +4418,391 @@ impl Application {
             Some(self.store.create_edge(draft, actor, idempotency_key)?)
         };
         Ok(EdgeMutationOutcome { dry_run, edge })
+    }
+
+    fn validate_authored_learning_unit_draft(&self, draft: &RecordDraft) -> Result<(), AppError> {
+        validate_record_payload(draft.kind, &draft.schema_version, &draft.payload)?;
+        let payload = decode_learning_unit(&draft.payload)?;
+        if payload.review.state != LearningUnitReviewState::Draft
+            || !matches!(
+                payload.training_status,
+                LearningUnitTrainingStatus::Ineligible | LearningUnitTrainingStatus::Quarantined
+            )
+        {
+            return Err(AppError::new(
+                "MCL_PEDAGOGY_AUTHORED_STATE_INVALID",
+                "authored learning-unit proposals and revisions must be draft and ineligible or quarantined",
+                false,
+                "Use the controlled pedagogy review action to decide review and training state.",
+            ));
+        }
+        self.validate_learning_unit_dependencies(&payload)?;
+        Ok(())
+    }
+
+    fn validate_learning_unit_dependencies(
+        &self,
+        payload: &LearningUnitPayload,
+    ) -> Result<ArtifactSnapshot, AppError> {
+        let target_kind = match payload.target.kind {
+            LearningTargetKind::Claim => RecordKind::Claim,
+            LearningTargetKind::Concept => RecordKind::Concept,
+        };
+        self.validate_exact_current_record(
+            &ExactVersionReference {
+                object_id: payload.target.object_id.clone(),
+                version_hash: payload.target.version_hash.clone(),
+            },
+            target_kind,
+            "learning unit target",
+        )?;
+
+        let mut grounded_sources = Vec::with_capacity(payload.grounded_source_references.len());
+        for reference in &payload.grounded_source_references {
+            grounded_sources.push(self.validate_exact_current_record(
+                reference,
+                RecordKind::Source,
+                "learning unit grounded source",
+            )?);
+        }
+        for reference in payload
+            .hard_prerequisites
+            .iter()
+            .chain(&payload.soft_prerequisites)
+        {
+            self.validate_exact_current_record(
+                reference,
+                RecordKind::LearningUnit,
+                "learning unit prerequisite",
+            )?;
+        }
+        for reference in &payload.formalization_references {
+            self.validate_exact_current_record(
+                reference,
+                RecordKind::Formalization,
+                "learning unit formalization",
+            )?;
+        }
+        self.validate_related_units(&payload.examples, LearningUnitKind::Example, "example")?;
+        self.validate_related_units(
+            &payload.nonexamples,
+            LearningUnitKind::Nonexample,
+            "nonexample",
+        )?;
+        self.validate_related_units(
+            &payload.counterexamples,
+            LearningUnitKind::Counterexample,
+            "counterexample",
+        )?;
+        self.validate_related_units(
+            &payload.misconceptions,
+            LearningUnitKind::Misconception,
+            "misconception",
+        )?;
+        self.validate_related_units(&payload.exercises, LearningUnitKind::Exercise, "exercise")?;
+        self.validate_related_units(
+            &payload.mastery_checks,
+            LearningUnitKind::MasteryCheck,
+            "mastery check",
+        )?;
+        self.validate_related_units(
+            &payload.application_references,
+            LearningUnitKind::Application,
+            "application",
+        )?;
+        self.validate_related_units(
+            &payload.frontier_references,
+            LearningUnitKind::FrontierNote,
+            "frontier note",
+        )?;
+
+        let artifact = self.get_artifact(&payload.content_artifact_hash)?;
+        if !matches!(
+            artifact.media_type,
+            ArtifactMediaType::PlainText | ArtifactMediaType::Json
+        ) || artifact.byte_size > 1_048_576
+            || artifact
+                .semantic_metadata
+                .get("artifact_role")
+                .is_none_or(|role| role != "learning_unit_content")
+        {
+            return Err(AppError::new(
+                "MCL_PEDAGOGY_CONTENT_ARTIFACT_INVALID",
+                "learning-unit content must be verified text or JSON with artifact_role=learning_unit_content",
+                false,
+                "Ingest bounded pedagogical content with the committed artifact metadata role.",
+            ));
+        }
+        if artifact.license_expression != payload.license_expression {
+            return Err(AppError::new(
+                "MCL_PEDAGOGY_LICENSE_MISMATCH",
+                "learning-unit license does not exactly match its content artifact metadata",
+                false,
+                "Use the reviewed license recorded on the exact content artifact.",
+            ));
+        }
+        let verified_artifact = self
+            .verify_artifact(&payload.content_artifact_hash)?
+            .artifact;
+        if verified_artifact != artifact {
+            return Err(AppError::new(
+                "MCL_PEDAGOGY_CONTENT_ARTIFACT_INVALID",
+                "learning-unit content metadata changed while its bytes were being verified",
+                true,
+                "Retry against a stable artifact store and quarantine the instance if this repeats.",
+            ));
+        }
+        if matches!(
+            payload.training_status,
+            LearningUnitTrainingStatus::EligiblePrivate
+                | LearningUnitTrainingStatus::EligiblePublic
+        ) {
+            for source in grounded_sources {
+                let source_payload: SourcePayload = serde_json::from_value(source.payload)
+                    .map_err(|error| {
+                        AppError::new(
+                            "MCL_PEDAGOGY_SOURCE_INVALID",
+                            format!("grounded source could not be decoded: {error}"),
+                            false,
+                            "Quarantine the source and restore a schema-valid canonical version.",
+                        )
+                    })?;
+                if source_payload.redistribution_status != RedistributionStatus::Allowed
+                    || source_payload
+                        .license_expression
+                        .as_deref()
+                        .is_none_or(|license| {
+                            license.trim().is_empty()
+                                || matches!(
+                                    license.trim().to_ascii_lowercase().as_str(),
+                                    "unknown" | "none"
+                                )
+                        })
+                    || (payload.training_status == LearningUnitTrainingStatus::EligiblePublic
+                        && source_payload.redaction_class != RedactionClass::Public)
+                {
+                    return Err(AppError::new(
+                        "MCL_PEDAGOGY_TRAINING_POLICY",
+                        "a training-eligible learning unit has an unresolved, restricted, or nonpublic grounded source",
+                        false,
+                        "Resolve source rights and redaction before marking derived content eligible.",
+                    ));
+                }
+            }
+            if payload.training_status == LearningUnitTrainingStatus::EligiblePublic
+                && artifact.restriction != ArtifactRestriction::Public
+            {
+                return Err(AppError::new(
+                    "MCL_PEDAGOGY_TRAINING_POLICY",
+                    "public training eligibility requires a public content artifact",
+                    false,
+                    "Use eligible_private or publish the content under reviewed public metadata.",
+                ));
+            }
+        }
+        Ok(artifact)
+    }
+
+    fn validate_related_units(
+        &self,
+        references: &[ExactVersionReference],
+        expected_unit_kind: LearningUnitKind,
+        label: &str,
+    ) -> Result<(), AppError> {
+        for reference in references {
+            let record = self.validate_exact_current_record(
+                reference,
+                RecordKind::LearningUnit,
+                &format!("learning unit {label}"),
+            )?;
+            let related = decode_learning_unit(&record.payload)?;
+            if related.unit_kind != expected_unit_kind {
+                return Err(AppError::new(
+                    "MCL_PEDAGOGY_RELATED_KIND_INVALID",
+                    format!("{label} reference resolves to `{:?}`", related.unit_kind),
+                    false,
+                    format!("Reference an exact `{expected_unit_kind:?}` learning unit."),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_exact_current_record(
+        &self,
+        reference: &ExactVersionReference,
+        expected_kind: RecordKind,
+        label: &str,
+    ) -> Result<RecordSnapshot, AppError> {
+        let exact = self
+            .get_record(&reference.object_id, Some(&reference.version_hash))
+            .map_err(|error| pedagogy_reference_error(label, error.message))?;
+        require_kind(&exact, expected_kind, label)?;
+        validate_record_payload(exact.kind, &exact.schema_version, &exact.payload)
+            .map_err(|error| pedagogy_reference_error(label, error.message))?;
+        let current = self
+            .get_record(&reference.object_id, None)
+            .map_err(|error| pedagogy_reference_error(label, error.message))?;
+        if current.version_hash != reference.version_hash {
+            return Err(AppError::new(
+                "MCL_PEDAGOGY_REFERENCE_STALE",
+                format!(
+                    "{label} {}@{} is not current; head is {}",
+                    reference.object_id, reference.version_hash, current.version_hash
+                ),
+                false,
+                "Rebase the learning unit on current exact canonical references.",
+            ));
+        }
+        Ok(exact)
+    }
+
+    fn validate_pedagogy_edge(&self, draft: &EdgeDraft) -> Result<(), AppError> {
+        let link: PedagogyLinkPayload =
+            serde_json::from_value(draft.payload.clone()).map_err(|error| {
+                AppError::new(
+                    "MCL_PEDAGOGY_LINK_PAYLOAD_INVALID",
+                    format!("pedagogy link payload must contain only `rationale`: {error}"),
+                    false,
+                    "Supply one bounded nonempty rationale.",
+                )
+            })?;
+        if link.rationale.trim().is_empty() || link.rationale.len() > 1_048_576 {
+            return Err(AppError::new(
+                "MCL_PEDAGOGY_LINK_PAYLOAD_INVALID",
+                "pedagogy link rationale must be nonempty and bounded",
+                false,
+                "Supply one rationale no larger than 1 MiB.",
+            ));
+        }
+        let source_ref = ExactVersionReference {
+            object_id: draft.source_object_id.clone(),
+            version_hash: draft.source_version_hash.clone(),
+        };
+        let target_ref = ExactVersionReference {
+            object_id: draft.target_object_id.clone(),
+            version_hash: draft.target_version_hash.clone(),
+        };
+        let source = self.validate_exact_current_record(
+            &source_ref,
+            RecordKind::LearningUnit,
+            "pedagogy link source",
+        )?;
+        let source_payload = decode_learning_unit(&source.payload)?;
+        match draft.kind {
+            EdgeKind::PedagogyHardPrerequisite | EdgeKind::PedagogySoftPrerequisite => {
+                self.validate_exact_current_record(
+                    &target_ref,
+                    RecordKind::LearningUnit,
+                    "pedagogy prerequisite target",
+                )?;
+                let declared = if draft.kind == EdgeKind::PedagogyHardPrerequisite {
+                    &source_payload.hard_prerequisites
+                } else {
+                    &source_payload.soft_prerequisites
+                };
+                if !declared.contains(&target_ref) {
+                    return Err(AppError::new(
+                        "MCL_PEDAGOGY_LINK_UNDECLARED",
+                        "prerequisite edge is not declared by the exact source learning-unit payload",
+                        false,
+                        "Version the source draft with the exact prerequisite before linking it.",
+                    ));
+                }
+            }
+            EdgeKind::PedagogyRecommendedNext => {
+                self.validate_exact_current_record(
+                    &target_ref,
+                    RecordKind::LearningUnit,
+                    "recommended-next target",
+                )?;
+            }
+            EdgeKind::PedagogyMotivates
+            | EdgeKind::PedagogyExampleOf
+            | EdgeKind::PedagogyCounterexampleTo
+            | EdgeKind::PedagogyMisconceptionFor => {
+                let expected_kind = match source_payload.target.kind {
+                    LearningTargetKind::Claim => RecordKind::Claim,
+                    LearningTargetKind::Concept => RecordKind::Concept,
+                };
+                self.validate_exact_current_record(
+                    &target_ref,
+                    expected_kind,
+                    "pedagogy semantic target",
+                )?;
+                if source_payload.target.object_id != target_ref.object_id
+                    || source_payload.target.version_hash != target_ref.version_hash
+                {
+                    return Err(AppError::new(
+                        "MCL_PEDAGOGY_LINK_TARGET_MISMATCH",
+                        "pedagogy semantic edge does not target the unit's exact declared claim or concept",
+                        false,
+                        "Link the unit to its exact declared target.",
+                    ));
+                }
+            }
+            _ => unreachable!("caller filtered pedagogy edge kinds"),
+        }
+        Ok(())
+    }
+
+    fn validate_learning_unit_prerequisite_links(
+        &self,
+        record: &RecordSnapshot,
+        payload: &LearningUnitPayload,
+    ) -> Result<(), AppError> {
+        let expected_hard = payload
+            .hard_prerequisites
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let expected_soft = payload
+            .soft_prerequisites
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let limit = (expected_hard.len() + expected_soft.len() + 1).min(1_000);
+        let hits = self.traverse_graph(&GraphTraversalRequest {
+            root_object_id: record.object_id.clone(),
+            root_version_hash: record.version_hash.clone(),
+            direction: TraversalDirection::Outgoing,
+            edge_kinds: vec![
+                EdgeKind::PedagogyHardPrerequisite,
+                EdgeKind::PedagogySoftPrerequisite,
+            ],
+            max_depth: 1,
+            limit,
+        })?;
+        let observed_count = hits.len();
+        let mut actual_hard = BTreeSet::new();
+        let mut actual_soft = BTreeSet::new();
+        for hit in hits {
+            let reference = ExactVersionReference {
+                object_id: hit.edge.target_object_id,
+                version_hash: hit.edge.target_version_hash,
+            };
+            match hit.edge.kind {
+                EdgeKind::PedagogyHardPrerequisite => {
+                    actual_hard.insert(reference);
+                }
+                EdgeKind::PedagogySoftPrerequisite => {
+                    actual_soft.insert(reference);
+                }
+                _ => unreachable!("traversal filtered prerequisite kinds"),
+            }
+        }
+        if observed_count != expected_hard.len() + expected_soft.len()
+            || actual_hard != expected_hard
+            || actual_soft != expected_soft
+        {
+            return Err(AppError::new(
+                "MCL_PEDAGOGY_PREREQUISITE_LINK_MISMATCH",
+                "exact hard/soft prerequisite edges do not match the learning-unit payload",
+                false,
+                "Create the missing exact pedagogy links or revise the draft declarations.",
+            ));
+        }
+        Ok(())
     }
 
     pub fn get_edge(&self, edge_id: &str) -> Result<EdgeSnapshot, AppError> {
@@ -4227,6 +4874,113 @@ impl Application {
     pub fn verify_run_chain(&self, run_id: &str) -> Result<RunChainReport, AppError> {
         self.store.verify_run_chain(run_id)
     }
+}
+
+fn decode_learning_unit(payload: &Value) -> Result<LearningUnitPayload, AppError> {
+    serde_json::from_value(payload.clone()).map_err(|error| {
+        AppError::new(
+            "MCL_PEDAGOGY_PAYLOAD_INVALID",
+            format!("learning-unit payload could not be decoded after validation: {error}"),
+            false,
+            "Submit one complete payload matching learning_unit/1.",
+        )
+    })
+}
+
+fn require_kind(
+    record: &RecordSnapshot,
+    expected: RecordKind,
+    label: &str,
+) -> Result<(), AppError> {
+    if record.kind != expected {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_REFERENCE_KIND_INVALID",
+            format!("{label} resolves to `{}`, not `{expected}`", record.kind),
+            false,
+            "Use an exact canonical reference of the required kind.",
+        ));
+    }
+    Ok(())
+}
+
+fn pedagogy_reference_error(label: &str, detail: impl std::fmt::Display) -> AppError {
+    AppError::new(
+        "MCL_PEDAGOGY_REFERENCE_INVALID",
+        format!("{label} does not resolve exactly: {detail}"),
+        false,
+        "Use an exact current object and version returned by canonical lookup.",
+    )
+}
+
+fn is_pedagogy_edge(kind: EdgeKind) -> bool {
+    matches!(
+        kind,
+        EdgeKind::PedagogyHardPrerequisite
+            | EdgeKind::PedagogySoftPrerequisite
+            | EdgeKind::PedagogyMotivates
+            | EdgeKind::PedagogyExampleOf
+            | EdgeKind::PedagogyCounterexampleTo
+            | EdgeKind::PedagogyMisconceptionFor
+            | EdgeKind::PedagogyRecommendedNext
+    )
+}
+
+fn learning_unit_reference_count(payload: &LearningUnitPayload) -> usize {
+    1 + payload.hard_prerequisites.len()
+        + payload.soft_prerequisites.len()
+        + payload.grounded_source_references.len()
+        + payload.examples.len()
+        + payload.nonexamples.len()
+        + payload.counterexamples.len()
+        + payload.misconceptions.len()
+        + payload.exercises.len()
+        + payload.mastery_checks.len()
+        + payload.formalization_references.len()
+        + payload.application_references.len()
+        + payload.frontier_references.len()
+}
+
+fn learning_unit_searchable_text(payload: &LearningUnitPayload) -> String {
+    format!(
+        "{} {} {}",
+        learning_unit_kind_name(payload.unit_kind),
+        payload.audience_track,
+        payload.learning_objectives.join(" ")
+    )
+}
+
+fn learning_unit_kind_name(kind: LearningUnitKind) -> &'static str {
+    match kind {
+        LearningUnitKind::Motivation => "motivation",
+        LearningUnitKind::Definition => "definition",
+        LearningUnitKind::Explanation => "explanation",
+        LearningUnitKind::Example => "example",
+        LearningUnitKind::Nonexample => "nonexample",
+        LearningUnitKind::Counterexample => "counterexample",
+        LearningUnitKind::Misconception => "misconception",
+        LearningUnitKind::WorkedProof => "worked_proof",
+        LearningUnitKind::Exercise => "exercise",
+        LearningUnitKind::MasteryCheck => "mastery_check",
+        LearningUnitKind::Application => "application",
+        LearningUnitKind::History => "history",
+        LearningUnitKind::FrontierNote => "frontier_note",
+    }
+}
+
+fn require_reviewed_path_unit(record: &RecordSnapshot) -> Result<(), AppError> {
+    let payload = decode_learning_unit(&record.payload)?;
+    if payload.review.state != LearningUnitReviewState::Reviewed {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_PATH_REVIEW_REQUIRED",
+            format!(
+                "curriculum path unit {}@{} is not reviewed",
+                record.object_id, record.version_hash
+            ),
+            false,
+            "Review every exact learning-unit version before including it in a curriculum path.",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug)]

@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/learning-unit/1",
+  "title": "MathOS Canonical Learning Unit Payload v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "unit_kind",
+    "target",
+    "audience_track",
+    "entry_assumptions",
+    "learning_objectives",
+    "hard_prerequisites",
+    "soft_prerequisites",
+    "grounded_source_references",
+    "content_artifact_hash",
+    "examples",
+    "nonexamples",
+    "counterexamples",
+    "misconceptions",
+    "exercises",
+    "mastery_checks",
+    "formalization_references",
+    "application_references",
+    "frontier_references",
+    "review",
+    "license_expression",
+    "training_status"
+  ],
+  "properties": {
+    "unit_kind": {
+      "enum": [
+        "motivation",
+        "definition",
+        "explanation",
+        "example",
+        "nonexample",
+        "counterexample",
+        "misconception",
+        "worked_proof",
+        "exercise",
+        "mastery_check",
+        "application",
+        "history",
+        "frontier_note"
+      ]
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "object_id", "version_hash"],
+      "properties": {
+        "kind": { "enum": ["claim", "concept"] },
+        "object_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "version_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "audience_track": { "type": "string", "minLength": 1, "maxLength": 1048576 },
+    "entry_assumptions": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1048576 }
+    },
+    "learning_objectives": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1048576 }
+    },
+    "hard_prerequisites": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/exactVersionReference" }
+    },
+    "soft_prerequisites": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/exactVersionReference" }
+    },
+    "grounded_source_references": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/exactVersionReference" }
+    },
+    "content_artifact_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "examples": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/exactVersionReference" }
+    },
+    "nonexamples": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/exactVersionReference" }
+    },
+    "counterexamples": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/exactVersionReference" }
+    },
+    "misconceptions": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/exactVersionReference" }
+    },
+    "exercises": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/exactVersionReference" }
+    },
+    "mastery_checks": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/exactVersionReference" }
+    },
+    "formalization_references": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/exactVersionReference" }
+    },
+    "application_references": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/exactVersionReference" }
+    },
+    "frontier_references": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/exactVersionReference" }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reviewer", "notes"],
+      "properties": {
+        "state": { "enum": ["draft", "reviewed", "rejected"] },
+        "reviewer": { "type": ["string", "null"], "minLength": 1, "maxLength": 256 },
+        "notes": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "type": "string", "minLength": 1, "maxLength": 1048576 }
+        }
+      }
+    },
+    "license_expression": { "type": ["string", "null"], "minLength": 1, "maxLength": 512 },
+    "training_status": {
+      "enum": [
+        "ineligible",
+        "quarantined",
+        "eligible_private",
+        "eligible_public",
+        "held_out_evaluation"
+      ]
+    }
+  },
+  "$defs": {
+    "exactVersionReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "version_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

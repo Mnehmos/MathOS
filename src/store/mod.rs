@@ -12,7 +12,8 @@ use uuid::Uuid;
 use crate::canonical::{canonical_json, record_version_hash, value_hash};
 use crate::domain::evidence::{AUTHORITATIVE_EVIDENCE_SCHEMA_VERSION, PublicationAuthorityBinding};
 use crate::domain::schemas::{
-    ClaimPayload, ExactVersionReference, FormalizationClaimPolarity, FormalizationPayload,
+    ClaimPayload, ConceptPayload, ExactVersionReference, FormalizationClaimPolarity,
+    FormalizationPayload, LearningTargetKind, LearningUnitPayload, SourcePayload,
     validate_record_payload,
 };
 use crate::domain::{
@@ -3635,9 +3636,68 @@ fn validate_record_references(
     connection: &Connection,
     draft: &RecordDraft,
 ) -> Result<(), AppError> {
-    if draft.kind != RecordKind::Formalization {
-        return Ok(());
+    match draft.kind {
+        RecordKind::Formalization => validate_formalization_record_references(connection, draft),
+        RecordKind::LearningUnit => validate_learning_unit_store_references(connection, draft),
+        RecordKind::Concept => validate_concept_record_references(connection, draft),
+        RecordKind::Source | RecordKind::Claim => Ok(()),
     }
+}
+
+fn validate_concept_record_references(
+    connection: &Connection,
+    draft: &RecordDraft,
+) -> Result<(), AppError> {
+    let concept: ConceptPayload =
+        serde_json::from_value(draft.payload.clone()).map_err(|error| {
+            AppError::new(
+                "MCL_SCHEMA_VALIDATION_FAILED",
+                format!("concept payload could not be decoded after validation: {error}"),
+                false,
+                "Submit a payload matching the committed concept schema.",
+            )
+        })?;
+    for crosswalk in concept.external_taxonomy_crosswalks {
+        validate_current_learning_reference(
+            connection,
+            &crosswalk.source_reference,
+            RecordKind::Source,
+            "external taxonomy source",
+        )?;
+        let source_json = connection
+            .query_row(
+                "SELECT payload_json FROM record_versions WHERE object_id = ?1 AND version_hash = ?2",
+                params![
+                    crosswalk.source_reference.object_id,
+                    crosswalk.source_reference.version_hash
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| AppError::database("read external taxonomy source", error))?;
+        let source: SourcePayload = serde_json::from_str(&source_json).map_err(|error| {
+            AppError::new(
+                "MCL_TAXONOMY_SOURCE_INVALID",
+                format!("external taxonomy source payload is invalid: {error}"),
+                false,
+                "Quarantine the source and restore a schema-valid canonical version.",
+            )
+        })?;
+        if source.license_expression.as_deref() != Some(crosswalk.license_expression.as_str()) {
+            return Err(AppError::new(
+                "MCL_TAXONOMY_LICENSE_MISMATCH",
+                "external taxonomy crosswalk license does not match its exact source",
+                false,
+                "Record the exact reviewed source license on the crosswalk.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_formalization_record_references(
+    connection: &Connection,
+    draft: &RecordDraft,
+) -> Result<(), AppError> {
     let formalization: FormalizationPayload = serde_json::from_value(draft.payload.clone())
         .map_err(|error| {
             AppError::new(
@@ -3727,6 +3787,133 @@ fn validate_record_references(
                 "Ingest and register the exact Lean source artifact before creating the formalization.",
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_learning_unit_store_references(
+    connection: &Connection,
+    draft: &RecordDraft,
+) -> Result<(), AppError> {
+    let learning_unit: LearningUnitPayload = serde_json::from_value(draft.payload.clone())
+        .map_err(|error| {
+            AppError::new(
+                "MCL_SCHEMA_VALIDATION_FAILED",
+                format!("learning-unit payload could not be decoded after validation: {error}"),
+                false,
+                "Submit a payload matching the committed learning-unit schema.",
+            )
+        })?;
+    let target_kind = match learning_unit.target.kind {
+        LearningTargetKind::Claim => RecordKind::Claim,
+        LearningTargetKind::Concept => RecordKind::Concept,
+    };
+    validate_current_learning_reference(
+        connection,
+        &ExactVersionReference {
+            object_id: learning_unit.target.object_id,
+            version_hash: learning_unit.target.version_hash,
+        },
+        target_kind,
+        "learning unit target",
+    )?;
+    for reference in &learning_unit.grounded_source_references {
+        validate_current_learning_reference(
+            connection,
+            reference,
+            RecordKind::Source,
+            "learning unit grounded source",
+        )?;
+    }
+    for reference in learning_unit
+        .hard_prerequisites
+        .iter()
+        .chain(&learning_unit.soft_prerequisites)
+        .chain(&learning_unit.examples)
+        .chain(&learning_unit.nonexamples)
+        .chain(&learning_unit.counterexamples)
+        .chain(&learning_unit.misconceptions)
+        .chain(&learning_unit.exercises)
+        .chain(&learning_unit.mastery_checks)
+        .chain(&learning_unit.application_references)
+        .chain(&learning_unit.frontier_references)
+    {
+        validate_current_learning_reference(
+            connection,
+            reference,
+            RecordKind::LearningUnit,
+            "learning unit relation",
+        )?;
+    }
+    for reference in &learning_unit.formalization_references {
+        validate_current_learning_reference(
+            connection,
+            reference,
+            RecordKind::Formalization,
+            "learning unit formalization",
+        )?;
+    }
+    let artifact_exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM artifacts WHERE artifact_hash = ?1)",
+            [&learning_unit.content_artifact_hash],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| AppError::database("validate learning-unit content artifact", error))?;
+    if !artifact_exists {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_CONTENT_ARTIFACT_INVALID",
+            "learning-unit content artifact is not registered",
+            false,
+            "Ingest and verify the exact content artifact before creating the unit.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_current_learning_reference(
+    connection: &Connection,
+    reference: &ExactVersionReference,
+    expected_kind: RecordKind,
+    label: &str,
+) -> Result<(), AppError> {
+    let resolved = connection
+        .query_row(
+            "SELECT record.record_type, record.head_version_hash FROM records AS record JOIN record_versions AS version ON version.object_id = record.object_id WHERE record.object_id = ?1 AND version.version_hash = ?2 AND record.tombstoned = 0",
+            params![reference.object_id, reference.version_hash],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|error| AppError::database("validate current learning-unit reference", error))?;
+    let Some((actual_kind, current_head)) = resolved else {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_REFERENCE_INVALID",
+            format!(
+                "{label} {}@{} does not resolve to an exact canonical record",
+                reference.object_id, reference.version_hash
+            ),
+            false,
+            "Use an exact current object and version returned by canonical lookup.",
+        ));
+    };
+    if actual_kind != expected_kind.as_str() {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_REFERENCE_KIND_INVALID",
+            format!("{label} resolves to `{actual_kind}`, not `{expected_kind}`"),
+            false,
+            "Use an exact canonical reference of the required kind.",
+        ));
+    }
+    if current_head != reference.version_hash {
+        return Err(AppError::new(
+            "MCL_PEDAGOGY_REFERENCE_STALE",
+            format!(
+                "{label} {}@{} is not current; head is {current_head}",
+                reference.object_id, reference.version_hash
+            ),
+            false,
+            "Rebase the learning unit on current exact canonical references.",
+        ));
     }
     Ok(())
 }

@@ -15,11 +15,15 @@ use rmcp::{
 use serde::Deserialize;
 use serde_json::{Value, json, to_value};
 
-use crate::app::Application;
+use crate::app::{Application, PedagogyPathMode};
 use crate::config::ResolvedConfig;
+use crate::domain::schemas::{
+    ExactVersionReference, LEARNING_UNIT_SCHEMA_VERSION, LearningUnitReviewState,
+    LearningUnitTrainingStatus,
+};
 use crate::domain::{
-    CounterexampleRepairRequest, EdgeKind, GraphTraversalRequest, PublicationOutcome, RecordDraft,
-    RecordKind, RunEventDraft, RunEventKind, RunKind, TraversalDirection,
+    CounterexampleRepairRequest, EdgeDraft, EdgeKind, GraphTraversalRequest, PublicationOutcome,
+    RecordDraft, RecordKind, RunEventDraft, RunEventKind, RunKind, TraversalDirection,
     VersionedFidelityReviewRequest,
 };
 use crate::error::AppError;
@@ -118,6 +122,68 @@ pub struct RecordMutationRequest {
 pub enum RecordMutationAction {
     Propose,
     Version,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PedagogyRequest {
+    action: PedagogyAction,
+    #[serde(default)]
+    object_id: Option<String>,
+    #[serde(default)]
+    version_hash: Option<String>,
+    #[serde(default)]
+    expected_head: Option<String>,
+    #[serde(default)]
+    payload: Option<Value>,
+    #[serde(default)]
+    searchable_text: Option<String>,
+    #[serde(default)]
+    decision: Option<String>,
+    #[serde(default)]
+    training_status: Option<String>,
+    #[serde(default)]
+    notes: Option<Vec<String>>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    source_object_id: Option<String>,
+    #[serde(default)]
+    source_version_hash: Option<String>,
+    #[serde(default)]
+    target_object_id: Option<String>,
+    #[serde(default)]
+    target_version_hash: Option<String>,
+    #[serde(default)]
+    root_object_id: Option<String>,
+    #[serde(default)]
+    root_version_hash: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    include_soft: Option<Option<bool>>,
+    #[serde(default)]
+    max_depth: Option<u32>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    dry_run: Option<Option<bool>>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PedagogyAction {
+    Propose,
+    Version,
+    Get,
+    Validate,
+    Review,
+    Link,
+    Path,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -257,6 +323,10 @@ fn default_graph_limit() -> usize {
     100
 }
 
+fn default_pedagogy_path_depth() -> u32 {
+    8
+}
+
 #[tool_router]
 impl MathOsMcp {
     #[tool(
@@ -275,12 +345,13 @@ impl MathOsMcp {
             SystemAction::Health => Ok(to_value(Application::health(&self.config))
                 .expect("diagnostic report is serializable")),
             SystemAction::Capabilities => Ok(json!({
-                "tools": ["system", "query", "source", "claim", "formalization", "research", "counterexample", "verify"],
+                "tools": ["system", "query", "source", "claim", "formalization", "pedagogy", "research", "counterexample", "verify"],
                 "system_actions": ["describe", "health", "capabilities", "policy"],
                 "query_actions": ["get", "search", "graph"],
                 "source_actions": ["propose", "version"],
                 "claim_actions": ["propose", "version"],
                 "formalization_actions": ["propose", "version"],
+                "pedagogy_actions": ["propose", "version", "get", "validate", "review", "link", "path"],
                 "research_actions": ["start", "observe", "submit"],
                 "counterexample_actions": ["repair", "get"],
                 "verify_actions": ["review_fidelity", "fidelity_status", "claim_status", "prepare_publication", "ingest_publication", "promote_publication_authority"],
@@ -331,6 +402,13 @@ impl MathOsMcp {
         Parameters(request): Parameters<RecordMutationRequest>,
     ) -> CallToolResult {
         result_to_tool(self.execute_record_mutation(RecordKind::Formalization, request))
+    }
+
+    #[tool(
+        description = "Propose, version, get, validate, review, link, or traverse canonical learning units through one closed pedagogy service. Review never grants mathematical authority."
+    )]
+    fn pedagogy(&self, Parameters(request): Parameters<PedagogyRequest>) -> CallToolResult {
+        result_to_tool(self.execute_pedagogy(request))
     }
 
     #[tool(
@@ -446,6 +524,218 @@ impl MathOsMcp {
                     &idempotency_key,
                     request.dry_run,
                 )?)
+                .map_err(serialization_error)
+            }
+        }
+    }
+
+    fn execute_pedagogy(&self, request: PedagogyRequest) -> Result<Value, AppError> {
+        let mut application = self.application()?;
+        match request.action {
+            PedagogyAction::Propose => {
+                reject_pedagogy_fields(
+                    &request,
+                    &[
+                        "payload",
+                        "searchable_text",
+                        "actor",
+                        "idempotency_key",
+                        "dry_run",
+                    ],
+                    "propose",
+                )?;
+                let payload = required_value(request.payload, "payload", "propose")?;
+                let searchable_text =
+                    required(request.searchable_text, "searchable_text", "propose")?;
+                let actor = required(request.actor, "actor", "propose")?;
+                let idempotency_key =
+                    required(request.idempotency_key, "idempotency_key", "propose")?;
+                to_value(application.create_record(
+                    &RecordDraft {
+                        kind: RecordKind::LearningUnit,
+                        schema_version: LEARNING_UNIT_SCHEMA_VERSION.to_owned(),
+                        payload,
+                        searchable_text,
+                    },
+                    &actor,
+                    &idempotency_key,
+                    mutation_dry_run(request.dry_run, "propose")?,
+                )?)
+                .map_err(serialization_error)
+            }
+            PedagogyAction::Version => {
+                reject_pedagogy_fields(
+                    &request,
+                    &[
+                        "object_id",
+                        "expected_head",
+                        "payload",
+                        "searchable_text",
+                        "actor",
+                        "idempotency_key",
+                        "dry_run",
+                    ],
+                    "version",
+                )?;
+                let object_id = required(request.object_id, "object_id", "version")?;
+                let expected_head = required(request.expected_head, "expected_head", "version")?;
+                let payload = required_value(request.payload, "payload", "version")?;
+                let searchable_text =
+                    required(request.searchable_text, "searchable_text", "version")?;
+                let actor = required(request.actor, "actor", "version")?;
+                let idempotency_key =
+                    required(request.idempotency_key, "idempotency_key", "version")?;
+                to_value(application.version_record(
+                    &object_id,
+                    &expected_head,
+                    &RecordDraft {
+                        kind: RecordKind::LearningUnit,
+                        schema_version: LEARNING_UNIT_SCHEMA_VERSION.to_owned(),
+                        payload,
+                        searchable_text,
+                    },
+                    &actor,
+                    &idempotency_key,
+                    mutation_dry_run(request.dry_run, "version")?,
+                )?)
+                .map_err(serialization_error)
+            }
+            PedagogyAction::Get => {
+                reject_pedagogy_fields(&request, &["object_id", "version_hash"], "get")?;
+                let object_id = required(request.object_id, "object_id", "get")?;
+                let record = application.get_record(&object_id, request.version_hash.as_deref())?;
+                if record.kind != RecordKind::LearningUnit {
+                    return Err(AppError::new(
+                        "MCL_RECORD_KIND_MISMATCH",
+                        format!(
+                            "pedagogy get resolved to `{}`, not `learning_unit`",
+                            record.kind
+                        ),
+                        false,
+                        "Use pedagogy get only with a canonical learning-unit object.",
+                    ));
+                }
+                to_value(record).map_err(serialization_error)
+            }
+            PedagogyAction::Validate => {
+                reject_pedagogy_fields(&request, &["object_id", "version_hash"], "validate")?;
+                let object_id = required(request.object_id, "object_id", "validate")?;
+                let version_hash = required(request.version_hash, "version_hash", "validate")?;
+                to_value(application.validate_learning_unit(&object_id, &version_hash)?)
+                    .map_err(serialization_error)
+            }
+            PedagogyAction::Review => {
+                reject_pedagogy_fields(
+                    &request,
+                    &[
+                        "object_id",
+                        "expected_head",
+                        "decision",
+                        "training_status",
+                        "notes",
+                        "actor",
+                        "idempotency_key",
+                        "dry_run",
+                    ],
+                    "review",
+                )?;
+                let object_id = required(request.object_id, "object_id", "review")?;
+                let expected_head = required(request.expected_head, "expected_head", "review")?;
+                let decision = required(request.decision, "decision", "review")?;
+                let training_status =
+                    required(request.training_status, "training_status", "review")?;
+                let notes = required_value(request.notes, "notes", "review")?;
+                let actor = required(request.actor, "actor", "review")?;
+                let idempotency_key =
+                    required(request.idempotency_key, "idempotency_key", "review")?;
+                to_value(application.review_learning_unit(
+                    &object_id,
+                    &expected_head,
+                    parse_pedagogy_review_state(&decision)?,
+                    parse_pedagogy_training_status(&training_status)?,
+                    notes,
+                    &actor,
+                    &idempotency_key,
+                    mutation_dry_run(request.dry_run, "review")?,
+                )?)
+                .map_err(serialization_error)
+            }
+            PedagogyAction::Link => {
+                reject_pedagogy_fields(
+                    &request,
+                    &[
+                        "kind",
+                        "source_object_id",
+                        "source_version_hash",
+                        "target_object_id",
+                        "target_version_hash",
+                        "payload",
+                        "actor",
+                        "idempotency_key",
+                        "dry_run",
+                    ],
+                    "link",
+                )?;
+                let kind = required(request.kind, "kind", "link")?;
+                let source_object_id =
+                    required(request.source_object_id, "source_object_id", "link")?;
+                let source_version_hash =
+                    required(request.source_version_hash, "source_version_hash", "link")?;
+                let target_object_id =
+                    required(request.target_object_id, "target_object_id", "link")?;
+                let target_version_hash =
+                    required(request.target_version_hash, "target_version_hash", "link")?;
+                let payload = required_value(request.payload, "payload", "link")?;
+                let actor = required(request.actor, "actor", "link")?;
+                let idempotency_key = required(request.idempotency_key, "idempotency_key", "link")?;
+                to_value(application.create_pedagogy_link(
+                    &EdgeDraft {
+                        kind: EdgeKind::from_str(&kind)?,
+                        source_object_id,
+                        source_version_hash,
+                        target_object_id,
+                        target_version_hash,
+                        payload,
+                    },
+                    &actor,
+                    &idempotency_key,
+                    mutation_dry_run(request.dry_run, "link")?,
+                )?)
+                .map_err(serialization_error)
+            }
+            PedagogyAction::Path => {
+                reject_pedagogy_fields(
+                    &request,
+                    &[
+                        "root_object_id",
+                        "root_version_hash",
+                        "mode",
+                        "include_soft",
+                        "max_depth",
+                        "limit",
+                    ],
+                    "path",
+                )?;
+                let root_object_id = required(request.root_object_id, "root_object_id", "path")?;
+                let root_version_hash =
+                    required(request.root_version_hash, "root_version_hash", "path")?;
+                let mode = required(request.mode, "mode", "path")?;
+                let include_soft =
+                    optional_present_value(request.include_soft, false, "include_soft", "path")?;
+                to_value(
+                    application.pedagogy_path(
+                        &ExactVersionReference {
+                            object_id: root_object_id,
+                            version_hash: root_version_hash,
+                        },
+                        parse_pedagogy_path_mode(&mode)?,
+                        include_soft,
+                        request
+                            .max_depth
+                            .unwrap_or_else(default_pedagogy_path_depth),
+                        request.limit.unwrap_or_else(default_graph_limit),
+                    )?,
+                )
                 .map_err(serialization_error)
             }
         }
@@ -1137,6 +1427,10 @@ fn required(value: Option<String>, field: &str, action: &str) -> Result<String, 
     })
 }
 
+fn required_value<T>(value: Option<T>, field: &str, action: &str) -> Result<T, AppError> {
+    value.ok_or_else(|| missing_field(field, action, "pedagogy"))
+}
+
 fn mutation_dry_run(value: Option<Option<bool>>, action: &str) -> Result<bool, AppError> {
     match value {
         None => Ok(false),
@@ -1171,6 +1465,66 @@ fn reject_present<T>(value: Option<T>, field: &str, action: &str) -> Result<(), 
     Ok(())
 }
 
+fn reject_pedagogy_fields(
+    request: &PedagogyRequest,
+    allowed: &[&str],
+    action: &str,
+) -> Result<(), AppError> {
+    let present = [
+        ("object_id", request.object_id.is_some()),
+        ("version_hash", request.version_hash.is_some()),
+        ("expected_head", request.expected_head.is_some()),
+        ("payload", request.payload.is_some()),
+        ("searchable_text", request.searchable_text.is_some()),
+        ("decision", request.decision.is_some()),
+        ("training_status", request.training_status.is_some()),
+        ("notes", request.notes.is_some()),
+        ("kind", request.kind.is_some()),
+        ("source_object_id", request.source_object_id.is_some()),
+        ("source_version_hash", request.source_version_hash.is_some()),
+        ("target_object_id", request.target_object_id.is_some()),
+        ("target_version_hash", request.target_version_hash.is_some()),
+        ("root_object_id", request.root_object_id.is_some()),
+        ("root_version_hash", request.root_version_hash.is_some()),
+        ("mode", request.mode.is_some()),
+        ("include_soft", request.include_soft.is_some()),
+        ("max_depth", request.max_depth.is_some()),
+        ("limit", request.limit.is_some()),
+        ("actor", request.actor.is_some()),
+        ("idempotency_key", request.idempotency_key.is_some()),
+        ("dry_run", request.dry_run.is_some()),
+    ];
+    for (field, is_present) in present {
+        if is_present && !allowed.contains(&field) {
+            return Err(AppError::new(
+                "MCL_MCP_FIELD_FORBIDDEN",
+                format!("action `{action}` does not accept `{field}`"),
+                false,
+                format!("Remove `{field}` from the `{action}` action."),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn optional_present_value(
+    value: Option<Option<bool>>,
+    default: bool,
+    field: &str,
+    action: &str,
+) -> Result<bool, AppError> {
+    match value {
+        None => Ok(default),
+        Some(Some(value)) => Ok(value),
+        Some(None) => Err(AppError::new(
+            "MCL_MCP_FIELD_REQUIRED",
+            format!("action `{action}` requires `{field}` to be a boolean when present"),
+            false,
+            format!("Supply a boolean `{field}` or omit it."),
+        )),
+    }
+}
+
 fn record_action_name(action: RecordMutationAction) -> &'static str {
     match action {
         RecordMutationAction::Propose => "propose",
@@ -1184,7 +1538,49 @@ fn record_schema_version(kind: RecordKind) -> &'static str {
         RecordKind::Concept => "concept/1",
         RecordKind::Claim => "claim/1",
         RecordKind::Formalization => "formalization/1",
-        RecordKind::LearningUnit => "learning_unit/1",
+        RecordKind::LearningUnit => LEARNING_UNIT_SCHEMA_VERSION,
+    }
+}
+
+fn parse_pedagogy_review_state(value: &str) -> Result<LearningUnitReviewState, AppError> {
+    match value {
+        "reviewed" => Ok(LearningUnitReviewState::Reviewed),
+        "rejected" => Ok(LearningUnitReviewState::Rejected),
+        _ => Err(AppError::new(
+            "MCL_PEDAGOGY_REVIEW_DECISION_INVALID",
+            format!("unknown pedagogy review decision `{value}`"),
+            false,
+            "Use `reviewed` or `rejected`.",
+        )),
+    }
+}
+
+fn parse_pedagogy_training_status(value: &str) -> Result<LearningUnitTrainingStatus, AppError> {
+    match value {
+        "ineligible" => Ok(LearningUnitTrainingStatus::Ineligible),
+        "quarantined" => Ok(LearningUnitTrainingStatus::Quarantined),
+        "eligible_private" => Ok(LearningUnitTrainingStatus::EligiblePrivate),
+        "eligible_public" => Ok(LearningUnitTrainingStatus::EligiblePublic),
+        "held_out_evaluation" => Ok(LearningUnitTrainingStatus::HeldOutEvaluation),
+        _ => Err(AppError::new(
+            "MCL_PEDAGOGY_TRAINING_STATUS_INVALID",
+            format!("unknown learning-unit training status `{value}`"),
+            false,
+            "Use a status declared by learning_unit/1.",
+        )),
+    }
+}
+
+fn parse_pedagogy_path_mode(value: &str) -> Result<PedagogyPathMode, AppError> {
+    match value {
+        "prerequisites" => Ok(PedagogyPathMode::Prerequisites),
+        "recommended" => Ok(PedagogyPathMode::Recommended),
+        _ => Err(AppError::new(
+            "MCL_PEDAGOGY_PATH_MODE_INVALID",
+            format!("unknown pedagogy path mode `{value}`"),
+            false,
+            "Use `prerequisites` or `recommended`.",
+        )),
     }
 }
 

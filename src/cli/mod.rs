@@ -6,8 +6,12 @@ use std::str::FromStr;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::{Value, to_value};
 
-use crate::app::{Application, root_exists};
+use crate::app::{Application, PedagogyPathMode, root_exists};
 use crate::config::ResolvedConfig;
+use crate::domain::schemas::{
+    ExactVersionReference, LEARNING_UNIT_SCHEMA_VERSION, LearningUnitReviewState,
+    LearningUnitTrainingStatus,
+};
 use crate::domain::{
     ArtifactMetadata, CounterexampleRepairRequest, EdgeDraft, EdgeKind, EnvironmentManifest,
     GraphTraversalRequest, PublicationOutcome, RecordDraft, RecordKind, RecordSnapshot,
@@ -65,6 +69,8 @@ enum Command {
     Claim(EntityOptions),
     /// Create, version, or retrieve one exact formal interpretation.
     Formalization(EntityOptions),
+    /// Propose, validate, review, link, or traverse canonical learning units.
+    Pedagogy(PedagogyOptions),
     /// Search the current canonical record heads through SQLite FTS5.
     Search(SearchOptions),
     /// Create or retrieve exact version-bound graph edges.
@@ -473,6 +479,81 @@ struct RecordGetOptions {
 }
 
 #[derive(Debug, Args)]
+struct PedagogyOptions {
+    #[command(subcommand)]
+    action: PedagogyAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum PedagogyAction {
+    /// Validate and propose a draft canonical learning unit.
+    Propose(RecordCreateOptions),
+    /// Append a revised draft using compare-and-swap.
+    Version(RecordVersionOptions),
+    /// Retrieve the current head or one exact immutable version.
+    Get(RecordGetOptions),
+    /// Revalidate exact references, content policy, and prerequisite links.
+    Validate(PedagogyValidateOptions),
+    /// Record an actor-bound reviewed or rejected immutable version.
+    Review(PedagogyReviewOptions),
+    /// Create one typed exact-version pedagogy edge.
+    Link(EdgeCreateOptions),
+    /// Build a deterministic bounded prerequisite or recommended path.
+    Path(PedagogyPathOptions),
+}
+
+#[derive(Debug, Args)]
+struct PedagogyValidateOptions {
+    #[arg(long)]
+    object_id: String,
+
+    #[arg(long)]
+    version_hash: String,
+}
+
+#[derive(Debug, Args)]
+struct PedagogyReviewOptions {
+    #[arg(long)]
+    object_id: String,
+
+    #[arg(long)]
+    expected_head: String,
+
+    #[arg(long)]
+    decision: String,
+
+    #[arg(long)]
+    training_status: String,
+
+    #[arg(long)]
+    notes_json: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct PedagogyPathOptions {
+    #[arg(long)]
+    root_object_id: String,
+
+    #[arg(long)]
+    root_version_hash: String,
+
+    #[arg(long, default_value = "prerequisites")]
+    mode: String,
+
+    #[arg(long)]
+    include_soft: bool,
+
+    #[arg(long, default_value_t = 8)]
+    max_depth: u32,
+
+    #[arg(long, default_value_t = 100)]
+    limit: usize,
+}
+
+#[derive(Debug, Args)]
 struct SearchOptions {
     #[arg(long)]
     query: String,
@@ -694,6 +775,7 @@ impl Cli {
             Command::Formalization(options) => {
                 execute_entity(&config, RecordKind::Formalization, options)
             }
+            Command::Pedagogy(options) => execute_pedagogy(&config, options),
             Command::Search(options) => {
                 let application = Application::open(&config)?;
                 Ok(CliOutcome {
@@ -1213,12 +1295,160 @@ fn record_draft(
             RecordKind::Concept => "concept/1",
             RecordKind::Claim => "claim/1",
             RecordKind::Formalization => "formalization/1",
-            RecordKind::LearningUnit => "learning_unit/1",
+            RecordKind::LearningUnit => LEARNING_UNIT_SCHEMA_VERSION,
         }
         .to_owned(),
         payload,
         searchable_text,
     })
+}
+
+fn execute_pedagogy(
+    config: &ResolvedConfig,
+    options: PedagogyOptions,
+) -> Result<CliOutcome, AppError> {
+    let mut application = Application::open(config)?;
+    let value = match options.action {
+        PedagogyAction::Propose(options) => {
+            let draft = record_draft(
+                RecordKind::LearningUnit,
+                &options.payload_json,
+                options.searchable_text,
+            )?;
+            to_value(application.create_record(
+                &draft,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("learning-unit mutation outcome is serializable")
+        }
+        PedagogyAction::Version(options) => {
+            let draft = record_draft(
+                RecordKind::LearningUnit,
+                &options.payload_json,
+                options.searchable_text,
+            )?;
+            to_value(application.version_record(
+                &options.object_id,
+                &options.expected_head,
+                &draft,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("learning-unit mutation outcome is serializable")
+        }
+        PedagogyAction::Get(options) => {
+            let record =
+                application.get_record(&options.object_id, options.version_hash.as_deref())?;
+            require_record_kind(&record, RecordKind::LearningUnit)?;
+            to_value(record).expect("learning unit is serializable")
+        }
+        PedagogyAction::Validate(options) => {
+            to_value(application.validate_learning_unit(&options.object_id, &options.version_hash)?)
+                .expect("learning-unit validation is serializable")
+        }
+        PedagogyAction::Review(options) => {
+            let notes: Vec<String> =
+                serde_json::from_value(parse_json(&options.notes_json, "pedagogy review notes")?)
+                    .map_err(|error| {
+                    AppError::new(
+                        "MCL_CLI_JSON_INVALID",
+                        format!("pedagogy review notes must be a JSON string array: {error}"),
+                        false,
+                        "Supply review notes through `--notes-json '[\"rationale\"]'`.",
+                    )
+                })?;
+            to_value(application.review_learning_unit(
+                &options.object_id,
+                &options.expected_head,
+                parse_learning_unit_review_state(&options.decision)?,
+                parse_learning_unit_training_status(&options.training_status)?,
+                notes,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("learning-unit review outcome is serializable")
+        }
+        PedagogyAction::Link(options) => {
+            let draft = EdgeDraft {
+                kind: EdgeKind::from_str(&options.kind)?,
+                source_object_id: options.source_object_id,
+                source_version_hash: options.source_version_hash,
+                target_object_id: options.target_object_id,
+                target_version_hash: options.target_version_hash,
+                payload: parse_json(&options.payload_json, "pedagogy link payload")?,
+            };
+            to_value(application.create_pedagogy_link(
+                &draft,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("pedagogy link outcome is serializable")
+        }
+        PedagogyAction::Path(options) => to_value(application.pedagogy_path(
+            &ExactVersionReference {
+                object_id: options.root_object_id,
+                version_hash: options.root_version_hash,
+            },
+            parse_pedagogy_path_mode(&options.mode)?,
+            options.include_soft,
+            options.max_depth,
+            options.limit,
+        )?)
+        .expect("pedagogy path is serializable"),
+    };
+    Ok(CliOutcome {
+        value,
+        success: true,
+    })
+}
+
+fn parse_learning_unit_review_state(value: &str) -> Result<LearningUnitReviewState, AppError> {
+    match value {
+        "reviewed" => Ok(LearningUnitReviewState::Reviewed),
+        "rejected" => Ok(LearningUnitReviewState::Rejected),
+        _ => Err(AppError::new(
+            "MCL_PEDAGOGY_REVIEW_DECISION_INVALID",
+            format!("unknown pedagogy review decision `{value}`"),
+            false,
+            "Use `reviewed` or `rejected`.",
+        )),
+    }
+}
+
+fn parse_learning_unit_training_status(
+    value: &str,
+) -> Result<LearningUnitTrainingStatus, AppError> {
+    match value {
+        "ineligible" => Ok(LearningUnitTrainingStatus::Ineligible),
+        "quarantined" => Ok(LearningUnitTrainingStatus::Quarantined),
+        "eligible_private" => Ok(LearningUnitTrainingStatus::EligiblePrivate),
+        "eligible_public" => Ok(LearningUnitTrainingStatus::EligiblePublic),
+        "held_out_evaluation" => Ok(LearningUnitTrainingStatus::HeldOutEvaluation),
+        _ => Err(AppError::new(
+            "MCL_PEDAGOGY_TRAINING_STATUS_INVALID",
+            format!("unknown learning-unit training status `{value}`"),
+            false,
+            "Use a status declared by learning_unit/1.",
+        )),
+    }
+}
+
+fn parse_pedagogy_path_mode(value: &str) -> Result<PedagogyPathMode, AppError> {
+    match value {
+        "prerequisites" => Ok(PedagogyPathMode::Prerequisites),
+        "recommended" => Ok(PedagogyPathMode::Recommended),
+        _ => Err(AppError::new(
+            "MCL_PEDAGOGY_PATH_MODE_INVALID",
+            format!("unknown pedagogy path mode `{value}`"),
+            false,
+            "Use `prerequisites` or `recommended`.",
+        )),
+    }
 }
 
 fn require_record_kind(record: &RecordSnapshot, expected: RecordKind) -> Result<(), AppError> {
