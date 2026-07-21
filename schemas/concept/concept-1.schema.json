@@ -42,7 +42,7 @@
               "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
             }
           },
-          "license_expression": {"type": "string", "minLength": 1, "maxLength": 1048576}
+          "license_expression": {"type": "string", "minLength": 1, "maxLength": 512}
         }
       }
     },

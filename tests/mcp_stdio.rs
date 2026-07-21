@@ -208,6 +208,7 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
             "claim",
             "counterexample",
             "formalization",
+            "pedagogy",
             "query",
             "research",
             "source",
@@ -288,6 +289,12 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
     assert_eq!(
         capabilities["result"]["structuredContent"]["counterexample_actions"],
         json!(["repair", "get"])
+    );
+    assert_eq!(
+        capabilities["result"]["structuredContent"]["pedagogy_actions"],
+        json!([
+            "propose", "version", "get", "validate", "review", "link", "path"
+        ])
     );
 
     let incomplete_repair = server.call(31201, "counterexample", json!({"action": "repair"}));
@@ -701,6 +708,263 @@ fn query_tool_matches_cli_state_and_returns_structured_application_errors() {
         "MCL_QUERY_LIMIT_INVALID"
     );
     server.close();
+}
+
+#[test]
+fn pedagogy_mcp_matches_cli_review_validation_and_restart_reads() {
+    let root = TempDir::new().expect("temporary root");
+    initialize_instance(root.path());
+
+    let source_payload = json!({
+        "source_type": "user_statement",
+        "title_or_label": "MCP pedagogy source",
+        "authors_or_origin": ["MathOS MCP test"],
+        "canonical_locator": "local:mcp-pedagogy",
+        "acquisition_date": "2026-07-21",
+        "license_expression": "CC-BY-4.0",
+        "redistribution_status": "allowed",
+        "content_hash": null,
+        "citation_metadata": {},
+        "redaction_class": "public",
+        "provenance_notes": "Issue #48 MCP parity fixture",
+        "original_text": "Every prime number is odd."
+    });
+    let source_output = mcl_owned(
+        root.path(),
+        &[
+            "source".to_owned(),
+            "create".to_owned(),
+            "--payload-json".to_owned(),
+            source_payload.to_string(),
+            "--searchable-text".to_owned(),
+            "MCP pedagogy source".to_owned(),
+            "--actor".to_owned(),
+            "mcp-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "mcp-pedagogy-source".to_owned(),
+        ],
+    );
+    assert!(
+        source_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&source_output.stderr)
+    );
+    let source: Value = serde_json::from_slice(&source_output.stdout).expect("source JSON");
+    let source = &source["record"];
+    let source_reference = json!({
+        "object_id": source["object_id"],
+        "version_hash": source["version_hash"]
+    });
+    let claim_payload = json!({
+        "source_reference": source_reference,
+        "normalized_informal_statement": "For every natural number n, if n is prime, then n is odd.",
+        "claim_kind": "universal",
+        "logical_shape": "forall x, repaired x",
+        "assumptions": [],
+        "variables": [],
+        "concept_links": [],
+        "source_citations": [source_reference],
+        "ambiguity_notes": []
+    });
+    let claim_output = mcl_owned(
+        root.path(),
+        &[
+            "claim".to_owned(),
+            "create".to_owned(),
+            "--payload-json".to_owned(),
+            claim_payload.to_string(),
+            "--searchable-text".to_owned(),
+            "MCP pedagogy claim".to_owned(),
+            "--actor".to_owned(),
+            "mcp-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "mcp-pedagogy-claim".to_owned(),
+        ],
+    );
+    assert!(claim_output.status.success());
+    let claim: Value = serde_json::from_slice(&claim_output.stdout).expect("claim JSON");
+    let claim = &claim["record"];
+
+    let content_path = root.path().join("mcp-pedagogy.txt");
+    fs::write(
+        &content_path,
+        "Explain the exact counterexample repair boundary.\n",
+    )
+    .expect("pedagogy content writes");
+    let artifact_output = mcl_owned(
+        root.path(),
+        &[
+            "artifact".to_owned(),
+            "ingest".to_owned(),
+            "--input-file".to_owned(),
+            content_path.to_string_lossy().into_owned(),
+            "--metadata-json".to_owned(),
+            json!({
+                "schema_version": "artifact_metadata/1",
+                "media_type": "text/plain",
+                "creation_source": "user_ingest",
+                "license_expression": "CC-BY-4.0",
+                "restriction": "public",
+                "semantic_metadata": {"artifact_role": "learning_unit_content"}
+            })
+            .to_string(),
+            "--actor".to_owned(),
+            "mcp-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "mcp-pedagogy-content".to_owned(),
+        ],
+    );
+    assert!(artifact_output.status.success());
+    let artifact: Value = serde_json::from_slice(&artifact_output.stdout).expect("artifact JSON");
+    let payload = json!({
+        "unit_kind": "explanation",
+        "target": {
+            "kind": "claim",
+            "object_id": claim["object_id"],
+            "version_hash": claim["version_hash"]
+        },
+        "audience_track": "mcp_parity",
+        "entry_assumptions": [],
+        "learning_objectives": ["Explain the exact repair boundary."],
+        "hard_prerequisites": [],
+        "soft_prerequisites": [],
+        "grounded_source_references": [source_reference],
+        "content_artifact_hash": artifact["proposed_artifact_hash"],
+        "examples": [],
+        "nonexamples": [],
+        "counterexamples": [],
+        "misconceptions": [],
+        "exercises": [],
+        "mastery_checks": [],
+        "formalization_references": [],
+        "application_references": [],
+        "frontier_references": [],
+        "review": {"state": "draft", "reviewer": null, "notes": []},
+        "license_expression": "CC-BY-4.0",
+        "training_status": "ineligible"
+    });
+
+    let mut server = McpProcess::spawn(root.path());
+    initialize_protocol(&mut server, "2025-11-25");
+    let invalid = server.call(
+        40,
+        "pedagogy",
+        json!({
+            "action": "propose",
+            "payload": payload,
+            "searchable_text": "MCP pedagogy",
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-pedagogy-invalid",
+            "unknown": true
+        }),
+    );
+    assert_eq!(invalid["result"]["isError"], true);
+
+    let proposed = server.call(
+        41,
+        "pedagogy",
+        json!({
+            "action": "propose",
+            "payload": payload,
+            "searchable_text": "MCP pedagogy",
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-pedagogy-propose"
+        }),
+    );
+    assert_eq!(proposed["result"]["isError"], false, "{proposed:#}");
+    let initial_draft = &proposed["result"]["structuredContent"]["record"];
+    let mut revised_payload = payload;
+    revised_payload["learning_objectives"] =
+        json!(["Explain the exact counterexample and repair boundary."]);
+    let versioned = server.call(
+        411,
+        "pedagogy",
+        json!({
+            "action": "version",
+            "object_id": initial_draft["object_id"],
+            "expected_head": initial_draft["version_hash"],
+            "payload": revised_payload,
+            "searchable_text": "MCP revised pedagogy",
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-pedagogy-version"
+        }),
+    );
+    assert_eq!(versioned["result"]["isError"], false, "{versioned:#}");
+    let draft = &versioned["result"]["structuredContent"]["record"];
+    let reviewed = server.call(
+        42,
+        "pedagogy",
+        json!({
+            "action": "review",
+            "object_id": draft["object_id"],
+            "expected_head": draft["version_hash"],
+            "decision": "reviewed",
+            "training_status": "eligible_public",
+            "notes": ["MCP parity review completed."],
+            "actor": "mcp-reviewer",
+            "idempotency_key": "mcp-pedagogy-review"
+        }),
+    );
+    assert_eq!(reviewed["result"]["isError"], false, "{reviewed:#}");
+    let unit = &reviewed["result"]["structuredContent"]["record"];
+    let validated = server.call(
+        43,
+        "pedagogy",
+        json!({
+            "action": "validate",
+            "object_id": unit["object_id"],
+            "version_hash": unit["version_hash"]
+        }),
+    );
+    assert_eq!(validated["result"]["isError"], false, "{validated:#}");
+    assert_eq!(validated["result"]["structuredContent"]["valid"], true);
+    let mcp_path = server.call(
+        431,
+        "pedagogy",
+        json!({
+            "action": "path",
+            "root_object_id": unit["object_id"],
+            "root_version_hash": unit["version_hash"],
+            "mode": "prerequisites"
+        }),
+    );
+    assert_eq!(mcp_path["result"]["isError"], false, "{mcp_path:#}");
+    assert_eq!(
+        mcp_path["result"]["structuredContent"]["units"]
+            .as_array()
+            .expect("MCP path units")
+            .len(),
+        1
+    );
+
+    let cli_get = mcl_owned(
+        root.path(),
+        &[
+            "pedagogy".to_owned(),
+            "get".to_owned(),
+            "--object-id".to_owned(),
+            unit["object_id"].as_str().expect("unit ID").to_owned(),
+            "--version-hash".to_owned(),
+            unit["version_hash"].as_str().expect("unit hash").to_owned(),
+        ],
+    );
+    assert!(cli_get.status.success());
+    let cli_unit: Value = serde_json::from_slice(&cli_get.stdout).expect("CLI unit JSON");
+    assert_eq!(cli_unit, *unit);
+    let unit_id = unit["object_id"].as_str().expect("unit ID").to_owned();
+    let unit_hash = unit["version_hash"].as_str().expect("unit hash").to_owned();
+    server.close();
+
+    let mut restarted = McpProcess::spawn(root.path());
+    initialize_protocol(&mut restarted, "2025-11-25");
+    let loaded = restarted.call(
+        44,
+        "pedagogy",
+        json!({"action": "get", "object_id": unit_id, "version_hash": unit_hash}),
+    );
+    assert_eq!(loaded["result"]["isError"], false, "{loaded:#}");
+    assert_eq!(loaded["result"]["structuredContent"], cli_unit);
+    restarted.close();
 }
 
 #[test]

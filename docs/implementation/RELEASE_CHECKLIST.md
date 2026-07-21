@@ -12,7 +12,7 @@ This checklist mirrors section 30 of [SPEC.md](../../SPEC.md). A checked item re
 - [ ] MCP and CLI operate over the same canonical service layer.
 - [ ] Process restart preserves committed state and resumes or safely requeues durable jobs.
 
-Phase 2 evidence: `mcl init` and storage health work locally and in Windows and Linux CI. The Rust MCP system, query, source, claim, formalization, and research families call the same application service as CLI and survive process restart. Later verifier, pedagogy, and release capabilities and durable job recovery remain open, so the release criteria remain unchecked.
+Phase 5 evidence: `mcl init` and storage health work locally and in Windows and Linux CI. Rust CLI and MCP system, query, source, claim, formalization, research, verifier, counterexample, and pedagogy families call the same application service and preserve state across process restart. Release capabilities and complete durable-job recovery remain open, so the release criteria remain unchecked.
 
 ## Core lifecycle
 
@@ -87,12 +87,12 @@ Phase 2 evidence: exact stable-ID lookup, exact version-hash lookup, current-hea
 
 ## Pedagogy
 
-- [ ] Hard and soft prerequisites are distinct.
-- [ ] Learning units support explanations, examples, counterexamples, misconceptions, exercises, mastery checks, and frontier notes.
-- [ ] Curriculum paths can be queried.
-- [ ] External taxonomy crosswalks preserve source and license.
+- [x] Hard and soft prerequisites are distinct.
+- [x] Learning units support explanations, examples, counterexamples, misconceptions, exercises, mastery checks, and frontier notes.
+- [x] Curriculum paths can be queried.
+- [x] External taxonomy crosswalks preserve source and license.
 
-Phase 2 evidence: hard and soft prerequisite edge kinds are distinct and the database rejects hard-prerequisite cycles. Learning units, curriculum paths, and taxonomy crosswalks remain unimplemented, so all release criteria stay open.
+Phase 5 evidence: issue [#48](https://github.com/Mnehmos/MathOS/issues/48) adds the closed `learning_unit/1` contract, current exact reference and content/license validation, controlled review, payload/edge prerequisite parity, and deterministic bounded reviewed paths through the same CLI/MCP application service. A fresh-root CLI playtest creates explanation, counterexample, misconception, exercise, and mastery-check units; dry-run, retry, restart, stale-reference, incomplete-link, training-policy, and MCP parity coverage pass. A separate process-per-action CLI playtest over the preserved Pilot A repaired-claim ledger traverses those five reviewed unit kinds against its exact source, claim, and Lean formalization while leaving derived claim status unchanged and `mcl doctor` healthy. Hard/soft edges remain separate and database-enforced hard-cycle rejection remains unchanged. The fresh-root playtest also creates a stable external taxonomy crosswalk bound to an exact current source and matching license, then rejects a mismatched license before persistence.
 
 ## Releases and exports
 
