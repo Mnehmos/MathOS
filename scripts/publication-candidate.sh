@@ -1064,8 +1064,8 @@ jq -e \
   || die "$EXIT_VALIDATION" "publication report lost a required protected candidate binding"
 
 run_mcl verify validate-publication-candidate \
-  --report-file publication-report.json \
-  --retained-closure-file publication-retained-closure.json \
+  --report-file "$output_dir/publication-report.json" \
+  --retained-closure-file "$output_dir/publication-retained-closure.json" \
   --retained-root "$output_dir" \
   >"$temporary_root/candidate-validation.json"
 jq -e \
