@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/fidelity/review-report/2",
+  "title": "MathOS Fidelity Review Report v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_hash", "request", "reviewed_source_relation", "formalization_author", "exact_theorem_type", "declaration_hash"],
+  "properties": {
+    "schema_version": {"const": "fidelity_review_report/2"},
+    "request_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "request": {"$ref": "https://mnehmos.ai/mathos/schemas/fidelity/review-request/2"},
+    "reviewed_source_relation": {"enum": ["claim", "logical_negation"]},
+    "formalization_author": {"type": "string", "minLength": 1, "maxLength": 256},
+    "exact_theorem_type": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "declaration_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

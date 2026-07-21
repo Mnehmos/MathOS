@@ -4,7 +4,9 @@ Lean can establish that a theorem follows in a formal environment. It cannot est
 
 ## Review contract
 
-A `fidelity_review_request/1` binds one exact source version, claim version, formalization version, producing run, reviewer, review level, verdict, findings, ambiguity disposition, definition mappings, supporting artifacts, and prior evidence head.
+`fidelity_review_request/1` binds one exact source version, claim version, formalization version, producing run, reviewer, review level, verdict, findings, ambiguity disposition, definition mappings, supporting artifacts, and prior evidence head. Its bytes and hashes remain immutable.
+
+`fidelity_review_request/2` adds the reviewer-authored `reviewed_source_relation` field. `claim` means the declaration was compared with the source claim; `logical_negation` means it was compared with that claim's logical negation. The relation must match the formalization's immutable polarity. Version 1 can qualify only a claim-polarity proof and can never qualify source disproof.
 
 The supported review levels are:
 
@@ -56,19 +58,25 @@ An exact formalization with no review derives `unreviewed`. Earlier reviews rema
 
 ## Trust boundary
 
-Statement fidelity evidence is reviewed evidence, not proof evidence. It cannot prove or disprove a claim, approve axioms, establish novelty, or authorize publication. Mathematical status remains unavailable until an exact fidelity-verified formalization also has current authoritative proof or refutation evidence under the publication trust profile.
+Statement fidelity evidence is reviewed evidence, not proof evidence. It cannot prove or disprove a claim, approve axioms, establish novelty, or authorize publication by itself.
+
+The read-only `claim_research_status/1` service combines the two independent axes. It rehashes the exact source, claim, formalization, fidelity report, supporting artifacts, and full receipt-bound publication closure; enumerates every current formalization automatically; and rechecks the captured Store basis after replay. Only a polarity-consistent pair of current verified fidelity and current protected authority can yield `proved` or `disproved`. Missing or corrupt inputs fail closed. No status field, mutation command, evidence selector, or caller-authored verdict exists.
 
 ## Commands
 
 ```text
 mcl verify review-fidelity \
-  --request-json '<fidelity_review_request/1>' \
+  --request-json '<fidelity_review_request/1-or-2>' \
   --actor reviewer-name \
   --idempotency-key review-example-1
 
 mcl verify fidelity-status \
   --formalization-object-id <uuidv7> \
   --formalization-version-hash <sha256>
+
+mcl verify claim-status \
+  --claim-object-id <uuidv7> \
+  --claim-version-hash <sha256>
 ```
 
-The same actions are available through the MCP `verify` family as `review_fidelity` and `fidelity_status`.
+The same actions are available through the MCP `verify` family as `review_fidelity`, `fidelity_status`, and `claim_status`. CLI and MCP call the same application read and return the same closed snapshot.

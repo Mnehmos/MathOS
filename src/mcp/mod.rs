@@ -18,8 +18,8 @@ use serde_json::{Value, json, to_value};
 use crate::app::Application;
 use crate::config::ResolvedConfig;
 use crate::domain::{
-    EdgeKind, FidelityReviewRequest, GraphTraversalRequest, PublicationOutcome, RecordDraft,
-    RecordKind, RunEventDraft, RunEventKind, RunKind, TraversalDirection,
+    EdgeKind, GraphTraversalRequest, PublicationOutcome, RecordDraft, RecordKind, RunEventDraft,
+    RunEventKind, RunKind, TraversalDirection, VersionedFidelityReviewRequest,
 };
 use crate::error::AppError;
 
@@ -155,36 +155,40 @@ pub enum ResearchAction {
 #[serde(deny_unknown_fields)]
 pub struct VerifyRequest {
     action: VerifyAction,
-    #[serde(default)]
-    request: Option<Value>,
-    #[serde(default)]
-    formalization_object_id: Option<String>,
-    #[serde(default)]
-    formalization_version_hash: Option<String>,
-    #[serde(default)]
-    outcome: Option<String>,
-    #[serde(default)]
-    diagnostic_evidence_id: Option<String>,
-    #[serde(default)]
-    proof_closure_evidence_id: Option<String>,
-    #[serde(default)]
-    axiom_audit_evidence_id: Option<String>,
-    #[serde(default)]
-    source_commit_sha: Option<String>,
-    #[serde(default)]
-    source_tree_sha: Option<String>,
-    #[serde(default)]
-    report_artifact_hash: Option<String>,
-    #[serde(default)]
-    attestation_bundle_artifact_hash: Option<String>,
-    #[serde(default)]
-    publication_receipt_hash: Option<String>,
-    #[serde(default)]
-    actor: Option<String>,
-    #[serde(default)]
-    idempotency_key: Option<String>,
-    #[serde(default)]
-    dry_run: bool,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    request: Option<Option<Value>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    claim_object_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    claim_version_hash: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    formalization_object_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    formalization_version_hash: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    outcome: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    diagnostic_evidence_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    proof_closure_evidence_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    axiom_audit_evidence_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    source_commit_sha: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    source_tree_sha: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    report_artifact_hash: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    attestation_bundle_artifact_hash: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    publication_receipt_hash: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    actor: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    idempotency_key: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    dry_run: Option<Option<bool>>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema)]
@@ -192,6 +196,7 @@ pub struct VerifyRequest {
 pub enum VerifyAction {
     ReviewFidelity,
     FidelityStatus,
+    ClaimStatus,
     PreparePublication,
     IngestPublication,
     PromotePublicationAuthority,
@@ -253,9 +258,10 @@ impl MathOsMcp {
                 "claim_actions": ["propose", "version"],
                 "formalization_actions": ["propose", "version"],
                 "research_actions": ["start", "observe", "submit"],
-                "verify_actions": ["review_fidelity", "fidelity_status", "prepare_publication", "ingest_publication", "promote_publication_authority"],
+                "verify_actions": ["review_fidelity", "fidelity_status", "claim_status", "prepare_publication", "ingest_publication", "promote_publication_authority"],
                 "mutations": true,
                 "authoritative_verification": true,
+                "claim_research_status": "derived_read_only",
                 "transport": "stdio",
                 "protocol_version": PROTOCOL_VERSION.as_str()
             })),
@@ -310,7 +316,7 @@ impl MathOsMcp {
     }
 
     #[tool(
-        description = "Create role-separated statement-fidelity evidence, read its derived status, prepare and ingest non-authoritative publication records, or promote one fully replayed receipt to exact formalization proof/refutation authority. Closed actions: review_fidelity, fidelity_status, prepare_publication, ingest_publication, promote_publication_authority. Promotion accepts only a receipt hash plus attribution; source-claim truth remains separately derived."
+        description = "Create role-separated statement-fidelity evidence from a closed fidelity_review_request/1 or fidelity_review_request/2 object, read its derived status, derive one exact claim version's research status, prepare and ingest non-authoritative publication records, or promote one fully replayed receipt to exact formalization proof/refutation authority. Closed actions: review_fidelity, fidelity_status, claim_status, prepare_publication, ingest_publication, promote_publication_authority. claim_status accepts exact claim identity only and never stores or accepts a verdict."
     )]
     fn verify(&self, Parameters(request): Parameters<VerifyRequest>) -> CallToolResult {
         result_to_tool(self.execute_verify(request))
@@ -473,21 +479,32 @@ impl MathOsMcp {
         let mut application = self.application()?;
         match request.action {
             VerifyAction::ReviewFidelity => {
+                reject_present(
+                    request.claim_object_id,
+                    "claim_object_id",
+                    "review_fidelity",
+                )?;
+                reject_present(
+                    request.claim_version_hash,
+                    "claim_version_hash",
+                    "review_fidelity",
+                )?;
                 let payload = request
                     .request
+                    .flatten()
                     .ok_or_else(|| missing_field("request", "review_fidelity", "verify"))?;
-                let review: FidelityReviewRequest =
+                let review: VersionedFidelityReviewRequest =
                     serde_json::from_value(payload).map_err(|error| {
                         AppError::new(
                             "MCL_FIDELITY_JSON_INVALID",
                             error.to_string(),
                             false,
-                            "Supply one closed fidelity_review_request/1 object.",
+                            "Supply one closed fidelity_review_request/1 or fidelity_review_request/2 object.",
                         )
                     })?;
-                let actor = required(request.actor, "actor", "review_fidelity")?;
+                let actor = required(request.actor.flatten(), "actor", "review_fidelity")?;
                 let idempotency_key = required(
-                    request.idempotency_key,
+                    request.idempotency_key.flatten(),
                     "idempotency_key",
                     "review_fidelity",
                 )?;
@@ -546,19 +563,22 @@ impl MathOsMcp {
                     &review,
                     &actor,
                     &idempotency_key,
-                    request.dry_run,
+                    mutation_dry_run(request.dry_run, "review_fidelity")?,
                 )?)
                 .map_err(serialization_error)
             }
             VerifyAction::FidelityStatus => {
-                if request.dry_run {
-                    return Err(AppError::new(
-                        "MCL_MCP_FIELD_FORBIDDEN",
-                        "verify action `fidelity_status` does not accept `dry_run`",
-                        false,
-                        "Remove `dry_run`; fidelity_status is already read-only.",
-                    ));
-                }
+                reject_present(request.dry_run, "dry_run", "fidelity_status")?;
+                reject_present(
+                    request.claim_object_id,
+                    "claim_object_id",
+                    "fidelity_status",
+                )?;
+                reject_present(
+                    request.claim_version_hash,
+                    "claim_version_hash",
+                    "fidelity_status",
+                )?;
                 reject_present(request.request, "request", "fidelity_status")?;
                 reject_present(request.actor, "actor", "fidelity_status")?;
                 reject_present(
@@ -609,19 +629,95 @@ impl MathOsMcp {
                 )?;
                 let formalization = crate::domain::schemas::ExactVersionReference {
                     object_id: required(
-                        request.formalization_object_id,
+                        request.formalization_object_id.flatten(),
                         "formalization_object_id",
                         "fidelity_status",
                     )?,
                     version_hash: required(
-                        request.formalization_version_hash,
+                        request.formalization_version_hash.flatten(),
                         "formalization_version_hash",
                         "fidelity_status",
                     )?,
                 };
                 to_value(application.fidelity_status(&formalization)?).map_err(serialization_error)
             }
+            VerifyAction::ClaimStatus => {
+                reject_present(request.request, "request", "claim_status")?;
+                reject_present(
+                    request.formalization_object_id,
+                    "formalization_object_id",
+                    "claim_status",
+                )?;
+                reject_present(
+                    request.formalization_version_hash,
+                    "formalization_version_hash",
+                    "claim_status",
+                )?;
+                reject_present(request.outcome, "outcome", "claim_status")?;
+                reject_present(
+                    request.diagnostic_evidence_id,
+                    "diagnostic_evidence_id",
+                    "claim_status",
+                )?;
+                reject_present(
+                    request.proof_closure_evidence_id,
+                    "proof_closure_evidence_id",
+                    "claim_status",
+                )?;
+                reject_present(
+                    request.axiom_audit_evidence_id,
+                    "axiom_audit_evidence_id",
+                    "claim_status",
+                )?;
+                reject_present(
+                    request.source_commit_sha,
+                    "source_commit_sha",
+                    "claim_status",
+                )?;
+                reject_present(request.source_tree_sha, "source_tree_sha", "claim_status")?;
+                reject_present(
+                    request.report_artifact_hash,
+                    "report_artifact_hash",
+                    "claim_status",
+                )?;
+                reject_present(
+                    request.attestation_bundle_artifact_hash,
+                    "attestation_bundle_artifact_hash",
+                    "claim_status",
+                )?;
+                reject_present(
+                    request.publication_receipt_hash,
+                    "publication_receipt_hash",
+                    "claim_status",
+                )?;
+                reject_present(request.actor, "actor", "claim_status")?;
+                reject_present(request.idempotency_key, "idempotency_key", "claim_status")?;
+                reject_present(request.dry_run, "dry_run", "claim_status")?;
+                let claim = crate::domain::schemas::ExactVersionReference {
+                    object_id: required(
+                        request.claim_object_id.flatten(),
+                        "claim_object_id",
+                        "claim_status",
+                    )?,
+                    version_hash: required(
+                        request.claim_version_hash.flatten(),
+                        "claim_version_hash",
+                        "claim_status",
+                    )?,
+                };
+                to_value(application.claim_research_status(&claim)?).map_err(serialization_error)
+            }
             VerifyAction::PreparePublication => {
+                reject_present(
+                    request.claim_object_id,
+                    "claim_object_id",
+                    "prepare_publication",
+                )?;
+                reject_present(
+                    request.claim_version_hash,
+                    "claim_version_hash",
+                    "prepare_publication",
+                )?;
                 reject_present(request.request, "request", "prepare_publication")?;
                 reject_present(
                     request.report_artifact_hash,
@@ -640,49 +736,49 @@ impl MathOsMcp {
                 )?;
                 let formalization = crate::domain::schemas::ExactVersionReference {
                     object_id: required(
-                        request.formalization_object_id,
+                        request.formalization_object_id.flatten(),
                         "formalization_object_id",
                         "prepare_publication",
                     )?,
                     version_hash: required(
-                        request.formalization_version_hash,
+                        request.formalization_version_hash.flatten(),
                         "formalization_version_hash",
                         "prepare_publication",
                     )?,
                 };
                 let outcome = PublicationOutcome::from_str(&required(
-                    request.outcome,
+                    request.outcome.flatten(),
                     "outcome",
                     "prepare_publication",
                 )?)?;
                 let diagnostic_evidence_id = required(
-                    request.diagnostic_evidence_id,
+                    request.diagnostic_evidence_id.flatten(),
                     "diagnostic_evidence_id",
                     "prepare_publication",
                 )?;
                 let proof_closure_evidence_id = required(
-                    request.proof_closure_evidence_id,
+                    request.proof_closure_evidence_id.flatten(),
                     "proof_closure_evidence_id",
                     "prepare_publication",
                 )?;
                 let axiom_audit_evidence_id = required(
-                    request.axiom_audit_evidence_id,
+                    request.axiom_audit_evidence_id.flatten(),
                     "axiom_audit_evidence_id",
                     "prepare_publication",
                 )?;
                 let source_commit_sha = required(
-                    request.source_commit_sha,
+                    request.source_commit_sha.flatten(),
                     "source_commit_sha",
                     "prepare_publication",
                 )?;
                 let source_tree_sha = required(
-                    request.source_tree_sha,
+                    request.source_tree_sha.flatten(),
                     "source_tree_sha",
                     "prepare_publication",
                 )?;
-                let actor = required(request.actor, "actor", "prepare_publication")?;
+                let actor = required(request.actor.flatten(), "actor", "prepare_publication")?;
                 let idempotency_key = required(
-                    request.idempotency_key,
+                    request.idempotency_key.flatten(),
                     "idempotency_key",
                     "prepare_publication",
                 )?;
@@ -696,11 +792,21 @@ impl MathOsMcp {
                     &source_tree_sha,
                     &actor,
                     &idempotency_key,
-                    request.dry_run,
+                    mutation_dry_run(request.dry_run, "prepare_publication")?,
                 )?)
                 .map_err(serialization_error)
             }
             VerifyAction::IngestPublication => {
+                reject_present(
+                    request.claim_object_id,
+                    "claim_object_id",
+                    "ingest_publication",
+                )?;
+                reject_present(
+                    request.claim_version_hash,
+                    "claim_version_hash",
+                    "ingest_publication",
+                )?;
                 reject_present(request.request, "request", "ingest_publication")?;
                 reject_present(
                     request.formalization_object_id,
@@ -744,18 +850,18 @@ impl MathOsMcp {
                     "ingest_publication",
                 )?;
                 let report_artifact_hash = required(
-                    request.report_artifact_hash,
+                    request.report_artifact_hash.flatten(),
                     "report_artifact_hash",
                     "ingest_publication",
                 )?;
                 let attestation_bundle_artifact_hash = required(
-                    request.attestation_bundle_artifact_hash,
+                    request.attestation_bundle_artifact_hash.flatten(),
                     "attestation_bundle_artifact_hash",
                     "ingest_publication",
                 )?;
-                let actor = required(request.actor, "actor", "ingest_publication")?;
+                let actor = required(request.actor.flatten(), "actor", "ingest_publication")?;
                 let idempotency_key = required(
-                    request.idempotency_key,
+                    request.idempotency_key.flatten(),
                     "idempotency_key",
                     "ingest_publication",
                 )?;
@@ -764,11 +870,21 @@ impl MathOsMcp {
                     &attestation_bundle_artifact_hash,
                     &actor,
                     &idempotency_key,
-                    request.dry_run,
+                    mutation_dry_run(request.dry_run, "ingest_publication")?,
                 )?)
                 .map_err(serialization_error)
             }
             VerifyAction::PromotePublicationAuthority => {
+                reject_present(
+                    request.claim_object_id,
+                    "claim_object_id",
+                    "promote_publication_authority",
+                )?;
+                reject_present(
+                    request.claim_version_hash,
+                    "claim_version_hash",
+                    "promote_publication_authority",
+                )?;
                 reject_present(request.request, "request", "promote_publication_authority")?;
                 reject_present(
                     request.formalization_object_id,
@@ -817,13 +933,17 @@ impl MathOsMcp {
                     "promote_publication_authority",
                 )?;
                 let publication_receipt_hash = required(
-                    request.publication_receipt_hash,
+                    request.publication_receipt_hash.flatten(),
                     "publication_receipt_hash",
                     "promote_publication_authority",
                 )?;
-                let actor = required(request.actor, "actor", "promote_publication_authority")?;
+                let actor = required(
+                    request.actor.flatten(),
+                    "actor",
+                    "promote_publication_authority",
+                )?;
                 let idempotency_key = required(
-                    request.idempotency_key,
+                    request.idempotency_key.flatten(),
                     "idempotency_key",
                     "promote_publication_authority",
                 )?;
@@ -831,7 +951,7 @@ impl MathOsMcp {
                     &publication_receipt_hash,
                     &actor,
                     &idempotency_key,
-                    request.dry_run,
+                    mutation_dry_run(request.dry_run, "promote_publication_authority")?,
                 )?)
                 .map_err(serialization_error)
             }
@@ -915,6 +1035,14 @@ fn validate_limit(limit: usize, default: usize, operation: &str) -> Result<(), A
     Ok(())
 }
 
+fn deserialize_present_optional<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 fn required(value: Option<String>, field: &str, action: &str) -> Result<String, AppError> {
     value.filter(|item| !item.trim().is_empty()).ok_or_else(|| {
         AppError::new(
@@ -924,6 +1052,19 @@ fn required(value: Option<String>, field: &str, action: &str) -> Result<String, 
             format!("Supply `{field}` for the `{action}` action."),
         )
     })
+}
+
+fn mutation_dry_run(value: Option<Option<bool>>, action: &str) -> Result<bool, AppError> {
+    match value {
+        None => Ok(false),
+        Some(Some(dry_run)) => Ok(dry_run),
+        Some(None) => Err(AppError::new(
+            "MCL_MCP_FIELD_INVALID",
+            format!("action `{action}` requires `dry_run` to be a Boolean when present"),
+            false,
+            "Set `dry_run` to true or false, or omit it.",
+        )),
+    }
 }
 
 fn missing_field(field: &str, action: &str, family: &str) -> AppError {

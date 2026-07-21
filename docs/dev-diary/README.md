@@ -43,3 +43,4 @@ The diary is intentionally more philosophical than technical. Technical evidence
 33. [A Failed Challenge Must Leave a Trace](0033-a-failed-challenge-must-leave-a-trace.md)
 34. [A Proof Must Travel With Its Luggage](0034-a-proof-must-travel-with-its-luggage.md)
 35. [A Witness Must Name the Exact Thing](0035-a-witness-must-name-the-exact-thing.md)
+36. [Truth Is the Intersection](0036-truth-is-the-intersection.md)

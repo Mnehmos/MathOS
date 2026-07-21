@@ -139,4 +139,148 @@ jq -e \
   exit 71
 }
 
-jq -cS . "$output_dir/publication-ingestion.json"
+claim_object_id="$(jq -er '.object_id' "$candidate_dir/closure/claim-version.json")"
+claim_version_hash="$(jq -er '.version_hash' "$candidate_dir/closure/claim-version.json")"
+formalization_object_id="$(jq -er '.object_id' "$candidate_dir/closure/formalization-version.json")"
+formalization_version_hash="$(jq -er '.version_hash' "$candidate_dir/closure/formalization-version.json")"
+source_object_id="$(jq -er '.object_id' "$candidate_dir/closure/source-version.json")"
+source_version_hash="$(jq -er '.version_hash' "$candidate_dir/closure/source-version.json")"
+module_hash="$(jq -er '.payload.module_artifact_hash' "$candidate_dir/closure/formalization-version.json")"
+
+"$mcl_bin" --root "$candidate_dir" --json verify claim-status \
+  --claim-object-id "$claim_object_id" \
+  --claim-version-hash "$claim_version_hash" \
+  >"$output_dir/claim-status-before-fidelity.json"
+
+jq -e \
+  --arg claim_object_id "$claim_object_id" \
+  --arg claim_version_hash "$claim_version_hash" '
+  .schema_version == "claim_research_status/1" and
+  .claim.object_id == $claim_object_id and
+  .claim.version_hash == $claim_version_hash and
+  .status == "open" and
+  (.witnesses | length) == 0 and
+  (.nonqualifications | length) == 1 and
+  .nonqualifications[0].reason == "no_current_verified_fidelity"
+' "$output_dir/claim-status-before-fidelity.json" >/dev/null || {
+  printf 'claim status before fidelity failed its closed contract\n' >&2
+  exit 71
+}
+
+reviewer="protected-fidelity-reviewer"
+"$mcl_bin" --root "$candidate_dir" --json research start \
+  --kind literature_review \
+  --budget-json '{}' \
+  --actor "$reviewer" \
+  --idempotency-key "publication-fidelity-run:$receipt_hash" \
+  >"$output_dir/fidelity-review-run.json"
+fidelity_run_id="$(jq -er '.run.run_id' "$output_dir/fidelity-review-run.json")"
+
+reviewed_source_relation="$([ "$expected_evidence_kind" = "lean_kernel_proof" ] && printf claim || printf logical_negation)"
+expected_research_status="$([ "$expected_evidence_kind" = "lean_kernel_proof" ] && printf proved || printf disproved)"
+expected_witness_kind="$([ "$expected_evidence_kind" = "lean_kernel_proof" ] && printf proof || printf refutation)"
+jq -cnS \
+  --arg source_object_id "$source_object_id" \
+  --arg source_version_hash "$source_version_hash" \
+  --arg claim_object_id "$claim_object_id" \
+  --arg claim_version_hash "$claim_version_hash" \
+  --arg formalization_object_id "$formalization_object_id" \
+  --arg formalization_version_hash "$formalization_version_hash" \
+  --arg reviewed_source_relation "$reviewed_source_relation" \
+  --arg reviewer "$reviewer" \
+  --arg module_hash "$module_hash" \
+  --arg fidelity_run_id "$fidelity_run_id" '
+  {
+    schema_version: "fidelity_review_request/2",
+    source: {object_id: $source_object_id, version_hash: $source_version_hash},
+    claim: {object_id: $claim_object_id, version_hash: $claim_version_hash},
+    formalization: {
+      object_id: $formalization_object_id,
+      version_hash: $formalization_version_hash
+    },
+    reviewed_source_relation: $reviewed_source_relation,
+    review_level: "mathematical_statement",
+    verdict: "verified",
+    reviewer_identity: $reviewer,
+    findings: [
+      "Protected role-separated review confirms the exact declaration states the selected source relation."
+    ],
+    ambiguity_disposition: "no_ambiguity",
+    definition_mappings: [],
+    supporting_artifact_hashes: [$module_hash],
+    producing_run_id: $fidelity_run_id,
+    supersedes_evidence_id: null
+  }
+' >"$output_dir/fidelity-review-request.json"
+
+"$mcl_bin" --root "$candidate_dir" --json verify review-fidelity \
+  --request-json "$(<"$output_dir/fidelity-review-request.json")" \
+  --actor "$reviewer" \
+  --idempotency-key "publication-fidelity-review:$receipt_hash" \
+  >"$output_dir/fidelity-review.json"
+fidelity_evidence_id="$(jq -er '.evidence.evidence_id' "$output_dir/fidelity-review.json")"
+fidelity_evidence_hash="$(jq -er '.evidence.evidence_hash' "$output_dir/fidelity-review.json")"
+fidelity_report_hash="$(jq -er '.proposed_report_artifact_hash' "$output_dir/fidelity-review.json")"
+authority_evidence_id="$(jq -er '.evidence.evidence_id' "$output_dir/publication-authority.json")"
+authority_evidence_hash="$(jq -er '.evidence.evidence_hash' "$output_dir/publication-authority.json")"
+cp -- "$(cas_path "$fidelity_report_hash")" "$output_dir/fidelity-review-report.json"
+echo "$fidelity_report_hash  $output_dir/fidelity-review-report.json" | sha256sum --check --strict
+jq -e \
+  --arg reviewer "$reviewer" \
+  --arg relation "$reviewed_source_relation" \
+  --arg fidelity_report_hash "$fidelity_report_hash" '
+  .dry_run == false and
+  .proposed_report_artifact_hash == $fidelity_report_hash and
+  .report.schema_version == "fidelity_review_report/2" and
+  .report.reviewed_source_relation == $relation and
+  .report.request.reviewed_source_relation == $relation and
+  .report.request.reviewer_identity == $reviewer and
+  .report.formalization_author != $reviewer and
+  .evidence.payload.evidence_kind == "statement_fidelity_review" and
+  .evidence.payload.result == "accepted" and
+  .evidence.payload.authority_class == "reviewed" and
+  .evidence.payload.stale == false and
+  (.evidence.payload.artifact_hashes | index($fidelity_report_hash)) != null
+' "$output_dir/fidelity-review.json" >/dev/null || {
+  printf 'protected fidelity review output failed its closed contract\n' >&2
+  exit 71
+}
+
+"$mcl_bin" --root "$candidate_dir" --json verify claim-status \
+  --claim-object-id "$claim_object_id" \
+  --claim-version-hash "$claim_version_hash" \
+  >"$output_dir/claim-status-after-fidelity.json"
+
+jq -e \
+  --arg claim_object_id "$claim_object_id" \
+  --arg claim_version_hash "$claim_version_hash" \
+  --arg expected_status "$expected_research_status" \
+  --arg witness_kind "$expected_witness_kind" \
+  --arg relation "$reviewed_source_relation" \
+  --arg fidelity_evidence_id "$fidelity_evidence_id" \
+  --arg fidelity_evidence_hash "$fidelity_evidence_hash" \
+  --arg fidelity_report_hash "$fidelity_report_hash" \
+  --arg authority_evidence_id "$authority_evidence_id" \
+  --arg authority_evidence_hash "$authority_evidence_hash" \
+  --arg receipt_hash "$receipt_hash" '
+  .schema_version == "claim_research_status/1" and
+  .claim.object_id == $claim_object_id and
+  .claim.version_hash == $claim_version_hash and
+  .status == $expected_status and
+  (.nonqualifications | length) == 0 and
+  (.witnesses | length) == 1 and
+  .witnesses[0].kind == $witness_kind and
+  .witnesses[0].reviewed_source_relation == $relation and
+  .witnesses[0].fidelity_request_schema_version == "fidelity_review_request/2" and
+  .witnesses[0].fidelity_evidence_id == $fidelity_evidence_id and
+  .witnesses[0].fidelity_evidence_hash == $fidelity_evidence_hash and
+  .witnesses[0].fidelity_report_artifact_hash == $fidelity_report_hash and
+  .witnesses[0].authority_evidence_id == $authority_evidence_id and
+  .witnesses[0].authority_evidence_hash == $authority_evidence_hash and
+  .witnesses[0].publication_receipt_hash == $receipt_hash
+' "$output_dir/claim-status-after-fidelity.json" >/dev/null || {
+  printf 'claim status after fidelity failed its closed contract\n' >&2
+  exit 71
+}
+
+jq -cS . "$output_dir/claim-status-after-fidelity.json"

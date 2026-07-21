@@ -12,6 +12,7 @@ pub mod environment;
 pub mod evidence;
 pub mod fidelity;
 pub mod publication;
+pub mod research_status;
 pub mod schemas;
 pub mod verifier;
 
@@ -34,8 +35,9 @@ pub use evidence::{
 };
 pub use fidelity::{
     AmbiguityDisposition, DefinitionMapping, FidelityReviewHistoryEntry, FidelityReviewLevel,
-    FidelityReviewReport, FidelityReviewRequest, FidelityStatus, FidelityStatusSnapshot,
-    FidelityVerdict,
+    FidelityReviewReport, FidelityReviewReportV2, FidelityReviewRequest, FidelityReviewRequestV2,
+    FidelityStatus, FidelityStatusSnapshot, FidelityVerdict, ReviewedSourceRelation,
+    VersionedFidelityReviewReport, VersionedFidelityReviewRequest,
 };
 pub use publication::{
     PublicationAttestationVerification, PublicationClassification,
@@ -43,6 +45,11 @@ pub use publication::{
     PublicationRequest, PublicationRetainedArtifactRole, PublicationRetainedClosure,
     PublicationRetainedClosureEntry, PublicationRunnerEnvironment, PublicationStage,
     PublicationStageArtifact, PublicationStageSnapshot,
+};
+pub use research_status::{
+    ClaimResearchStatusNonqualification, ClaimResearchStatusNonqualificationReason,
+    ClaimResearchStatusSnapshot, ClaimResearchStatusWitness, ClaimResearchStatusWitnessKind,
+    ResearchStatus,
 };
 pub use verifier::{
     VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,

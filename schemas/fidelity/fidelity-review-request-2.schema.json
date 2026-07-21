@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/fidelity/review-request/2",
+  "title": "MathOS Fidelity Review Request v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source", "claim", "formalization", "reviewed_source_relation", "review_level", "verdict", "reviewer_identity", "findings", "ambiguity_disposition", "definition_mappings", "supporting_artifact_hashes", "producing_run_id", "supersedes_evidence_id"],
+  "properties": {
+    "schema_version": {"const": "fidelity_review_request/2"},
+    "source": {"type": "object", "additionalProperties": false, "required": ["object_id", "version_hash"], "properties": {"object_id": {"type": "string", "format": "uuid"}, "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+    "claim": {"type": "object", "additionalProperties": false, "required": ["object_id", "version_hash"], "properties": {"object_id": {"type": "string", "format": "uuid"}, "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+    "formalization": {"type": "object", "additionalProperties": false, "required": ["object_id", "version_hash"], "properties": {"object_id": {"type": "string", "format": "uuid"}, "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+    "reviewed_source_relation": {"enum": ["claim", "logical_negation"]},
+    "review_level": {"enum": ["surface_syntax", "mathematical_statement", "definition_mapping", "source_paper_correspondence", "benchmark_hash_alignment", "expert_domain_review"]},
+    "verdict": {"enum": ["attested", "benchmark_aligned", "verified", "rejected"]},
+    "reviewer_identity": {"type": "string", "minLength": 1, "maxLength": 256},
+    "findings": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"type": "string", "minLength": 1, "maxLength": 65536}},
+    "ambiguity_disposition": {"enum": ["no_ambiguity", "preserved_variants", "resolved_from_source", "unresolved"]},
+    "definition_mappings": {"type": "array", "maxItems": 256, "items": {"type": "object", "additionalProperties": false, "required": ["source_term", "formal_declaration", "notes"], "properties": {"source_term": {"type": "string", "minLength": 1, "maxLength": 65536}, "formal_declaration": {"type": "string", "minLength": 1, "maxLength": 65536}, "notes": {"type": "string", "maxLength": 65536}}}},
+    "supporting_artifact_hashes": {"type": "array", "maxItems": 256, "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "producing_run_id": {"type": "string", "format": "uuid"},
+    "supersedes_evidence_id": {"type": ["string", "null"], "format": "uuid"}
+  }
+}

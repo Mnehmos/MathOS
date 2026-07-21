@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::canonical::{canonical_json, record_version_hash, value_hash};
 use crate::domain::evidence::{AUTHORITATIVE_EVIDENCE_SCHEMA_VERSION, PublicationAuthorityBinding};
 use crate::domain::schemas::{
-    ExactVersionReference, FormalizationClaimPolarity, FormalizationPayload,
+    ClaimPayload, ExactVersionReference, FormalizationClaimPolarity, FormalizationPayload,
     validate_record_payload,
 };
 use crate::domain::{
@@ -40,6 +40,8 @@ const MIGRATION_0008: &str = include_str!("../../migrations/0008_verifier_jobs.s
 const MIGRATION_0009: &str = include_str!("../../migrations/0009_evidence_invariants.sql");
 const MIGRATION_0010: &str = include_str!("../../migrations/0010_publication_ingestion.sql");
 const MIGRATION_0011: &str = include_str!("../../migrations/0011_publication_authority.sql");
+const MAX_CLAIM_STATUS_FORMALIZATIONS: usize = 256;
+const MAX_CLAIM_STATUS_EVIDENCE_PER_FORMALIZATION: usize = 256;
 const MAX_PUBLICATION_INPUT_BYTES: u64 = 16 * 1_048_576;
 const MAX_REGISTERED_CAS_HASHES: usize = 100_000;
 const PUBLICATION_INGESTION_OPERATION: &str = "publication.ingestion_receipt.register";
@@ -81,6 +83,34 @@ type RawEdgeRow = (
     i64,
     String,
 );
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct ClaimStatusEvidenceReadBasis {
+    pub evidence_id: String,
+    pub evidence_hash: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct ClaimStatusFormalizationReadBasis {
+    pub formalization: ExactVersionReference,
+    pub fidelity_evidence: Vec<ClaimStatusEvidenceReadBasis>,
+    pub authoritative_evidence: Vec<ClaimStatusEvidenceReadBasis>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct ClaimStatusReadBasis {
+    pub claim: ExactVersionReference,
+    pub source: ExactVersionReference,
+    pub current_claim_head_version_hash: Option<String>,
+    pub current_source_head_version_hash: Option<String>,
+    pub formalizations: Vec<ClaimStatusFormalizationReadBasis>,
+}
+
+#[derive(Clone, Copy)]
+enum ClaimStatusEvidenceSelection {
+    Fidelity,
+    Authoritative,
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct PublicationAuthorityCommit {
@@ -2238,6 +2268,74 @@ impl Store {
     }
 
     #[cfg(test)]
+    fn list_current_formalizations_for_claim(
+        &self,
+        claim: &ExactVersionReference,
+    ) -> Result<Vec<RecordSnapshot>, AppError> {
+        self.list_current_formalizations_for_claim_bounded(claim, MAX_CLAIM_STATUS_FORMALIZATIONS)
+    }
+
+    #[cfg(test)]
+    fn list_current_formalizations_for_claim_bounded(
+        &self,
+        claim: &ExactVersionReference,
+        limit: usize,
+    ) -> Result<Vec<RecordSnapshot>, AppError> {
+        read_current_formalizations_for_claim_bounded(&self.connection, claim, limit)
+    }
+
+    #[cfg(test)]
+    fn list_authoritative_evidence_for_subject(
+        &self,
+        subject: &ExactVersionReference,
+    ) -> Result<Vec<EvidenceSnapshot>, AppError> {
+        self.list_authoritative_evidence_for_subject_bounded(
+            subject,
+            MAX_CLAIM_STATUS_EVIDENCE_PER_FORMALIZATION,
+        )
+    }
+
+    #[cfg(test)]
+    fn list_authoritative_evidence_for_subject_bounded(
+        &self,
+        subject: &ExactVersionReference,
+        limit: usize,
+    ) -> Result<Vec<EvidenceSnapshot>, AppError> {
+        read_authoritative_evidence_for_subject_bounded(&self.connection, subject, limit)
+    }
+
+    pub(crate) fn capture_claim_status_read_basis(
+        &self,
+        claim: &ExactVersionReference,
+    ) -> Result<ClaimStatusReadBasis, AppError> {
+        let transaction = self
+            .connection
+            .unchecked_transaction()
+            .map_err(|error| AppError::database("start claim status read snapshot", error))?;
+        let basis = capture_claim_status_read_basis(&transaction, claim)?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("finish claim status read snapshot", error))?;
+        Ok(basis)
+    }
+
+    pub(crate) fn recheck_claim_status_read_basis(
+        &self,
+        basis: &ClaimStatusReadBasis,
+    ) -> Result<(), AppError> {
+        let current = self.capture_claim_status_read_basis(&basis.claim)?;
+        if current != *basis {
+            return Err(AppError::new(
+                "MCL_CLAIM_STATUS_READ_CONFLICT",
+                "claim status inputs changed while the derived read was replaying evidence",
+                true,
+                "Retry the read against the new source, claim, formalization, fidelity, and authority heads.",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn requeue_expired_verifier_jobs(&mut self) -> Result<usize, AppError> {
         requeue_expired_jobs(&self.connection)
     }
@@ -2684,6 +2782,334 @@ impl Store {
     pub fn get_edge(&self, edge_id: &str) -> Result<EdgeSnapshot, AppError> {
         read_edge(&self.connection, edge_id)
     }
+}
+
+fn read_current_formalizations_for_claim_bounded(
+    connection: &Connection,
+    claim: &ExactVersionReference,
+    limit: usize,
+) -> Result<Vec<RecordSnapshot>, AppError> {
+    validate_claim_status_record_reference(connection, claim, RecordKind::Claim, "claim")?;
+    validate_claim_status_limit(limit, MAX_CLAIM_STATUS_FORMALIZATIONS, "formalization")?;
+    let query_limit = i64::try_from(limit + 1).expect("claim-status limit fits in i64");
+    let mut statement = connection
+        .prepare(
+            "SELECT record.object_id, record.head_version_hash FROM records AS record JOIN record_versions AS version ON version.object_id = record.object_id AND version.version_hash = record.head_version_hash WHERE record.record_type = 'formalization' AND record.tombstoned = 0 AND json_extract(version.payload_json, '$.claim_version.object_id') = ?1 AND json_extract(version.payload_json, '$.claim_version.version_hash') = ?2 ORDER BY record.object_id, record.head_version_hash LIMIT ?3",
+        )
+        .map_err(|error| AppError::database("prepare current claim formalization list", error))?;
+    let references = statement
+        .query_map(
+            params![claim.object_id, claim.version_hash, query_limit],
+            |row| {
+                Ok(ExactVersionReference {
+                    object_id: row.get(0)?,
+                    version_hash: row.get(1)?,
+                })
+            },
+        )
+        .map_err(|error| AppError::database("list current claim formalizations", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| AppError::database("read current claim formalization list", error))?;
+    reject_claim_status_overflow(references.len(), limit, "current formalizations")?;
+
+    references
+        .iter()
+        .map(|reference| {
+            let snapshot = validate_claim_status_record_reference(
+                connection,
+                reference,
+                RecordKind::Formalization,
+                "current formalization",
+            )?;
+            let payload: FormalizationPayload = serde_json::from_value(snapshot.payload.clone())
+                .map_err(|error| {
+                    claim_status_integrity_error(format!(
+                        "current formalization {} cannot be decoded: {error}",
+                        snapshot.version_hash
+                    ))
+                })?;
+            if payload.claim_version != *claim {
+                return Err(claim_status_integrity_error(format!(
+                    "current formalization {} does not reference the requested exact claim",
+                    snapshot.version_hash
+                )));
+            }
+            Ok(snapshot)
+        })
+        .collect()
+}
+
+fn read_authoritative_evidence_for_subject_bounded(
+    connection: &Connection,
+    subject: &ExactVersionReference,
+    limit: usize,
+) -> Result<Vec<EvidenceSnapshot>, AppError> {
+    validate_claim_status_record_reference(
+        connection,
+        subject,
+        RecordKind::Formalization,
+        "formalization",
+    )?;
+    validate_claim_status_limit(
+        limit,
+        MAX_CLAIM_STATUS_EVIDENCE_PER_FORMALIZATION,
+        "authoritative evidence",
+    )?;
+    list_claim_status_evidence_bounded(
+        connection,
+        subject,
+        ClaimStatusEvidenceSelection::Authoritative,
+        limit,
+    )
+}
+
+fn capture_claim_status_read_basis(
+    connection: &Connection,
+    claim: &ExactVersionReference,
+) -> Result<ClaimStatusReadBasis, AppError> {
+    let claim_snapshot =
+        validate_claim_status_record_reference(connection, claim, RecordKind::Claim, "claim")?;
+    let claim_payload: ClaimPayload =
+        serde_json::from_value(claim_snapshot.payload).map_err(|error| {
+            claim_status_integrity_error(format!(
+                "stored claim payload cannot resolve its exact source: {error}"
+            ))
+        })?;
+    validate_claim_status_record_reference(
+        connection,
+        &claim_payload.source_reference,
+        RecordKind::Source,
+        "source",
+    )?;
+    let current_claim_head_version_hash = read_current_claim_status_head(connection, claim)?;
+    let current_source_head_version_hash = read_current_claim_status_record_head(
+        connection,
+        &claim_payload.source_reference,
+        RecordKind::Source,
+        "source",
+    )?;
+    let formalizations =
+        if current_claim_head_version_hash.as_deref() == Some(claim.version_hash.as_str()) {
+            read_current_formalizations_for_claim_bounded(
+                connection,
+                claim,
+                MAX_CLAIM_STATUS_FORMALIZATIONS,
+            )?
+            .into_iter()
+            .map(|snapshot| {
+                let formalization = ExactVersionReference {
+                    object_id: snapshot.object_id,
+                    version_hash: snapshot.version_hash,
+                };
+                let fidelity_evidence = list_claim_status_evidence_bounded(
+                    connection,
+                    &formalization,
+                    ClaimStatusEvidenceSelection::Fidelity,
+                    MAX_CLAIM_STATUS_EVIDENCE_PER_FORMALIZATION,
+                )?
+                .into_iter()
+                .map(claim_status_evidence_basis)
+                .collect();
+                let authoritative_evidence = read_authoritative_evidence_for_subject_bounded(
+                    connection,
+                    &formalization,
+                    MAX_CLAIM_STATUS_EVIDENCE_PER_FORMALIZATION,
+                )?
+                .into_iter()
+                .map(claim_status_evidence_basis)
+                .collect();
+                Ok(ClaimStatusFormalizationReadBasis {
+                    formalization,
+                    fidelity_evidence,
+                    authoritative_evidence,
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()?
+        } else {
+            Vec::new()
+        };
+    Ok(ClaimStatusReadBasis {
+        claim: claim.clone(),
+        source: claim_payload.source_reference,
+        current_claim_head_version_hash,
+        current_source_head_version_hash,
+        formalizations,
+    })
+}
+
+fn validate_claim_status_record_reference(
+    connection: &Connection,
+    reference: &ExactVersionReference,
+    expected_kind: RecordKind,
+    label: &str,
+) -> Result<RecordSnapshot, AppError> {
+    validate_hash(&reference.version_hash, label)?;
+    let snapshot = read_snapshot_by_version(connection, &reference.version_hash)?;
+    if snapshot.object_id != reference.object_id || snapshot.kind != expected_kind {
+        return Err(AppError::new(
+            "MCL_CLAIM_STATUS_SUBJECT_INVALID",
+            format!("{label} is not the requested exact {expected_kind} object and version"),
+            false,
+            format!("Use one exact canonical {expected_kind} reference."),
+        ));
+    }
+    validate_record_payload(snapshot.kind, &snapshot.schema_version, &snapshot.payload).map_err(
+        |error| {
+            claim_status_integrity_error(format!(
+                "stored {label} payload fails validation: {}",
+                error.message
+            ))
+        },
+    )?;
+    let reproduced =
+        record_version_hash(&snapshot.schema_version, &snapshot.payload).map_err(|error| {
+            claim_status_integrity_error(format!(
+                "stored {label} payload cannot reproduce a canonical identity: {}",
+                error.message
+            ))
+        })?;
+    if reproduced != snapshot.version_hash {
+        return Err(claim_status_integrity_error(format!(
+            "stored {label} payload does not reproduce version {}",
+            snapshot.version_hash
+        )));
+    }
+    Ok(snapshot)
+}
+
+fn read_current_claim_status_head(
+    connection: &Connection,
+    claim: &ExactVersionReference,
+) -> Result<Option<String>, AppError> {
+    read_current_claim_status_record_head(connection, claim, RecordKind::Claim, "claim")
+}
+
+fn read_current_claim_status_record_head(
+    connection: &Connection,
+    reference: &ExactVersionReference,
+    expected_kind: RecordKind,
+    label: &str,
+) -> Result<Option<String>, AppError> {
+    let row = connection
+        .query_row(
+            "SELECT record_type, head_version_hash, tombstoned FROM records WHERE object_id = ?1",
+            [&reference.object_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| AppError::database("read claim status head", error))?
+        .ok_or_else(|| {
+            claim_status_integrity_error(format!(
+                "exact {label} version has no owning canonical record"
+            ))
+        })?;
+    let (kind, head, tombstoned) = row;
+    if kind != expected_kind.as_str() || !matches!(tombstoned, 0 | 1) {
+        return Err(claim_status_integrity_error(format!(
+            "{label} record type or tombstone projection is invalid"
+        )));
+    }
+    let head = head.ok_or_else(|| {
+        claim_status_integrity_error(format!("{label} record has no current version head"))
+    })?;
+    validate_claim_status_record_reference(
+        connection,
+        &ExactVersionReference {
+            object_id: reference.object_id.clone(),
+            version_hash: head.clone(),
+        },
+        expected_kind,
+        &format!("current {label} head"),
+    )?;
+    Ok((tombstoned == 0).then_some(head))
+}
+
+fn list_claim_status_evidence_bounded(
+    connection: &Connection,
+    subject: &ExactVersionReference,
+    selection: ClaimStatusEvidenceSelection,
+    limit: usize,
+) -> Result<Vec<EvidenceSnapshot>, AppError> {
+    validate_claim_status_limit(
+        limit,
+        MAX_CLAIM_STATUS_EVIDENCE_PER_FORMALIZATION,
+        "evidence",
+    )?;
+    let query_limit = i64::try_from(limit + 1).expect("claim-status limit fits in i64");
+    let sql = match selection {
+        ClaimStatusEvidenceSelection::Fidelity => {
+            "SELECT evidence.evidence_id FROM evidence WHERE evidence.subject_object_id = ?1 AND evidence.subject_version_hash = ?2 AND (evidence.evidence_kind = 'statement_fidelity_review' OR json_extract(evidence.metadata_json, '$.evidence_kind') = 'statement_fidelity_review' OR EXISTS (SELECT 1 FROM json_each(evidence.artifact_hashes_json) AS member JOIN artifacts ON artifacts.artifact_hash = member.value WHERE json_extract(artifacts.metadata_json, '$.semantic_metadata.artifact_role') = 'fidelity_review_report')) ORDER BY evidence.evidence_hash, evidence.evidence_id LIMIT ?3"
+        }
+        ClaimStatusEvidenceSelection::Authoritative => {
+            "SELECT evidence_id FROM evidence WHERE subject_object_id = ?1 AND subject_version_hash = ?2 AND (authority_class = 'authoritative' OR evidence_kind IN ('lean_kernel_proof', 'lean_kernel_refutation') OR publication_receipt_hash IS NOT NULL OR publication_stage_hash IS NOT NULL OR json_extract(metadata_json, '$.schema_version') = 'evidence/2' OR json_type(metadata_json, '$.publication_authority') IS NOT NULL) ORDER BY evidence_hash, evidence_id LIMIT ?3"
+        }
+    };
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|error| AppError::database("prepare claim status evidence list", error))?;
+    let evidence_ids = statement
+        .query_map(
+            params![subject.object_id, subject.version_hash, query_limit],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| AppError::database("list claim status evidence", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| AppError::database("read claim status evidence list", error))?;
+    reject_claim_status_overflow(evidence_ids.len(), limit, "evidence records")?;
+    evidence_ids
+        .iter()
+        .map(|evidence_id| read_evidence(connection, evidence_id))
+        .collect()
+}
+
+fn claim_status_evidence_basis(evidence: EvidenceSnapshot) -> ClaimStatusEvidenceReadBasis {
+    ClaimStatusEvidenceReadBasis {
+        evidence_id: evidence.evidence_id,
+        evidence_hash: evidence.evidence_hash,
+    }
+}
+
+fn validate_claim_status_limit(limit: usize, maximum: usize, label: &str) -> Result<(), AppError> {
+    if !(1..=maximum).contains(&limit) {
+        return Err(AppError::new(
+            "MCL_CLAIM_STATUS_LIMIT_INVALID",
+            format!("claim status {label} limit must be between 1 and {maximum}"),
+            false,
+            "Use the fixed bounded derived-status read path.",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_claim_status_overflow(
+    observed: usize,
+    limit: usize,
+    label: &str,
+) -> Result<(), AppError> {
+    if observed > limit {
+        return Err(AppError::new(
+            "MCL_CLAIM_STATUS_LIMIT_EXCEEDED",
+            format!("claim status has more than {limit} {label}"),
+            false,
+            "Refine or explicitly retire excess canonical inputs; derived status never truncates them.",
+        ));
+    }
+    Ok(())
+}
+
+fn claim_status_integrity_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_CLAIM_STATUS_INTEGRITY_FAILED",
+        message,
+        false,
+        "Quarantine the affected claim lineage and restore a verified database and artifact backup.",
+    )
 }
 
 fn validate_record_references(
@@ -6450,12 +6876,20 @@ mod tests {
         outcome: PublicationOutcome,
         environment_hash: &str,
     ) -> (ExactVersionReference, RecordDraft) {
-        let claim_snapshot = store
+        let source_snapshot = store
             .create_record(
-                &claim(&format!("Publication receipt fixture {label}")),
+                &source(&format!("Publication receipt source fixture {label}")),
                 "publication-test",
-                &format!("{label}-claim"),
+                &format!("{label}-source"),
             )
+            .expect("publication receipt source creates");
+        let mut claim_draft = claim(&format!("Publication receipt fixture {label}"));
+        claim_draft.payload["source_reference"] = json!({
+            "object_id": source_snapshot.object_id,
+            "version_hash": source_snapshot.version_hash,
+        });
+        let claim_snapshot = store
+            .create_record(&claim_draft, "publication-test", &format!("{label}-claim"))
             .expect("publication receipt claim creates");
         let module_source =
             format!("theorem publicationReceiptFixture : True := by trivial\n-- {label}\n");
@@ -8099,6 +8533,381 @@ mod tests {
                 formalization
             );
         }
+    }
+
+    #[test]
+    fn claim_status_formalization_reads_are_exact_current_bounded_and_fail_closed() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let claim_snapshot = store
+            .create_record(
+                &claim("Derived status exact claim"),
+                "status-test",
+                "status-claim",
+            )
+            .expect("claim creates");
+        let other_claim = store
+            .create_record(
+                &claim("Unrelated exact claim"),
+                "status-test",
+                "status-other-claim",
+            )
+            .expect("other claim creates");
+        let environment = store
+            .register_environment(&environment_manifest(), "status-test", "status-environment")
+            .expect("environment registers");
+        let module = register_lean_artifact(
+            &mut store,
+            b"theorem statusFixture : True := by trivial\n",
+            "status-module",
+        );
+        let mut first_draft = formalization(
+            &claim_snapshot,
+            "True",
+            &environment.environment_hash,
+            &module.artifact_hash,
+            &[],
+        );
+        first_draft.payload["claim_polarity"] = json!("claim");
+        first_draft.payload["declaration_name"] = json!("MathOS.statusFixtureOne");
+        let first = store
+            .create_record(&first_draft, "status-test", "status-formalization-one")
+            .expect("first formalization creates");
+        let mut second_draft = first_draft.clone();
+        second_draft.payload["declaration_name"] = json!("MathOS.statusFixtureTwo");
+        second_draft.payload["declaration_hash"] = json!("e".repeat(64));
+        let second = store
+            .create_record(&second_draft, "status-test", "status-formalization-two")
+            .expect("second formalization creates");
+        let claim_reference = ExactVersionReference {
+            object_id: claim_snapshot.object_id.clone(),
+            version_hash: claim_snapshot.version_hash.clone(),
+        };
+
+        let listed = store
+            .list_current_formalizations_for_claim(&claim_reference)
+            .expect("current formalizations list");
+        let mut expected = vec![first.clone(), second.clone()];
+        expected.sort_by(|left, right| left.object_id.cmp(&right.object_id));
+        assert_eq!(
+            listed, expected,
+            "all exact current heads are deterministic"
+        );
+        assert_eq!(
+            store
+                .list_current_formalizations_for_claim_bounded(&claim_reference, 1)
+                .expect_err("bounded read cannot truncate a second head")
+                .code,
+            "MCL_CLAIM_STATUS_LIMIT_EXCEEDED"
+        );
+
+        let mut successor_draft = first_draft.clone();
+        successor_draft.payload["formalization_notes"] = json!("current successor");
+        let successor = store
+            .version_record(
+                &first.object_id,
+                &first.version_hash,
+                &successor_draft,
+                "status-test",
+                "status-formalization-successor",
+            )
+            .expect("formalization successor creates");
+        let mut moved_draft = second_draft;
+        moved_draft.payload["claim_version"] = json!({
+            "object_id": other_claim.object_id,
+            "version_hash": other_claim.version_hash,
+        });
+        store
+            .version_record(
+                &second.object_id,
+                &second.version_hash,
+                &moved_draft,
+                "status-test",
+                "status-formalization-moved",
+            )
+            .expect("formalization can move only through an exact successor");
+        assert_eq!(
+            store
+                .list_current_formalizations_for_claim(&claim_reference)
+                .expect("successor list"),
+            vec![successor.clone()],
+            "historical heads and heads now bound to another claim are excluded"
+        );
+        assert_eq!(
+            store
+                .list_current_formalizations_for_claim(&ExactVersionReference {
+                    object_id: successor.object_id.clone(),
+                    version_hash: successor.version_hash.clone(),
+                })
+                .expect_err("formalization cannot substitute for claim")
+                .code,
+            "MCL_CLAIM_STATUS_SUBJECT_INVALID"
+        );
+
+        store
+            .connection
+            .execute("DROP TRIGGER record_versions_reject_update", [])
+            .expect("test removes immutable-record guard");
+        store
+            .connection
+            .execute(
+                "UPDATE record_versions SET payload_json = json_set(payload_json, '$.formalization_notes', 'corrupted current head') WHERE version_hash = ?1",
+                [&successor.version_hash],
+            )
+            .expect("test simulates current-head corruption");
+        assert_eq!(
+            store
+                .list_current_formalizations_for_claim(&claim_reference)
+                .expect_err("corrupt current head fails closed")
+                .code,
+            "MCL_CLAIM_STATUS_INTEGRITY_FAILED"
+        );
+    }
+
+    #[test]
+    fn claim_status_basis_detects_authority_and_formalization_head_changes() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let fixture = publication_authority_fixture(
+            &mut store,
+            "claim-status-basis",
+            PublicationOutcome::Proof,
+        );
+        let formalization_payload: FormalizationPayload =
+            serde_json::from_value(fixture.formalization_draft.payload.clone())
+                .expect("formalization fixture decodes");
+        let claim_reference = formalization_payload.claim_version;
+        let claim_snapshot = store
+            .get_record_version(&claim_reference.version_hash)
+            .expect("claim reads");
+        let claim_payload: ClaimPayload =
+            serde_json::from_value(claim_snapshot.payload).expect("claim decodes");
+        let source_reference = claim_payload.source_reference;
+
+        let before_authority = store
+            .capture_claim_status_read_basis(&claim_reference)
+            .expect("basis before authority");
+        assert_eq!(
+            before_authority.current_claim_head_version_hash,
+            Some(claim_reference.version_hash.clone())
+        );
+        assert_eq!(before_authority.source, source_reference);
+        assert_eq!(
+            before_authority.current_source_head_version_hash,
+            Some(source_reference.version_hash.clone())
+        );
+        assert_eq!(before_authority.formalizations.len(), 1);
+        assert!(
+            before_authority.formalizations[0]
+                .authoritative_evidence
+                .is_empty()
+        );
+        assert!(
+            store
+                .list_authoritative_evidence_for_subject(&fixture.commit.subject)
+                .expect("empty authority list")
+                .is_empty()
+        );
+
+        let authority = store
+            .create_publication_authority_evidence(
+                &fixture.commit,
+                "status-test",
+                "claim-status-authority",
+            )
+            .expect("authority creates");
+        assert_eq!(
+            store
+                .list_authoritative_evidence_for_subject(&fixture.commit.subject)
+                .expect("authority list"),
+            vec![authority.clone()]
+        );
+        assert_eq!(
+            store
+                .recheck_claim_status_read_basis(&before_authority)
+                .expect_err("new authority changes the basis")
+                .code,
+            "MCL_CLAIM_STATUS_READ_CONFLICT"
+        );
+        let after_authority = store
+            .capture_claim_status_read_basis(&claim_reference)
+            .expect("basis after authority");
+        store
+            .recheck_claim_status_read_basis(&after_authority)
+            .expect("unchanged basis rechecks");
+        assert_eq!(
+            after_authority.formalizations[0].authoritative_evidence,
+            vec![ClaimStatusEvidenceReadBasis {
+                evidence_id: authority.evidence_id.clone(),
+                evidence_hash: authority.evidence_hash.clone(),
+            }]
+        );
+        assert_eq!(
+            store
+                .list_authoritative_evidence_for_subject(&claim_reference)
+                .expect_err("claim cannot substitute for formalization")
+                .code,
+            "MCL_CLAIM_STATUS_SUBJECT_INVALID"
+        );
+
+        let mut successor_draft = fixture.formalization_draft;
+        successor_draft.payload["formalization_notes"] =
+            json!("successor invalidates old authority currentness");
+        let successor = store
+            .version_record(
+                &fixture.commit.subject.object_id,
+                &fixture.commit.subject.version_hash,
+                &successor_draft,
+                "status-test",
+                "claim-status-formalization-successor",
+            )
+            .expect("formalization successor creates");
+        assert_eq!(
+            store
+                .recheck_claim_status_read_basis(&after_authority)
+                .expect_err("new formalization head changes the basis")
+                .code,
+            "MCL_CLAIM_STATUS_READ_CONFLICT"
+        );
+        let successor_basis = store
+            .capture_claim_status_read_basis(&claim_reference)
+            .expect("successor basis");
+        assert_eq!(
+            successor_basis.formalizations[0].formalization,
+            ExactVersionReference {
+                object_id: successor.object_id,
+                version_hash: successor.version_hash,
+            }
+        );
+        assert!(
+            successor_basis.formalizations[0]
+                .authoritative_evidence
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .list_authoritative_evidence_for_subject(&fixture.commit.subject)
+                .expect("historical exact authority remains readable"),
+            vec![authority]
+        );
+
+        let source_snapshot = store
+            .get_record_version(&source_reference.version_hash)
+            .expect("source reads");
+        let mut source_payload = source_snapshot.payload.clone();
+        source_payload["provenance_notes"] =
+            json!("source successor changes the status read basis");
+        let source_successor = store
+            .version_record(
+                &source_reference.object_id,
+                &source_reference.version_hash,
+                &RecordDraft {
+                    kind: RecordKind::Source,
+                    schema_version: source_snapshot.schema_version,
+                    payload: source_payload,
+                    searchable_text: "claim status source successor".to_owned(),
+                },
+                "status-test",
+                "claim-status-source-successor",
+            )
+            .expect("source successor creates");
+        assert_eq!(
+            store
+                .recheck_claim_status_read_basis(&successor_basis)
+                .expect_err("new source head changes the basis")
+                .code,
+            "MCL_CLAIM_STATUS_READ_CONFLICT"
+        );
+        let after_source_basis = store
+            .capture_claim_status_read_basis(&claim_reference)
+            .expect("post-source basis");
+        assert_eq!(
+            after_source_basis.current_source_head_version_hash,
+            Some(source_successor.version_hash)
+        );
+
+        let claim_successor = store
+            .version_record(
+                &claim_reference.object_id,
+                &claim_reference.version_hash,
+                &claim("Revised source claim cannot inherit the old exact status"),
+                "status-test",
+                "claim-status-claim-successor",
+            )
+            .expect("claim successor creates");
+        assert_eq!(
+            store
+                .recheck_claim_status_read_basis(&after_source_basis)
+                .expect_err("new claim head changes the basis")
+                .code,
+            "MCL_CLAIM_STATUS_READ_CONFLICT"
+        );
+        let superseded_claim_basis = store
+            .capture_claim_status_read_basis(&claim_reference)
+            .expect("superseded exact claim basis");
+        assert_eq!(
+            superseded_claim_basis.current_claim_head_version_hash,
+            Some(claim_successor.version_hash)
+        );
+        assert!(superseded_claim_basis.formalizations.is_empty());
+
+        drop(store);
+        let reopened = Store::open(&database).expect("database reopens");
+        reopened
+            .recheck_claim_status_read_basis(&superseded_claim_basis)
+            .expect("basis survives restart deterministically");
+    }
+
+    #[test]
+    fn claim_status_basis_recheck_detects_a_second_connection_head_change() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut reader = Store::open(&database).expect("reader opens");
+        reader.migrate().expect("migration succeeds");
+        let fixture = publication_authority_fixture(
+            &mut reader,
+            "claim-status-second-connection",
+            PublicationOutcome::Proof,
+        );
+        let formalization_payload: FormalizationPayload =
+            serde_json::from_value(fixture.formalization_draft.payload)
+                .expect("formalization decodes");
+        let claim = formalization_payload.claim_version;
+        let basis = reader
+            .capture_claim_status_read_basis(&claim)
+            .expect("reader captures one atomic basis");
+
+        let mut writer = Store::open(&database).expect("writer opens");
+        let current_claim = writer
+            .get_record_version(&claim.version_hash)
+            .expect("writer reads claim");
+        let mut successor_payload = current_claim.payload;
+        successor_payload["normalized_informal_statement"] =
+            json!("A concurrent writer revised the exact claim.");
+        writer
+            .version_record(
+                &claim.object_id,
+                &claim.version_hash,
+                &RecordDraft {
+                    kind: RecordKind::Claim,
+                    schema_version: current_claim.schema_version,
+                    payload: successor_payload,
+                    searchable_text: "concurrent revised claim".to_owned(),
+                },
+                "concurrent-writer",
+                "claim-status-concurrent-successor",
+            )
+            .expect("second connection advances the claim head");
+
+        let conflict = reader
+            .recheck_claim_status_read_basis(&basis)
+            .expect_err("fresh basis comparison detects the concurrent head change");
+        assert_eq!(conflict.code, "MCL_CLAIM_STATUS_READ_CONFLICT");
+        assert!(conflict.retryable);
     }
 
     #[test]
