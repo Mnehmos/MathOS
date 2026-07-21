@@ -27,10 +27,11 @@ pub use audit::{
 };
 pub use counterexample::{
     CLAIM_REPAIR_EDGE_SCHEMA_VERSION, COUNTEREXAMPLE_PACKAGE_SCHEMA_VERSION,
-    COUNTEREXAMPLE_REPAIR_REQUEST_SCHEMA_VERSION, ClaimRepairEdgePayload, ClaimRepairOperation,
-    CounterexampleCheckerBinding, CounterexampleMinimization, CounterexamplePackage,
-    CounterexampleRepairRequest, CounterexampleRepairSnapshot, CounterexampleSearchProvenance,
-    CounterexampleWitness, ProposedRepairedClaim,
+    COUNTEREXAMPLE_REPAIR_REQUEST_SCHEMA_VERSION, COUNTEREXAMPLE_SEARCH_RESULT_SCHEMA_VERSION,
+    ClaimRepairEdgePayload, ClaimRepairOperation, CounterexampleCheckerBinding,
+    CounterexampleMinimization, CounterexamplePackage, CounterexampleRepairRequest,
+    CounterexampleRepairSnapshot, CounterexampleSearchProvenance, CounterexampleSearchResult,
+    CounterexampleSearchResultKind, CounterexampleWitness, ProposedRepairedClaim,
 };
 pub use environment::{
     DependencyRevision, EnvironmentManifest, EnvironmentPlatform, EnvironmentSnapshot,

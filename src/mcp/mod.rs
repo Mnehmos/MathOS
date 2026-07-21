@@ -164,8 +164,8 @@ pub struct CounterexampleRequest {
     actor: Option<String>,
     #[serde(default)]
     idempotency_key: Option<String>,
-    #[serde(default)]
-    dry_run: bool,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    dry_run: Option<Option<bool>>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema)]
@@ -537,7 +537,7 @@ impl MathOsMcp {
                     &repair_request,
                     &actor,
                     &idempotency_key,
-                    request.dry_run,
+                    mutation_dry_run(request.dry_run, "counterexample repair")?,
                 )?)
                 .map_err(serialization_error)
             }
@@ -549,14 +549,7 @@ impl MathOsMcp {
                     "idempotency_key",
                     "counterexample get",
                 )?;
-                if request.dry_run {
-                    return Err(AppError::new(
-                        "MCL_MCP_FIELD_FORBIDDEN",
-                        "counterexample action `get` does not accept `dry_run`",
-                        false,
-                        "Remove `dry_run`; get is already read-only.",
-                    ));
-                }
+                reject_present(request.dry_run, "dry_run", "counterexample get")?;
                 let artifact_hash =
                     required(request.artifact_hash, "artifact_hash", "counterexample get")?;
                 to_value(application.get_counterexample_package(&artifact_hash)?)

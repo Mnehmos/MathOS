@@ -336,6 +336,20 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
         forbidden_get_mutation["result"]["structuredContent"]["code"],
         "MCL_MCP_FIELD_FORBIDDEN"
     );
+    let forbidden_false_get_mutation = server.call(
+        31205,
+        "counterexample",
+        json!({
+            "action": "get",
+            "artifact_hash": "a".repeat(64),
+            "dry_run": false
+        }),
+    );
+    assert_eq!(forbidden_false_get_mutation["result"]["isError"], true);
+    assert_eq!(
+        forbidden_false_get_mutation["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_FORBIDDEN"
+    );
 
     let incomplete_claim_status = server.call(3121, "verify", json!({"action": "claim_status"}));
     assert_eq!(incomplete_claim_status["result"]["isError"], true);

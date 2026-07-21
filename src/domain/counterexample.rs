@@ -15,6 +15,7 @@ use crate::error::AppError;
 pub const COUNTEREXAMPLE_REPAIR_REQUEST_SCHEMA_VERSION: &str = "counterexample_repair_request/1";
 pub const COUNTEREXAMPLE_PACKAGE_SCHEMA_VERSION: &str = "counterexample_package/1";
 pub const CLAIM_REPAIR_EDGE_SCHEMA_VERSION: &str = "claim_repair_edge/1";
+pub const COUNTEREXAMPLE_SEARCH_RESULT_SCHEMA_VERSION: &str = "counterexample_search_result/1";
 const MAX_TEXT_BYTES: usize = 1_048_576;
 const MAX_WITNESS_BYTES: usize = 1_048_576;
 const MAX_SUPPORTING_ARTIFACTS: usize = 256;
@@ -77,6 +78,22 @@ impl FromStr for ClaimRepairOperation {
 pub struct CounterexampleWitness {
     pub mathematical_type: String,
     pub canonical_value: Value,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CounterexampleSearchResultKind {
+    CounterexampleConfirmed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CounterexampleSearchResult {
+    pub schema_version: String,
+    pub original_claim: ExactVersionReference,
+    pub refutation_formalization: ExactVersionReference,
+    pub witness: CounterexampleWitness,
+    pub result: CounterexampleSearchResultKind,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -230,6 +247,28 @@ impl CounterexampleWitness {
                 "Store large generated data separately and use a bounded exact witness value.",
             ));
         }
+        Ok(())
+    }
+}
+
+impl CounterexampleSearchResult {
+    pub fn validate(&self) -> Result<(), AppError> {
+        if self.schema_version != COUNTEREXAMPLE_SEARCH_RESULT_SCHEMA_VERSION {
+            return Err(counterexample_error(
+                "MCL_COUNTEREXAMPLE_SEARCH_RESULT_INVALID",
+                format!(
+                    "counterexample search result schema must be `{COUNTEREXAMPLE_SEARCH_RESULT_SCHEMA_VERSION}`, received `{}`",
+                    self.schema_version
+                ),
+                "Submit one closed counterexample_search_result/1 observation.",
+            ));
+        }
+        validate_reference(&self.original_claim, "counterexample search result claim")?;
+        validate_reference(
+            &self.refutation_formalization,
+            "counterexample search result formalization",
+        )?;
+        self.witness.validate()?;
         Ok(())
     }
 }
@@ -800,6 +839,20 @@ mod tests {
         let mut package_value = serde_json::to_value(package()).expect("package value");
         package_value["caller_selected_checker"] = json!({});
         assert!(serde_json::from_value::<CounterexamplePackage>(package_value).is_err());
+
+        let mut result = serde_json::to_value(CounterexampleSearchResult {
+            schema_version: COUNTEREXAMPLE_SEARCH_RESULT_SCHEMA_VERSION.to_owned(),
+            original_claim: reference(2, 'b'),
+            refutation_formalization: reference(3, 'c'),
+            witness: CounterexampleWitness {
+                mathematical_type: "natural number".to_owned(),
+                canonical_value: json!(2),
+            },
+            result: CounterexampleSearchResultKind::CounterexampleConfirmed,
+        })
+        .expect("search result value");
+        result["status"] = json!("disproved");
+        assert!(serde_json::from_value::<CounterexampleSearchResult>(result).is_err());
     }
 
     #[test]

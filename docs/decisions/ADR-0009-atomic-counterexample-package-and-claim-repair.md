@@ -12,11 +12,11 @@ A useful repair must preserve the counterexample itself, the exact evidence that
 
 ## Decision
 
-MathOS defines closed `counterexample_repair_request/1`, `counterexample_package/1`, and `claim_repair_edge/1` contracts. The public request may select the exact disproved claim and one of its current refutation formalizations, provide a typed canonical JSON witness, optional minimization notes and supporting artifacts, explain the failure, select one SPEC repair operation, propose a complete repaired `claim/1` payload, and bind the exact current head of a `counterexample_search` run.
+MathOS defines closed `counterexample_repair_request/1`, `counterexample_search_result/1`, `counterexample_package/1`, and `claim_repair_edge/1` contracts. The public request may select the exact disproved claim and one of its current refutation formalizations, provide a typed canonical JSON witness, optional minimization notes and supporting artifacts, explain the failure, select one SPEC repair operation, propose a complete repaired `claim/1` payload, and bind an exact result event in a `counterexample_search` run.
 
 The caller cannot provide research status, checker identity, fidelity or authority evidence, receipt identity, package bytes or hash, repaired object ID or version hash, artifact metadata, or a graph edge. The application derives those fields after replaying the existing live claim-status service. A repair is admitted only when the exact current claim is `disproved` and the selected formalization is exactly one current refutation witness.
 
-The application rehashes the source, claim, and negation formalization; verifies the pinned environment and Lean module; verifies minimization artifacts; and replays the complete counterexample-search event chain at the supplied current head. The proposed claim must retain the exact source, satisfy `claim/1`, and have canonical content distinct from the original. Its version hash and the checker binding are derived, not accepted.
+The application rehashes the source, claim, and negation formalization; verifies the pinned environment and Lean module; verifies minimization artifacts; and replays the complete counterexample-search event chain. The bound event must be an observation whose closed result payload exactly repeats the requested claim, refutation formalization, and witness. The proposed claim must retain the exact source, satisfy `claim/1`, and have canonical content distinct from the original. Its version hash and the checker binding are derived, not accepted.
 
 The resulting canonical package contains the source and original claim versions, typed witness, checker, complete qualifying refutation witness, minimization, failure explanation, repair operation, proposed repaired claim and hash, and search-run provenance. It is stored as private generated canonical JSON. The package records already revalidated evidence; it creates no new proof or refutation authority.
 
@@ -31,7 +31,7 @@ The original claim, version, evidence, and derived `disproved` status remain unt
 - A correction never rewrites the proposition that failed.
 - Counterexample, proposed statement, exact checker, evidence locators, run provenance, claim identity, and repair edge can be audited as one closure.
 - Dry-run computes the exact package and repaired-version hashes without registering CAS metadata or canonical state.
-- Idempotent retry returns the original artifact, claim, and edge; rebinding the key fails.
+- Idempotent retry returns the original artifact, claim, and edge even if later events extend the search run; rebinding the key fails.
 - A relevant truth-basis or search-head race loses with a retryable conflict.
 - Transaction failure can leave only unregistered content-addressed bytes, never a partial logical repair.
 - The repaired statement remains unproved until its own formal lifecycle succeeds.

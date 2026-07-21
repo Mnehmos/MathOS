@@ -23,17 +23,18 @@ use crate::domain::{
     ArtifactSnapshot, CLAIM_REPAIR_EDGE_SCHEMA_VERSION, COUNTEREXAMPLE_PACKAGE_SCHEMA_VERSION,
     ClaimRepairEdgePayload, CounterexampleCheckerBinding, CounterexamplePackage,
     CounterexampleRepairRequest, CounterexampleRepairSnapshot, CounterexampleSearchProvenance,
-    EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest, EnvironmentSnapshot,
-    EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult, EvidenceSnapshot,
-    FidelityReviewHistoryEntry, FidelityReviewReport, FidelityStatus, FidelityStatusSnapshot,
-    FidelityVerdict, GraphTraversalHit, GraphTraversalRequest, LeanAuditClassification,
-    LeanAuditJobSnapshot, LeanAuditReport, LeanAuditRequest, ProposedRepairedClaim,
-    PublicationAttestationVerification, PublicationAuthorityBinding, PublicationClassification,
-    PublicationIngestionReceiptSnapshot, PublicationOutcome, PublicationReport, PublicationRequest,
-    PublicationRetainedArtifactRole, PublicationRetainedClosure, PublicationStage,
-    PublicationStageArtifact, PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot,
-    ResearchStatus, RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
-    RunState, TraversalDirection, VerifierExecutionClassification, VerifierExecutionReport,
+    CounterexampleSearchResult, EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest,
+    EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult,
+    EvidenceSnapshot, FidelityReviewHistoryEntry, FidelityReviewReport, FidelityStatus,
+    FidelityStatusSnapshot, FidelityVerdict, GraphTraversalHit, GraphTraversalRequest,
+    LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditReport, LeanAuditRequest,
+    ProposedRepairedClaim, PublicationAttestationVerification, PublicationAuthorityBinding,
+    PublicationClassification, PublicationIngestionReceiptSnapshot, PublicationOutcome,
+    PublicationReport, PublicationRequest, PublicationRetainedArtifactRole,
+    PublicationRetainedClosure, PublicationStage, PublicationStageArtifact,
+    PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot, ResearchStatus,
+    RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot, RunState,
+    TraversalDirection, VerifierExecutionClassification, VerifierExecutionReport,
     VerifierJobRequest, VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
@@ -1585,6 +1586,9 @@ impl Application {
         self.validate_counterexample_search_run(
             &request.counterexample_search_run_id,
             &request.counterexample_search_run_head_hash,
+            &request.original_claim,
+            &request.refutation_formalization,
+            &request.witness,
         )?;
         self.get_environment(&formalization_payload.environment_hash)?;
         let module = self.verify_artifact(&formalization_payload.module_artifact_hash)?;
@@ -1794,24 +1798,19 @@ impl Application {
             }
         }
 
-        let run = self.store.get_run(&package.search_provenance.run_id)?;
-        let run_chain = self
-            .store
-            .verify_run_chain(&package.search_provenance.run_id)?;
-        let run_contains_bound_head = self
-            .store
-            .list_run_events(&package.search_provenance.run_id)?
-            .iter()
-            .any(|event| event.event_hash == package.search_provenance.event_head_hash);
-        if run.kind != RunKind::CounterexampleSearch
-            || run.state == RunState::Failed
-            || !run_chain.valid
-            || !run_contains_bound_head
-        {
-            return Err(counterexample_repair_integrity_error(
-                "stored counterexample search provenance no longer resolves to one valid run-chain prefix",
-            ));
-        }
+        self.validate_counterexample_search_run(
+            &package.search_provenance.run_id,
+            &package.search_provenance.event_head_hash,
+            &package.original_claim,
+            &package.refutation_witness.formalization,
+            &package.witness,
+        )
+        .map_err(|error| {
+            counterexample_repair_integrity_error(format!(
+                "stored counterexample search provenance is invalid: {}",
+                error.message
+            ))
+        })?;
 
         let fidelity = self
             .store
@@ -1928,7 +1927,10 @@ impl Application {
     fn validate_counterexample_search_run(
         &self,
         run_id: &str,
-        expected_head_hash: &str,
+        bound_result_event_hash: &str,
+        original_claim: &ExactVersionReference,
+        refutation_formalization: &ExactVersionReference,
+        witness: &crate::domain::CounterexampleWitness,
     ) -> Result<(), AppError> {
         let run = self.store.get_run(run_id).map_err(|error| {
             counterexample_repair_error(
@@ -1940,15 +1942,11 @@ impl Application {
                 "Start and reference one exact counterexample_search run.",
             )
         })?;
-        if run.kind != RunKind::CounterexampleSearch
-            || run.state == RunState::Failed
-            || run.event_count < 1
-            || run.event_head_hash.as_deref() != Some(expected_head_hash)
-        {
+        if run.kind != RunKind::CounterexampleSearch || run.state == RunState::Failed {
             return Err(counterexample_repair_error(
                 "MCL_COUNTEREXAMPLE_SEARCH_RUN_INVALID",
-                "counterexample search run kind, state, event count, or exact head is invalid",
-                "Use the exact current head of a non-failed counterexample_search run.",
+                "counterexample search run kind or state is invalid",
+                "Use a non-failed counterexample_search run with one exact bound result observation.",
             ));
         }
         let report = self.store.verify_run_chain(run_id)?;
@@ -1958,6 +1956,43 @@ impl Application {
         {
             return Err(counterexample_repair_integrity_error(
                 "counterexample search run event chain failed exact replay",
+            ));
+        }
+        let events = self.store.list_run_events(run_id)?;
+        let result_event = events
+            .iter()
+            .find(|event| event.event_hash == bound_result_event_hash)
+            .ok_or_else(|| {
+                counterexample_repair_error(
+                    "MCL_COUNTEREXAMPLE_SEARCH_RUN_INVALID",
+                    "bound counterexample result event is absent from the verified run chain",
+                    "Use the exact event hash of a matching counterexample result observation.",
+                )
+            })?;
+        if result_event.kind != crate::domain::RunEventKind::Observation {
+            return Err(counterexample_repair_error(
+                "MCL_COUNTEREXAMPLE_SEARCH_RESULT_INVALID",
+                "bound counterexample result event is not an observation",
+                "Bind the repair to one counterexample_search_result/1 observation.",
+            ));
+        }
+        let result: CounterexampleSearchResult =
+            serde_json::from_value(result_event.payload.clone()).map_err(|error| {
+                counterexample_repair_error(
+                    "MCL_COUNTEREXAMPLE_SEARCH_RESULT_INVALID",
+                    format!("bound counterexample result payload is invalid: {error}"),
+                    "Submit one closed counterexample_search_result/1 observation.",
+                )
+            })?;
+        result.validate()?;
+        if result.original_claim != *original_claim
+            || result.refutation_formalization != *refutation_formalization
+            || result.witness != *witness
+        {
+            return Err(counterexample_repair_error(
+                "MCL_COUNTEREXAMPLE_SEARCH_RESULT_MISMATCH",
+                "bound counterexample result does not exactly match the repair claim, formalization, and witness",
+                "Use the exact matching counterexample search result or start a new search run.",
             ));
         }
         Ok(())
@@ -6790,6 +6825,7 @@ mod tests {
                 &RunEventDraft {
                     kind: crate::domain::RunEventKind::Observation,
                     payload: json!({
+                        "schema_version": "counterexample_search_result/1",
                         "original_claim": claim,
                         "refutation_formalization": fixture.request.subject,
                         "witness": witness,
@@ -6993,6 +7029,34 @@ mod tests {
         assert_eq!(loaded.package, persisted.package);
         assert_eq!(loaded.repaired_claim, repair.repaired_claim);
         assert_eq!(loaded.repair_edge, repair.repair_edge);
+        let later_event = fixture
+            .application
+            .append_run_event(
+                &request.counterexample_search_run_id,
+                &request.counterexample_search_run_head_hash,
+                &RunEventDraft {
+                    kind: crate::domain::RunEventKind::Diagnostic,
+                    payload: json!({"message": "search bookkeeping completed after repair"}),
+                },
+                "counterexample-researcher",
+                "counterexample-search-after-repair",
+                false,
+            )?
+            .event
+            .expect("later search event persists");
+        assert_ne!(
+            later_event.event_hash,
+            request.counterexample_search_run_head_hash
+        );
+        let loaded_after_run_advance = fixture
+            .application
+            .get_counterexample_package(&persisted.proposed_counterexample_package_artifact_hash)?;
+        assert_eq!(loaded_after_run_advance.package, loaded.package);
+        assert_eq!(
+            loaded_after_run_advance.repaired_claim,
+            loaded.repaired_claim
+        );
+        assert_eq!(loaded_after_run_advance.repair_edge, loaded.repair_edge);
         let retry = fixture.application.repair_disproved_claim(
             &request,
             "counterexample-researcher",
@@ -7246,6 +7310,52 @@ mod tests {
                 .expect_err("stale search head fails")
                 .code,
             "MCL_COUNTEREXAMPLE_SEARCH_RUN_INVALID"
+        );
+
+        let mut mismatched_witness = request.clone();
+        mismatched_witness.witness.canonical_value = json!({"proposition": "True"});
+        assert_eq!(
+            fixture
+                .application
+                .repair_disproved_claim(
+                    &mismatched_witness,
+                    "counterexample-researcher",
+                    "counterexample-repair-mismatched-result",
+                    true,
+                )
+                .expect_err("search result must bind the exact requested witness")
+                .code,
+            "MCL_COUNTEREXAMPLE_SEARCH_RESULT_MISMATCH"
+        );
+
+        let start_only_run = fixture
+            .application
+            .create_run(
+                RunKind::CounterexampleSearch,
+                &json!({}),
+                "counterexample-researcher",
+                "counterexample-start-only-run",
+                false,
+            )?
+            .run
+            .expect("start-only search run persists");
+        let mut start_only_request = request.clone();
+        start_only_request.counterexample_search_run_id = start_only_run.run_id;
+        start_only_request.counterexample_search_run_head_hash = start_only_run
+            .event_head_hash
+            .expect("start-only run has origin event");
+        assert_eq!(
+            fixture
+                .application
+                .repair_disproved_claim(
+                    &start_only_request,
+                    "counterexample-researcher",
+                    "counterexample-repair-start-only-run",
+                    true,
+                )
+                .expect_err("run_started alone is not a counterexample result")
+                .code,
+            "MCL_COUNTEREXAMPLE_SEARCH_RESULT_INVALID"
         );
 
         let current_claim = fixture.application.get_record(
