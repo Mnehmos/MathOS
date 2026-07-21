@@ -17,7 +17,7 @@ jobs:
     name: Attested publication candidate boundary
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
@@ -136,8 +136,53 @@ jobs:
           scripts/publication-ingest.sh \
             "${RUNNER_TEMP}/publication-candidate" \
             "${CANDIDATE_BUNDLE_PATH}" \
-            "${RUNNER_TEMP}/publication-candidate-ingestion"
-      - name: Retain smoke, candidate closure, diagnostics, and Sigstore bundles
+            "${RUNNER_TEMP}/publication-candidate/refutation-ingestion"
+      - name: Build and validate the repaired claim proof in canonical state
+        shell: bash
+        env:
+          PUBLICATION_CONTEXT_MODE: protected-main
+          PUBLICATION_REPOSITORY: ${{ github.repository }}
+          PUBLICATION_WORKFLOW_PATH: .github/workflows/publication.yml
+          PUBLICATION_WORKFLOW_REF: ${{ github.workflow_ref }}
+          PUBLICATION_SOURCE_REF: ${{ github.ref }}
+          PUBLICATION_SOURCE_COMMIT_SHA: ${{ github.sha }}
+          PUBLICATION_WORKFLOW_RUN_ID: ${{ github.run_id }}
+          PUBLICATION_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PUBLICATION_RUNNER_ENVIRONMENT: github_hosted
+        run: |
+          set -euo pipefail
+          export PUBLICATION_SOURCE_TREE_SHA
+          PUBLICATION_SOURCE_TREE_SHA="$(git rev-parse 'HEAD^{tree}')"
+          bash scripts/publication-candidate.sh \
+            "${RUNNER_TEMP}/publication-candidate/repaired-proof-candidate" \
+            repaired-proof \
+            "${RUNNER_TEMP}/publication-candidate"
+      - name: Attest exact repaired claim proof report
+        id: attest_repaired_proof
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
+        with:
+          subject-path: ${{ runner.temp }}/publication-candidate/repaired-proof-candidate/publication-report.json
+      - name: Verify exact repaired proof attestation and retain the challenge result
+        shell: bash
+        env:
+          PUBLICATION_GH_BIN: ${{ runner.temp }}/gh_2.96.0_linux_amd64/bin/gh
+          REPAIRED_PROOF_BUNDLE_PATH: ${{ steps.attest_repaired_proof.outputs.bundle-path }}
+        run: |
+          scripts/publication-attestation-verify.sh \
+            "${RUNNER_TEMP}/publication-candidate/repaired-proof-candidate/publication-report.json" \
+            "${REPAIRED_PROOF_BUNDLE_PATH}" \
+            "${RUNNER_TEMP}/publication-candidate/repaired-proof-attestation-verification"
+      - name: Ingest and promote the repaired proof without inherited evidence
+        shell: bash
+        env:
+          REPAIRED_PROOF_BUNDLE_PATH: ${{ steps.attest_repaired_proof.outputs.bundle-path }}
+        run: |
+          scripts/publication-ingest.sh \
+            "${RUNNER_TEMP}/publication-candidate/repaired-proof-candidate" \
+            "${REPAIRED_PROOF_BUNDLE_PATH}" \
+            "${RUNNER_TEMP}/publication-candidate/repaired-proof-ingestion" \
+            "${RUNNER_TEMP}/publication-candidate"
+      - name: Retain smoke, both candidate closures, diagnostics, and Sigstore bundles
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -153,5 +198,12 @@ jobs:
             ${{ runner.temp }}/publication-candidate/publication-retained-closure.json
             ${{ runner.temp }}/publication-candidate/publication-report.json
             ${{ runner.temp }}/publication-candidate-attestation-verification/
-            ${{ runner.temp }}/publication-candidate-ingestion/
+            ${{ runner.temp }}/publication-candidate/refutation-ingestion/
             ${{ steps.attest_candidate.outputs.bundle-path }}
+            ${{ runner.temp }}/publication-candidate/repaired-proof-candidate/attempt/
+            ${{ runner.temp }}/publication-candidate/repaired-proof-candidate/closure/
+            ${{ runner.temp }}/publication-candidate/repaired-proof-candidate/publication-retained-closure.json
+            ${{ runner.temp }}/publication-candidate/repaired-proof-candidate/publication-report.json
+            ${{ runner.temp }}/publication-candidate/repaired-proof-attestation-verification/
+            ${{ runner.temp }}/publication-candidate/repaired-proof-ingestion/
+            ${{ steps.attest_repaired_proof.outputs.bundle-path }}

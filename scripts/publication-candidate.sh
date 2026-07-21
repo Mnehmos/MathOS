@@ -16,14 +16,54 @@ readonly WORKFLOW_PATH=".github/workflows/publication.yml"
 readonly SOURCE_REF="refs/heads/main"
 readonly REPORT_RUNNER_ENVIRONMENT="github_hosted"
 readonly LEAN_TOOLCHAIN="leanprover/lean4:v4.32.0"
-readonly DECLARATION_NAME="MathOS.PilotA.every_prime_is_odd_refuted"
-readonly EXACT_THEOREM_TYPE="Not (∀ n : Nat, MathOS.PilotA.Prime n -> MathOS.PilotA.Odd n)"
 readonly MODULE_FIXTURE="fixtures/publication/PilotARefutation.lean"
 readonly ENVIRONMENT_FIXTURE="fixtures/environment/lean-4.32-no-imports-local.json"
 readonly ENVIRONMENT_HASH_FIXTURE="fixtures/environment/lean-4.32-no-imports-local.sha256"
 readonly PUBLICATION_POLICY="policies/lean-publication-1.json"
 readonly PUBLICATION_POLICY_HASH="policies/lean-publication-1.sha256"
 readonly AUDIT_POLICY="policies/lean-local-audit-1.json"
+
+if [[ $# -lt 1 || $# -gt 3 ]]; then
+  printf 'usage: %s <output-directory> [refutation|repaired-proof [state-directory]]\n' "$0" >&2
+  exit "$EXIT_USAGE"
+fi
+
+readonly CANDIDATE_MODE="${2:-refutation}"
+readonly REQUESTED_STATE_ROOT="${3:-}"
+case "$CANDIDATE_MODE" in
+  refutation)
+    [[ $# -eq 1 ]] || {
+      printf 'the refutation candidate creates its own state directory\n' >&2
+      exit "$EXIT_USAGE"
+    }
+    readonly DECLARATION_NAME="MathOS.PilotA.every_prime_is_odd_refuted"
+    readonly EXACT_THEOREM_TYPE="Not (∀ n : Nat, MathOS.PilotA.Prime n -> MathOS.PilotA.Odd n)"
+    readonly PUBLICATION_OUTCOME="refutation"
+    readonly CLAIM_POLARITY="negation"
+    readonly FORMALIZATION_NOTES="Exact no-import formalization of the logical negation of the normalized Pilot A claim; the retained module exposes witness 2 separately."
+    readonly FORMALIZATION_SEARCH_SUFFIX="witness 2"
+    readonly CANDIDATE_ACTOR="publication-candidate"
+    readonly CANDIDATE_KEY_PREFIX="publication-candidate"
+    ;;
+  repaired-proof)
+    [[ $# -eq 3 && -n "$REQUESTED_STATE_ROOT" ]] || {
+      printf 'the repaired proof candidate requires the existing canonical state directory\n' >&2
+      exit "$EXIT_USAGE"
+    }
+    readonly DECLARATION_NAME="MathOS.PilotA.every_prime_other_than_two_is_odd"
+    readonly EXACT_THEOREM_TYPE="∀ n : Nat, MathOS.PilotA.Prime n -> n ≠ 2 -> MathOS.PilotA.Odd n"
+    readonly PUBLICATION_OUTCOME="proof"
+    readonly CLAIM_POLARITY="claim"
+    readonly FORMALIZATION_NOTES="Exact no-import formalization of the independently versioned repaired Pilot A claim; it excludes only the disproving boundary witness 2."
+    readonly FORMALIZATION_SEARCH_SUFFIX="repaired claim excludes 2"
+    readonly CANDIDATE_ACTOR="publication-repaired-proof-candidate"
+    readonly CANDIDATE_KEY_PREFIX="publication-repaired-proof-candidate"
+    ;;
+  *)
+    printf 'publication candidate mode must be refutation or repaired-proof\n' >&2
+    exit "$EXIT_USAGE"
+    ;;
+esac
 
 die() {
   local exit_code="$1"
@@ -82,10 +122,6 @@ assert_file_hash() {
   [[ "$observed" == "$expected" ]] \
     || die "$EXIT_VALIDATION" "$label hash mismatch: expected $expected, observed $observed"
 }
-
-if [[ $# -ne 1 ]]; then
-  die "$EXIT_USAGE" "usage: $0 <output-directory>"
-fi
 
 for name in \
   PUBLICATION_CONTEXT_MODE \
@@ -179,24 +215,53 @@ for required_file in \
     || die "$EXIT_INPUT" "publication candidate input is missing: $required_file"
 done
 
+state_root=""
+if [[ "$CANDIDATE_MODE" == "repaired-proof" ]]; then
+  [[ -d "$REQUESTED_STATE_ROOT" && ! -L "$REQUESTED_STATE_ROOT" ]] \
+    || die "$EXIT_INPUT" "repaired proof state directory is unavailable or unsafe"
+  state_root="$(cd "$REQUESTED_STATE_ROOT" && pwd -P)"
+  case "$state_root/" in
+    "$repo_root/"*)
+      die "$EXIT_INPUT" "publication state must be outside the clean checkout"
+      ;;
+  esac
+  [[ -f "$state_root/.mcl/state.sqlite3" && ! -L "$state_root/.mcl/state.sqlite3" ]] \
+    || die "$EXIT_INPUT" "repaired proof state is not an initialized canonical instance"
+fi
+
 output_dir="$1"
 output_name="$(basename -- "$output_dir")"
 [[ "$output_name" != "." && "$output_name" != ".." && -n "$output_name" \
     && ! -e "$output_dir" && ! -L "$output_dir" ]] \
   || die "$EXIT_INPUT" "publication candidate output is invalid or already exists: $output_dir"
 output_parent="$(dirname -- "$output_dir")"
-mkdir -p "$output_parent"
+if [[ "$CANDIDATE_MODE" == "repaired-proof" ]]; then
+  [[ -d "$output_parent" && ! -L "$output_parent" ]] \
+    || die "$EXIT_INPUT" "repaired proof output parent is unavailable or unsafe"
+else
+  mkdir -p "$output_parent"
+fi
 output_parent="$(cd "$output_parent" && pwd -P)"
 output_dir="$output_parent/$output_name"
 [[ ! -e "$output_dir" && ! -L "$output_dir" ]] \
   || die "$EXIT_INPUT" "publication candidate output appeared during validation: $output_dir"
-mkdir -- "$output_dir"
-output_dir="$(cd "$output_dir" && pwd -P)"
 case "$output_dir/" in
   "$repo_root/"*)
     die "$EXIT_INPUT" "publication candidate output must be outside the clean checkout"
     ;;
 esac
+if [[ "$CANDIDATE_MODE" == "refutation" ]]; then
+  state_root="$output_dir"
+else
+  case "$output_dir/" in
+    "$state_root/"*) ;;
+    *)
+      die "$EXIT_INPUT" "repaired proof output must be strictly contained by the canonical state directory"
+      ;;
+  esac
+fi
+mkdir -- "$output_dir"
+output_dir="$(cd "$output_dir" && pwd -P)"
 mkdir "$output_dir/closure" "$output_dir/attempt"
 closure_dir="$output_dir/closure"
 attempt_dir="$output_dir/attempt"
@@ -218,7 +283,7 @@ cleanup() {
         >"$attempt_dir/$attempt_name.omitted"
     fi
   done
-  if [[ -d "$output_dir/.mcl/artifacts/sha256" ]]; then
+  if [[ -d "$state_root/.mcl/artifacts/sha256" ]]; then
     mkdir -p "$attempt_dir/cas"
     while IFS= read -r -d '' attempt_file; do
       [[ "$retained_cas_count" -lt 64 ]] || break
@@ -228,7 +293,7 @@ cleanup() {
         cp -- "$attempt_file" "$attempt_dir/cas/$attempt_name"
         retained_cas_count=$((retained_cas_count + 1))
       fi
-    done < <(find "$output_dir/.mcl/artifacts/sha256" -type f -print0)
+    done < <(find "$state_root/.mcl/artifacts/sha256" -type f -print0)
   fi
   jq -cS -n \
     --argjson exit_code "$status" \
@@ -245,7 +310,7 @@ trap cleanup EXIT
 
 readonly mcl_bin="$repo_root/target/debug/mcl"
 run_mcl() {
-  "$mcl_bin" --root "$output_dir" --json "$@"
+  "$mcl_bin" --root "$state_root" --json "$@"
 }
 
 toolchain="$(tr -d '\r\n' <lean-toolchain)"
@@ -273,6 +338,7 @@ make_traversable_for_namespace_setup() {
 }
 
 make_traversable_for_namespace_setup "$repo_root"
+make_traversable_for_namespace_setup "$state_root"
 make_traversable_for_namespace_setup "$output_dir"
 make_traversable_for_namespace_setup "$temporary_root"
 make_traversable_for_namespace_setup "$lean_root"
@@ -311,67 +377,152 @@ while IFS= read -r forbidden_token; do
   fi
 done < <(jq -er '.forbidden_source_tokens[]' "$AUDIT_POLICY")
 
-run_mcl init \
-  --actor publication-candidate \
-  --idempotency-key publication-candidate-init \
-  >"$temporary_root/init.json"
+if [[ "$CANDIDATE_MODE" == "refutation" ]]; then
+  run_mcl init \
+    --actor "$CANDIDATE_ACTOR" \
+    --idempotency-key "$CANDIDATE_KEY_PREFIX-init" \
+    >"$temporary_root/init.json"
 
-run_mcl environment register \
-  --manifest-json "$environment_json" \
-  --actor publication-candidate \
-  --idempotency-key publication-candidate-environment \
-  >"$temporary_root/environment.json"
-environment_hash="$(jq -er '.proposed_environment_hash' "$temporary_root/environment.json")"
-[[ "$environment_hash" == "$expected_environment_hash" ]] \
-  || die "$EXIT_VALIDATION" "registered environment identity changed"
-jq -e --arg hash "$environment_hash" --argjson manifest "$environment_json" '
-  .dry_run == false and
-  .environment.environment_hash == $hash and
-  .environment.manifest == $manifest
-' "$temporary_root/environment.json" >/dev/null \
-  || die "$EXIT_VALIDATION" "registered environment snapshot is inconsistent"
+  run_mcl environment register \
+    --manifest-json "$environment_json" \
+    --actor "$CANDIDATE_ACTOR" \
+    --idempotency-key "$CANDIDATE_KEY_PREFIX-environment" \
+    >"$temporary_root/environment.json"
+  environment_hash="$(jq -er '.proposed_environment_hash' "$temporary_root/environment.json")"
+  [[ "$environment_hash" == "$expected_environment_hash" ]] \
+    || die "$EXIT_VALIDATION" "registered environment identity changed"
+  jq -e --arg hash "$environment_hash" --argjson manifest "$environment_json" '
+    .dry_run == false and
+    .environment.environment_hash == $hash and
+    .environment.manifest == $manifest
+  ' "$temporary_root/environment.json" >/dev/null \
+    || die "$EXIT_VALIDATION" "registered environment snapshot is inconsistent"
 
-artifact_metadata="$(jq -cn \
-  --arg declaration "$DECLARATION_NAME" \
-  --arg commit "$PUBLICATION_SOURCE_COMMIT_SHA" \
-  --arg tree "$PUBLICATION_SOURCE_TREE_SHA" \
-  '{schema_version:"artifact_metadata/1",media_type:"text/x-lean",creation_source:"user_ingest",license_expression:null,restriction:"private",semantic_metadata:{artifact_role:"publication_candidate_module",declaration_name:$declaration,source_commit_sha:$commit,source_tree_sha:$tree}}')"
-run_mcl artifact ingest \
-  --input-file "$closure_dir/module.lean" \
-  --metadata-json "$artifact_metadata" \
-  --actor publication-candidate \
-  --idempotency-key publication-candidate-module \
-  >"$temporary_root/module.json"
-[[ "$(jq -er '.proposed_artifact_hash' "$temporary_root/module.json")" == "$module_hash" ]] \
-  || die "$EXIT_VALIDATION" "registered Lean module identity changed"
+  artifact_metadata="$(jq -cn \
+    --arg declaration "$DECLARATION_NAME" \
+    --arg repaired_declaration "MathOS.PilotA.every_prime_other_than_two_is_odd" \
+    --arg commit "$PUBLICATION_SOURCE_COMMIT_SHA" \
+    --arg tree "$PUBLICATION_SOURCE_TREE_SHA" \
+    '{schema_version:"artifact_metadata/1",media_type:"text/x-lean",creation_source:"user_ingest",license_expression:null,restriction:"private",semantic_metadata:{artifact_role:"publication_candidate_module",declaration_name:$declaration,repaired_declaration_name:$repaired_declaration,source_commit_sha:$commit,source_tree_sha:$tree}}')"
+  run_mcl artifact ingest \
+    --input-file "$closure_dir/module.lean" \
+    --metadata-json "$artifact_metadata" \
+    --actor "$CANDIDATE_ACTOR" \
+    --idempotency-key "$CANDIDATE_KEY_PREFIX-module" \
+    >"$temporary_root/module.json"
+  [[ "$(jq -er '.proposed_artifact_hash' "$temporary_root/module.json")" == "$module_hash" ]] \
+    || die "$EXIT_VALIDATION" "registered Lean module identity changed"
 
-acquisition_date="$(git show -s --format=%cs HEAD)"
-source_payload="$(jq -cn \
-  --arg locator "git:$REPOSITORY@$PUBLICATION_SOURCE_COMMIT_SHA:$MODULE_FIXTURE" \
-  --arg acquisition_date "$acquisition_date" \
-  --arg content_hash "$module_hash" \
-  '{source_type:"repository",title_or_label:"MathOS Pilot A protected refutation candidate",authors_or_origin:["MathOS protected publication workflow"],canonical_locator:$locator,acquisition_date:$acquisition_date,license_expression:null,redistribution_status:"restricted",content_hash:$content_hash,citation_metadata:{},redaction_class:"private",provenance_notes:"Fresh canonical state for the non-authoritative Pilot A protected refutation candidate.",original_text:"Every prime number is odd."}')"
-run_mcl source create \
-  --payload-json "$source_payload" \
-  --searchable-text "MathOS Pilot A every prime number is odd" \
-  --actor publication-candidate \
-  --idempotency-key publication-candidate-source \
-  >"$temporary_root/source.json"
-source_object_id="$(jq -er '.record.object_id' "$temporary_root/source.json")"
-source_version_hash="$(jq -er '.record.version_hash' "$temporary_root/source.json")"
+  acquisition_date="$(git show -s --format=%cs HEAD)"
+  source_payload="$(jq -cn \
+    --arg locator "git:$REPOSITORY@$PUBLICATION_SOURCE_COMMIT_SHA:$MODULE_FIXTURE" \
+    --arg acquisition_date "$acquisition_date" \
+    --arg content_hash "$module_hash" \
+    '{source_type:"repository",title_or_label:"MathOS Pilot A protected refutation candidate",authors_or_origin:["MathOS protected publication workflow"],canonical_locator:$locator,acquisition_date:$acquisition_date,license_expression:null,redistribution_status:"restricted",content_hash:$content_hash,citation_metadata:{},redaction_class:"private",provenance_notes:"Fresh canonical state for the non-authoritative Pilot A protected refutation candidate.",original_text:"Every prime number is odd."}')"
+  run_mcl source create \
+    --payload-json "$source_payload" \
+    --searchable-text "MathOS Pilot A every prime number is odd" \
+    --actor "$CANDIDATE_ACTOR" \
+    --idempotency-key "$CANDIDATE_KEY_PREFIX-source" \
+    >"$temporary_root/source.json"
+  source_object_id="$(jq -er '.record.object_id' "$temporary_root/source.json")"
+  source_version_hash="$(jq -er '.record.version_hash' "$temporary_root/source.json")"
 
-claim_payload="$(jq -cn \
-  --arg source_object_id "$source_object_id" \
-  --arg source_version_hash "$source_version_hash" \
-  '{source_reference:{object_id:$source_object_id,version_hash:$source_version_hash},normalized_informal_statement:"Every prime number is odd.",claim_kind:"universal",logical_shape:"forall n : Nat, Prime(n) -> Odd(n)",assumptions:[],variables:[{symbol:"n",domain:"natural numbers",notes:"Prime and odd use the exact predicates retained in the formalization module."}],concept_links:[],source_citations:[],ambiguity_notes:[]}')"
-run_mcl claim create \
-  --payload-json "$claim_payload" \
-  --searchable-text "Every prime number is odd" \
-  --actor publication-candidate \
-  --idempotency-key publication-candidate-claim \
-  >"$temporary_root/claim.json"
-claim_object_id="$(jq -er '.record.object_id' "$temporary_root/claim.json")"
-claim_version_hash="$(jq -er '.record.version_hash' "$temporary_root/claim.json")"
+  claim_payload="$(jq -cn \
+    --arg source_object_id "$source_object_id" \
+    --arg source_version_hash "$source_version_hash" \
+    '{source_reference:{object_id:$source_object_id,version_hash:$source_version_hash},normalized_informal_statement:"Every prime number is odd.",claim_kind:"universal",logical_shape:"forall n : Nat, Prime(n) -> Odd(n)",assumptions:[],variables:[{symbol:"n",domain:"natural numbers",notes:"Prime and odd use the exact predicates retained in the formalization module."}],concept_links:[],source_citations:[],ambiguity_notes:[]}')"
+  run_mcl claim create \
+    --payload-json "$claim_payload" \
+    --searchable-text "Every prime number is odd" \
+    --actor "$CANDIDATE_ACTOR" \
+    --idempotency-key "$CANDIDATE_KEY_PREFIX-claim" \
+    >"$temporary_root/claim.json"
+  claim_object_id="$(jq -er '.record.object_id' "$temporary_root/claim.json")"
+  claim_version_hash="$(jq -er '.record.version_hash' "$temporary_root/claim.json")"
+else
+  environment_hash="$expected_environment_hash"
+  run_mcl environment get \
+    --environment-hash "$environment_hash" \
+    >"$temporary_root/environment-snapshot.json"
+  jq -e --arg hash "$environment_hash" --argjson manifest "$environment_json" '
+    .environment_hash == $hash and .manifest == $manifest
+  ' "$temporary_root/environment-snapshot.json" >/dev/null \
+    || die "$EXIT_VALIDATION" "repaired proof did not reuse the exact registered environment"
+  jq -cS '{environment:.}' "$temporary_root/environment-snapshot.json" \
+    >"$temporary_root/environment.json"
+
+  run_mcl artifact get \
+    --artifact-hash "$module_hash" \
+    >"$temporary_root/module.json"
+  jq -e \
+    --arg hash "$module_hash" \
+    --argjson size "$(stat -c '%s' "$closure_dir/module.lean")" \
+    --arg declaration "$DECLARATION_NAME" '
+    .artifact_hash == $hash and
+    .byte_size == $size and
+    .semantic_metadata.artifact_role == "publication_candidate_module" and
+    .semantic_metadata.repaired_declaration_name == $declaration
+  ' "$temporary_root/module.json" >/dev/null \
+    || die "$EXIT_VALIDATION" "repaired proof module is not the exact original registered artifact"
+
+  repair_file="$state_root/refutation-ingestion/counterexample-repair.json"
+  [[ -f "$repair_file" && ! -L "$repair_file" \
+      && "$(realpath -- "$repair_file")" == "$state_root/"* ]] \
+    || die "$EXIT_INPUT" "repaired proof requires the retained atomic repair in canonical state"
+  claim_object_id="$(jq -er '.repair.repaired_claim.object_id' "$repair_file")"
+  claim_version_hash="$(jq -er '.repair.repaired_claim.version_hash' "$repair_file")"
+  source_object_id="$(jq -er '.repair.repaired_claim.payload.source_reference.object_id' "$repair_file")"
+  source_version_hash="$(jq -er '.repair.repaired_claim.payload.source_reference.version_hash' "$repair_file")"
+
+  run_mcl source get \
+    --object-id "$source_object_id" \
+    --version-hash "$source_version_hash" \
+    >"$temporary_root/source-snapshot.json"
+  run_mcl claim get \
+    --object-id "$claim_object_id" \
+    --version-hash "$claim_version_hash" \
+    >"$temporary_root/claim-snapshot.json"
+  jq -e \
+    --arg claim_object_id "$claim_object_id" \
+    --arg claim_version_hash "$claim_version_hash" \
+    --arg source_object_id "$source_object_id" \
+    --arg source_version_hash "$source_version_hash" '
+    .object_id == $claim_object_id and
+    .version_hash == $claim_version_hash and
+    .predecessor_hash == null and
+    .payload.source_reference == {object_id:$source_object_id,version_hash:$source_version_hash} and
+    .payload.normalized_informal_statement == "Every prime number other than 2 is odd." and
+    .payload.claim_kind == "universal" and
+    .payload.logical_shape == "forall n : Nat, Prime(n) -> n != 2 -> Odd(n)" and
+    .payload.assumptions == ["n != 2"]
+  ' "$temporary_root/claim-snapshot.json" >/dev/null \
+    || die "$EXIT_VALIDATION" "repaired proof claim does not match the exact atomic repair"
+  jq -e --slurpfile claim "$temporary_root/claim-snapshot.json" '
+    .repair.repaired_claim == $claim[0]
+  ' "$repair_file" >/dev/null \
+    || die "$EXIT_VALIDATION" "repaired claim bytes disagree with the retained atomic repair"
+  jq -e \
+    --arg source_object_id "$source_object_id" \
+    --arg source_version_hash "$source_version_hash" '
+    .object_id == $source_object_id and .version_hash == $source_version_hash
+  ' "$temporary_root/source-snapshot.json" >/dev/null \
+    || die "$EXIT_VALIDATION" "repaired proof source identity changed"
+  jq -cS '{record:.}' "$temporary_root/source-snapshot.json" >"$temporary_root/source.json"
+  jq -cS '{record:.}' "$temporary_root/claim-snapshot.json" >"$temporary_root/claim.json"
+
+  run_mcl verify claim-status \
+    --claim-object-id "$claim_object_id" \
+    --claim-version-hash "$claim_version_hash" \
+    >"$temporary_root/repaired-claim-status-before-candidate.json"
+  jq -e --arg object_id "$claim_object_id" --arg version_hash "$claim_version_hash" '
+    .claim == {object_id:$object_id,version_hash:$version_hash} and
+    .status == "not_started" and
+    (.witnesses | length) == 0 and
+    (.nonqualifications | length) == 0
+  ' "$temporary_root/repaired-claim-status-before-candidate.json" >/dev/null \
+    || die "$EXIT_VALIDATION" "repaired claim inherited evidence before its proof candidate"
+fi
 
 declaration_hash="$(printf '%s' "$DECLARATION_NAME : $EXACT_THEOREM_TYPE" | sha256sum | cut -d ' ' -f 1)"
 formalization_payload="$(jq -cn \
@@ -382,12 +533,14 @@ formalization_payload="$(jq -cn \
   --arg declaration "$DECLARATION_NAME" \
   --arg theorem_type "$EXACT_THEOREM_TYPE" \
   --arg declaration_hash "$declaration_hash" \
-  '{claim_version:{object_id:$claim_object_id,version_hash:$claim_version_hash},formal_system:"lean4",claim_polarity:"negation",environment_hash:$environment_hash,module_artifact_hash:$module_hash,declaration_name:$declaration,exact_theorem_type:$theorem_type,declaration_hash:$declaration_hash,import_manifest:[],formalization_notes:"Exact no-import formalization of the logical negation of the normalized Pilot A claim; the retained module exposes witness 2 separately.",fidelity_evidence_references:[],verification_evidence_references:[]}')"
+  --arg claim_polarity "$CLAIM_POLARITY" \
+  --arg formalization_notes "$FORMALIZATION_NOTES" \
+  '{claim_version:{object_id:$claim_object_id,version_hash:$claim_version_hash},formal_system:"lean4",claim_polarity:$claim_polarity,environment_hash:$environment_hash,module_artifact_hash:$module_hash,declaration_name:$declaration,exact_theorem_type:$theorem_type,declaration_hash:$declaration_hash,import_manifest:[],formalization_notes:$formalization_notes,fidelity_evidence_references:[],verification_evidence_references:[]}')"
 run_mcl formalization create \
   --payload-json "$formalization_payload" \
-  --searchable-text "$DECLARATION_NAME $EXACT_THEOREM_TYPE witness 2" \
-  --actor publication-candidate \
-  --idempotency-key publication-candidate-formalization \
+  --searchable-text "$DECLARATION_NAME $EXACT_THEOREM_TYPE $FORMALIZATION_SEARCH_SUFFIX" \
+  --actor "$CANDIDATE_ACTOR" \
+  --idempotency-key "$CANDIDATE_KEY_PREFIX-formalization" \
   >"$temporary_root/formalization.json"
 formalization_object_id="$(jq -er '.record.object_id' "$temporary_root/formalization.json")"
 formalization_version_hash="$(jq -er '.record.version_hash' "$temporary_root/formalization.json")"
@@ -396,12 +549,12 @@ run_mcl verify check \
   --environment-hash "$environment_hash" \
   --module-artifact-hash "$module_hash" \
   --declaration-name "$DECLARATION_NAME" \
-  --actor publication-candidate \
-  --idempotency-key publication-candidate-verifier-job \
+  --actor "$CANDIDATE_ACTOR" \
+  --idempotency-key "$CANDIDATE_KEY_PREFIX-verifier-job" \
   >"$temporary_root/verifier-enqueue.json"
 verifier_job_id="$(jq -er '.job.job_id' "$temporary_root/verifier-enqueue.json")"
 run_mcl worker \
-  --worker-id publication-candidate-local-worker \
+  --worker-id "$CANDIDATE_KEY_PREFIX-local-worker" \
   --lease-seconds 3660 \
   >"$temporary_root/verifier-work.json"
 jq -e \
@@ -430,8 +583,8 @@ run_mcl verify promote-diagnostic \
   --formalization-object-id "$formalization_object_id" \
   --formalization-version-hash "$formalization_version_hash" \
   --job-id "$verifier_job_id" \
-  --actor publication-candidate \
-  --idempotency-key publication-candidate-diagnostic \
+  --actor "$CANDIDATE_ACTOR" \
+  --idempotency-key "$CANDIDATE_KEY_PREFIX-diagnostic" \
   >"$temporary_root/diagnostic.json"
 diagnostic_evidence_id="$(jq -er '.evidence.evidence_id' "$temporary_root/diagnostic.json")"
 diagnostic_evidence_hash="$(jq -er '.evidence.evidence_hash' "$temporary_root/diagnostic.json")"
@@ -454,13 +607,13 @@ run_mcl verify audit \
   --formalization-object-id "$formalization_object_id" \
   --formalization-version-hash "$formalization_version_hash" \
   --diagnostic-evidence-id "$diagnostic_evidence_id" \
-  --actor publication-candidate \
-  --idempotency-key publication-candidate-audit-job \
+  --actor "$CANDIDATE_ACTOR" \
+  --idempotency-key "$CANDIDATE_KEY_PREFIX-audit-job" \
   >"$temporary_root/audit-enqueue.json"
 audit_job_id="$(jq -er '.job.job_id' "$temporary_root/audit-enqueue.json")"
 run_mcl worker \
   --job-kind audit \
-  --worker-id publication-candidate-local-audit-worker \
+  --worker-id "$CANDIDATE_KEY_PREFIX-local-audit-worker" \
   --lease-seconds 3660 \
   >"$temporary_root/audit-work.json"
 jq -e \
@@ -494,8 +647,8 @@ run_mcl verify promote-audit \
   --formalization-object-id "$formalization_object_id" \
   --formalization-version-hash "$formalization_version_hash" \
   --job-id "$audit_job_id" \
-  --actor publication-candidate \
-  --idempotency-key publication-candidate-audit-evidence \
+  --actor "$CANDIDATE_ACTOR" \
+  --idempotency-key "$CANDIDATE_KEY_PREFIX-audit-evidence" \
   >"$temporary_root/audit-evidence.json"
 [[ "$(jq '[.evidence[] | select(.payload.evidence_kind == "proof_closure_scan")] | length' "$temporary_root/audit-evidence.json")" == "1" \
     && "$(jq '[.evidence[] | select(.payload.evidence_kind == "axiom_audit")] | length' "$temporary_root/audit-evidence.json")" == "1" ]] \
@@ -524,14 +677,14 @@ jq -e \
 run_mcl verify prepare-publication \
   --formalization-object-id "$formalization_object_id" \
   --formalization-version-hash "$formalization_version_hash" \
-  --outcome refutation \
+  --outcome "$PUBLICATION_OUTCOME" \
   --diagnostic-evidence-id "$diagnostic_evidence_id" \
   --proof-closure-evidence-id "$proof_closure_evidence_id" \
   --axiom-audit-evidence-id "$axiom_audit_evidence_id" \
   --source-commit-sha "$PUBLICATION_SOURCE_COMMIT_SHA" \
   --source-tree-sha "$PUBLICATION_SOURCE_TREE_SHA" \
-  --actor publication-candidate \
-  --idempotency-key publication-candidate-request \
+  --actor "$CANDIDATE_ACTOR" \
+  --idempotency-key "$CANDIDATE_KEY_PREFIX-request" \
   >"$temporary_root/publication-request.json"
 request_hash="$(jq -er '.proposed_request_hash' "$temporary_root/publication-request.json")"
 jq -e \
@@ -549,13 +702,14 @@ jq -e \
   --arg declaration "$DECLARATION_NAME" \
   --arg policy_hash "$(tr -d '\r\n' <"$PUBLICATION_POLICY_HASH")" \
   --arg commit "$PUBLICATION_SOURCE_COMMIT_SHA" \
-  --arg tree "$PUBLICATION_SOURCE_TREE_SHA" '
+  --arg tree "$PUBLICATION_SOURCE_TREE_SHA" \
+  --arg outcome "$PUBLICATION_OUTCOME" '
   .dry_run == false and
   .proposed_artifact_hash == $request_hash and
   .artifact.artifact_hash == $request_hash and
   .request.schema_version == "publication_request/1" and
   .request.subject == {object_id:$subject_id,version_hash:$subject_hash} and
-  .request.outcome == "refutation" and
+  .request.outcome == $outcome and
   .request.diagnostic_evidence_id == $diagnostic_id and
   .request.diagnostic_evidence_hash == $diagnostic_hash and
   .request.proof_closure_evidence_id == $proof_id and
@@ -574,7 +728,7 @@ jq -e \
 
 cas_path() {
   local hash="$1"
-  printf '%s/.mcl/artifacts/sha256/%s/%s/%s' "$output_dir" "${hash:0:2}" "${hash:2:2}" "$hash"
+  printf '%s/.mcl/artifacts/sha256/%s/%s/%s' "$state_root" "${hash:0:2}" "${hash:2:2}" "$hash"
 }
 
 copy_cas() {
@@ -910,8 +1064,8 @@ jq -e \
   || die "$EXIT_VALIDATION" "publication report lost a required protected candidate binding"
 
 run_mcl verify validate-publication-candidate \
-  --report-file publication-report.json \
-  --retained-closure-file publication-retained-closure.json \
+  --report-file "$output_dir/publication-report.json" \
+  --retained-closure-file "$output_dir/publication-retained-closure.json" \
   --retained-root "$output_dir" \
   >"$temporary_root/candidate-validation.json"
 jq -e \
