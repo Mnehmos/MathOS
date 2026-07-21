@@ -8,6 +8,7 @@ use crate::error::AppError;
 
 pub mod artifact;
 pub mod audit;
+pub mod counterexample;
 pub mod environment;
 pub mod evidence;
 pub mod fidelity;
@@ -23,6 +24,13 @@ pub use artifact::{
 pub use audit::{
     LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditPolicy, LeanAuditReport,
     LeanAuditRequest,
+};
+pub use counterexample::{
+    CLAIM_REPAIR_EDGE_SCHEMA_VERSION, COUNTEREXAMPLE_PACKAGE_SCHEMA_VERSION,
+    COUNTEREXAMPLE_REPAIR_REQUEST_SCHEMA_VERSION, ClaimRepairEdgePayload, ClaimRepairOperation,
+    CounterexampleCheckerBinding, CounterexampleMinimization, CounterexamplePackage,
+    CounterexampleRepairRequest, CounterexampleRepairSnapshot, CounterexampleSearchProvenance,
+    CounterexampleWitness, ProposedRepairedClaim,
 };
 pub use environment::{
     DependencyRevision, EnvironmentManifest, EnvironmentPlatform, EnvironmentSnapshot,

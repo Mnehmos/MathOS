@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/counterexample/repair-request/1",
+  "title": "MathOS Counterexample Repair Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "original_claim",
+    "refutation_formalization",
+    "witness",
+    "minimization",
+    "failing_assumption_explanation",
+    "repair_operation",
+    "proposed_repaired_claim",
+    "repaired_claim_searchable_text",
+    "counterexample_search_run_id",
+    "counterexample_search_run_head_hash"
+  ],
+  "properties": {
+    "schema_version": {"const": "counterexample_repair_request/1"},
+    "original_claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "format": "uuid"},
+        "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "refutation_formalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "format": "uuid"},
+        "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "witness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mathematical_type", "canonical_value"],
+      "properties": {
+        "mathematical_type": {"type": "string", "minLength": 1, "maxLength": 1048576},
+        "canonical_value": {"not": {"type": "null"}}
+      }
+    },
+    "minimization": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["explanation", "supporting_artifact_hashes"],
+          "properties": {
+            "explanation": {"type": "string", "minLength": 1, "maxLength": 1048576},
+            "supporting_artifact_hashes": {
+              "type": "array",
+              "maxItems": 256,
+              "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        },
+        {"type": "null"}
+      ]
+    },
+    "failing_assumption_explanation": {"type": "string", "minLength": 1, "maxLength": 1048576},
+    "repair_operation": {
+      "enum": [
+        "add_missing_hypothesis",
+        "exclude_boundary_case",
+        "weaken_conclusion",
+        "restrict_domain",
+        "change_pointwise_to_asymptotic",
+        "split_cases",
+        "replace_equality"
+      ]
+    },
+    "proposed_repaired_claim": {"$ref": "https://mnehmos.ai/mathos/schemas/claim/1"},
+    "repaired_claim_searchable_text": {"type": "string", "minLength": 1, "maxLength": 1048576},
+    "counterexample_search_run_id": {"type": "string", "format": "uuid"},
+    "counterexample_search_run_head_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

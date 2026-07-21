@@ -9,9 +9,9 @@ use serde_json::{Value, to_value};
 use crate::app::{Application, root_exists};
 use crate::config::ResolvedConfig;
 use crate::domain::{
-    ArtifactMetadata, EdgeDraft, EdgeKind, EnvironmentManifest, GraphTraversalRequest,
-    PublicationOutcome, RecordDraft, RecordKind, RecordSnapshot, RunEventDraft, RunEventKind,
-    RunKind, TraversalDirection, VerifierJobRequest,
+    ArtifactMetadata, CounterexampleRepairRequest, EdgeDraft, EdgeKind, EnvironmentManifest,
+    GraphTraversalRequest, PublicationOutcome, RecordDraft, RecordKind, RecordSnapshot,
+    RunEventDraft, RunEventKind, RunKind, TraversalDirection, VerifierJobRequest,
 };
 use crate::error::AppError;
 
@@ -73,6 +73,8 @@ enum Command {
     Graph(GraphOptions),
     /// Start, inspect, append to, and verify non-authoritative research runs.
     Research(ResearchOptions),
+    /// Package an exact refutation witness and atomically create an immutable repaired claim.
+    Counterexample(CounterexampleOptions),
 }
 
 #[derive(Debug, Args)]
@@ -267,6 +269,35 @@ struct ClaimStatusOptions {
 
     #[arg(long)]
     claim_version_hash: String,
+}
+
+#[derive(Debug, Args)]
+struct CounterexampleOptions {
+    #[command(subcommand)]
+    action: CounterexampleAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum CounterexampleAction {
+    /// Build a canonical counterexample package and atomically register its new claim and repair edge.
+    Repair(CounterexampleRepairOptions),
+    /// Revalidate and retrieve a registered package with its new claim and controlled repair edge.
+    Get(CounterexampleGetOptions),
+}
+
+#[derive(Debug, Args)]
+struct CounterexampleRepairOptions {
+    #[arg(long, help = "Closed counterexample_repair_request/1 JSON object")]
+    request_json: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct CounterexampleGetOptions {
+    #[arg(long)]
+    artifact_hash: String,
 }
 
 #[derive(Debug, Args)]
@@ -674,8 +705,44 @@ impl Cli {
             Command::Edge(options) => execute_edge(&config, options),
             Command::Graph(options) => execute_graph(&config, options),
             Command::Research(options) => execute_research(&config, options),
+            Command::Counterexample(options) => execute_counterexample(&config, options),
         }
     }
+}
+
+fn execute_counterexample(
+    config: &ResolvedConfig,
+    options: CounterexampleOptions,
+) -> Result<CliOutcome, AppError> {
+    let mut application = Application::open(config)?;
+    let value = match options.action {
+        CounterexampleAction::Repair(options) => {
+            let request: CounterexampleRepairRequest = serde_json::from_str(&options.request_json)
+                .map_err(|error| {
+                    AppError::new(
+                        "MCL_COUNTEREXAMPLE_JSON_INVALID",
+                        error.to_string(),
+                        false,
+                        "Supply one closed counterexample_repair_request/1 JSON object.",
+                    )
+                })?;
+            to_value(application.repair_disproved_claim(
+                &request,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("counterexample repair outcome is serializable")
+        }
+        CounterexampleAction::Get(options) => {
+            to_value(application.get_counterexample_package(&options.artifact_hash)?)
+                .expect("counterexample package snapshot is serializable")
+        }
+    };
+    Ok(CliOutcome {
+        value,
+        success: true,
+    })
 }
 
 fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<CliOutcome, AppError> {

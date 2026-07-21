@@ -176,6 +176,79 @@ fn claim_status_cli_exposes_exact_read_only_help_and_fails_closed_for_a_missing_
 }
 
 #[test]
+fn counterexample_cli_exposes_closed_repair_and_read_paths() {
+    let root = TempDir::new().expect("temporary root");
+    let repair_help = mcl(&root, &["counterexample", "repair", "--help"]);
+    assert!(repair_help.status.success());
+    let repair_help = String::from_utf8(repair_help.stdout).expect("help is UTF-8");
+    for required in [
+        "--request-json <REQUEST_JSON>",
+        "--actor <ACTOR>",
+        "--idempotency-key <IDEMPOTENCY_KEY>",
+        "--dry-run",
+        "counterexample_repair_request/1",
+    ] {
+        assert!(
+            repair_help.contains(required),
+            "repair help omitted {required}"
+        );
+    }
+
+    let get_help = mcl(&root, &["counterexample", "get", "--help"]);
+    assert!(get_help.status.success());
+    let get_help = String::from_utf8(get_help.stdout).expect("help is UTF-8");
+    assert!(get_help.contains("--artifact-hash <ARTIFACT_HASH>"));
+    for forbidden in [
+        "--actor",
+        "--idempotency-key",
+        "--dry-run",
+        "--request-json",
+    ] {
+        assert!(!get_help.contains(forbidden), "get exposed {forbidden}");
+    }
+
+    assert!(
+        mcl(
+            &root,
+            &[
+                "init",
+                "--actor",
+                "counterexample-cli-test",
+                "--idempotency-key",
+                "counterexample-cli-init",
+            ],
+        )
+        .status
+        .success()
+    );
+    let malformed = mcl(
+        &root,
+        &[
+            "counterexample",
+            "repair",
+            "--request-json",
+            "{}",
+            "--actor",
+            "counterexample-cli-test",
+            "--idempotency-key",
+            "counterexample-cli-malformed",
+            "--dry-run",
+        ],
+    );
+    assert!(!malformed.status.success());
+    let error: Value = serde_json::from_slice(&malformed.stderr).expect("error JSON");
+    assert_eq!(error["code"], "MCL_COUNTEREXAMPLE_JSON_INVALID");
+
+    let missing = mcl(
+        &root,
+        &["counterexample", "get", "--artifact-hash", &"a".repeat(64)],
+    );
+    assert!(!missing.status.success());
+    let error: Value = serde_json::from_slice(&missing.stderr).expect("error JSON");
+    assert_eq!(error["code"], "MCL_ARTIFACT_NOT_FOUND");
+}
+
+#[test]
 fn environment_cli_registers_dry_runs_retries_and_survives_restart() {
     let root = TempDir::new().expect("temporary root");
     assert!(

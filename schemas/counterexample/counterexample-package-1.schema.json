@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/counterexample/package/1",
+  "title": "MathOS Counterexample Package v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source",
+    "original_claim",
+    "witness",
+    "checker",
+    "refutation_witness",
+    "minimization",
+    "failing_assumption_explanation",
+    "repair_operation",
+    "proposed_repaired_claim",
+    "search_provenance"
+  ],
+  "properties": {
+    "schema_version": {"const": "counterexample_package/1"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "format": "uuid"},
+        "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "original_claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "format": "uuid"},
+        "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "witness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mathematical_type", "canonical_value"],
+      "properties": {
+        "mathematical_type": {"type": "string", "minLength": 1, "maxLength": 1048576},
+        "canonical_value": {"not": {"type": "null"}}
+      }
+    },
+    "checker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "formal_system",
+        "environment_hash",
+        "module_artifact_hash",
+        "declaration_name",
+        "exact_theorem_type",
+        "declaration_hash"
+      ],
+      "properties": {
+        "formal_system": {"const": "lean4"},
+        "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "module_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "declaration_name": {"type": "string", "minLength": 1, "maxLength": 1048576},
+        "exact_theorem_type": {"type": "string", "minLength": 1, "maxLength": 1048576},
+        "declaration_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "refutation_witness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "formalization",
+        "kind",
+        "reviewed_source_relation",
+        "fidelity_request_schema_version",
+        "fidelity_evidence_id",
+        "fidelity_evidence_hash",
+        "fidelity_report_artifact_hash",
+        "authority_evidence_id",
+        "authority_evidence_hash",
+        "publication_receipt_hash"
+      ],
+      "properties": {
+        "formalization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["object_id", "version_hash"],
+          "properties": {
+            "object_id": {"type": "string", "format": "uuid"},
+            "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        },
+        "kind": {"const": "refutation"},
+        "reviewed_source_relation": {"const": "logical_negation"},
+        "fidelity_request_schema_version": {"const": "fidelity_review_request/2"},
+        "fidelity_evidence_id": {"type": "string", "format": "uuid"},
+        "fidelity_evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "fidelity_report_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "authority_evidence_id": {"type": "string", "format": "uuid"},
+        "authority_evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "publication_receipt_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "minimization": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["explanation", "supporting_artifact_hashes"],
+          "properties": {
+            "explanation": {"type": "string", "minLength": 1, "maxLength": 1048576},
+            "supporting_artifact_hashes": {
+              "type": "array",
+              "maxItems": 256,
+              "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        },
+        {"type": "null"}
+      ]
+    },
+    "failing_assumption_explanation": {"type": "string", "minLength": 1, "maxLength": 1048576},
+    "repair_operation": {
+      "enum": [
+        "add_missing_hypothesis",
+        "exclude_boundary_case",
+        "weaken_conclusion",
+        "restrict_domain",
+        "change_pointwise_to_asymptotic",
+        "split_cases",
+        "replace_equality"
+      ]
+    },
+    "proposed_repaired_claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "version_hash", "payload"],
+      "properties": {
+        "schema_version": {"const": "claim/1"},
+        "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "payload": {"$ref": "https://mnehmos.ai/mathos/schemas/claim/1"}
+      }
+    },
+    "search_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "event_head_hash"],
+      "properties": {
+        "run_id": {"type": "string", "format": "uuid"},
+        "event_head_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}
