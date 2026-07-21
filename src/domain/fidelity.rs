@@ -909,6 +909,20 @@ mod tests {
             serde_json::from_value(v2_value.clone()).expect("parse v2");
         assert!(matches!(v2, VersionedFidelityReviewRequest::V2(_)));
 
+        let v2_report = FidelityReviewReportV2 {
+            schema_version: FIDELITY_REVIEW_REPORT_V2_SCHEMA_VERSION.to_owned(),
+            request_hash: v2_request.request_hash().expect("v2 request hash"),
+            request: v2_request,
+            reviewed_source_relation: ReviewedSourceRelation::Claim,
+            formalization_author: "formalizer".to_owned(),
+            exact_theorem_type: "True".to_owned(),
+            declaration_hash: "b".repeat(64),
+        };
+        let parsed_report: VersionedFidelityReviewReport =
+            serde_json::from_value(serde_json::to_value(&v2_report).expect("v2 report value"))
+                .expect("parse v2 report");
+        assert_eq!(parsed_report, VersionedFidelityReviewReport::V2(v2_report));
+
         v2_value["reviewed_source_relation"] = Value::String("inverse".to_owned());
         assert!(serde_json::from_value::<VersionedFidelityReviewRequest>(v2_value).is_err());
     }
