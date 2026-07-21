@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
@@ -17,12 +17,14 @@ use crate::domain::schemas::{
 };
 use crate::domain::{
     ArtifactCreationSource, ArtifactMediaType, ArtifactMetadata, ArtifactRestriction,
-    ArtifactSnapshot, EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest, EnvironmentSnapshot,
-    EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult, EvidenceSnapshot,
-    LeanAuditJobSnapshot, LeanAuditRequest, PublicationAttestationVerification,
-    PublicationIngestionReceiptSnapshot, PublicationOutcome, PublicationRequest,
-    PublicationRetainedArtifactRole, PublicationStage, PublicationStageSnapshot, RecordDraft,
-    RecordKind, RecordSnapshot, VerifierJobRequest, VerifierJobSnapshot, VerifierJobState,
+    ArtifactSnapshot, CLAIM_REPAIR_EDGE_SCHEMA_VERSION, COUNTEREXAMPLE_PACKAGE_SCHEMA_VERSION,
+    ClaimRepairEdgePayload, CounterexampleRepairSnapshot, EdgeDraft, EdgeKind, EdgeSnapshot,
+    EnvironmentManifest, EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind,
+    EvidencePayload, EvidenceResult, EvidenceSnapshot, LeanAuditJobSnapshot, LeanAuditRequest,
+    PublicationAttestationVerification, PublicationIngestionReceiptSnapshot, PublicationOutcome,
+    PublicationRequest, PublicationRetainedArtifactRole, PublicationStage,
+    PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot, VerifierJobRequest,
+    VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
 
@@ -46,6 +48,7 @@ const MAX_PUBLICATION_INPUT_BYTES: u64 = 16 * 1_048_576;
 const MAX_REGISTERED_CAS_HASHES: usize = 100_000;
 const PUBLICATION_INGESTION_OPERATION: &str = "publication.ingestion_receipt.register";
 const PUBLICATION_AUTHORITY_OPERATION: &str = "evidence.create_publication_authority";
+const COUNTEREXAMPLE_REPAIR_OPERATION: &str = "counterexample.repair";
 const REQUIRED_TABLES: &[&str] = &[
     "artifacts",
     "edges",
@@ -106,6 +109,20 @@ pub(crate) struct ClaimStatusReadBasis {
     pub formalizations: Vec<ClaimStatusFormalizationReadBasis>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct CounterexampleRepairCommit {
+    pub package_artifact_hash: String,
+    pub package_byte_size: u64,
+    pub package_metadata: ArtifactMetadata,
+    pub repaired_claim: RecordDraft,
+    pub repaired_claim_version_hash: String,
+    pub original_claim: ExactVersionReference,
+    pub repair_edge_payload: ClaimRepairEdgePayload,
+    pub claim_status_basis: ClaimStatusReadBasis,
+    pub counterexample_search_run_id: String,
+    pub counterexample_search_run_head_hash: String,
+}
+
 #[derive(Clone, Copy)]
 enum ClaimStatusEvidenceSelection {
     Fidelity,
@@ -153,6 +170,10 @@ impl PublicationAuthorityCommit {
 
 pub struct Store {
     connection: Connection,
+    #[cfg(test)]
+    counterexample_repair_fail_after_artifact: bool,
+    #[cfg(test)]
+    counterexample_repair_advance_run_before_commit: bool,
 }
 
 impl Store {
@@ -172,7 +193,45 @@ impl Store {
         connection
             .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|error| AppError::database("configure busy timeout", error))?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            #[cfg(test)]
+            counterexample_repair_fail_after_artifact: false,
+            #[cfg(test)]
+            counterexample_repair_advance_run_before_commit: false,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_counterexample_repair_failure_after_artifact(&mut self) {
+        self.counterexample_repair_fail_after_artifact = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_counterexample_repair_run_head_change_before_commit(&mut self) {
+        self.counterexample_repair_advance_run_before_commit = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn apply_counterexample_repair_run_head_change(
+        &mut self,
+        run_id: &str,
+        expected_head_hash: &str,
+    ) -> Result<(), AppError> {
+        if !std::mem::take(&mut self.counterexample_repair_advance_run_before_commit) {
+            return Ok(());
+        }
+        self.append_run_event(
+            run_id,
+            expected_head_hash,
+            &crate::domain::RunEventDraft {
+                kind: crate::domain::RunEventKind::Diagnostic,
+                payload: json!({"test_fault": "concurrent_run_head_change"}),
+            },
+            "counterexample-concurrency-test",
+            &format!("counterexample-concurrent-head:{expected_head_hash}"),
+        )?;
+        Ok(())
     }
 
     pub fn migrate(&mut self) -> Result<(), AppError> {
@@ -2670,6 +2729,7 @@ impl Store {
         idempotency_key: &str,
     ) -> Result<EdgeSnapshot, AppError> {
         validate_mutation_inputs(actor, idempotency_key)?;
+        reject_controlled_repair_edge(draft.kind)?;
         validate_hash(&draft.source_version_hash, "source version")?;
         validate_hash(&draft.target_version_hash, "target version")?;
         let input_hash = value_hash(&json!({
@@ -2747,6 +2807,7 @@ impl Store {
     }
 
     pub fn validate_edge_create(&self, draft: &EdgeDraft) -> Result<(), AppError> {
+        reject_controlled_repair_edge(draft.kind)?;
         validate_hash(&draft.source_version_hash, "source version")?;
         validate_hash(&draft.target_version_hash, "target version")?;
         canonical_json(&draft.payload)?;
@@ -2779,9 +2840,467 @@ impl Store {
         Ok(())
     }
 
+    pub(crate) fn validate_counterexample_repair(
+        &self,
+        commit: &CounterexampleRepairCommit,
+    ) -> Result<(), AppError> {
+        validate_counterexample_repair_commit_shape(commit)?;
+        let current = capture_claim_status_read_basis(&self.connection, &commit.original_claim)?;
+        if current != commit.claim_status_basis {
+            return Err(counterexample_repair_conflict(
+                "claim truth inputs changed before the repair dry-run completed",
+            ));
+        }
+        recheck_counterexample_search_run(
+            &self.connection,
+            &commit.counterexample_search_run_id,
+            &commit.counterexample_search_run_head_hash,
+        )?;
+        validate_record_references(&self.connection, &commit.repaired_claim)?;
+        reject_duplicate_record_version(&self.connection, &commit.repaired_claim_version_hash)?;
+        if artifact_exists(&self.connection, &commit.package_artifact_hash)? {
+            return Err(AppError::new(
+                "MCL_ARTIFACT_EXISTS",
+                format!(
+                    "counterexample package artifact {} is already registered",
+                    commit.package_artifact_hash
+                ),
+                false,
+                "Retrieve the existing repair or use the original idempotency key.",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn commit_counterexample_repair(
+        &mut self,
+        commit: &CounterexampleRepairCommit,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<CounterexampleRepairSnapshot, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        validate_counterexample_repair_commit_shape(commit)?;
+        #[cfg(test)]
+        let fail_after_artifact =
+            std::mem::take(&mut self.counterexample_repair_fail_after_artifact);
+        let input_hash = value_hash(&json!({
+            "operation": COUNTEREXAMPLE_REPAIR_OPERATION,
+            "package_artifact_hash": commit.package_artifact_hash,
+            "package_byte_size": commit.package_byte_size,
+            "package_metadata": commit.package_metadata,
+            "repaired_claim": {
+                "kind": commit.repaired_claim.kind,
+                "schema_version": commit.repaired_claim.schema_version,
+                "payload": commit.repaired_claim.payload,
+                "searchable_text": commit.repaired_claim.searchable_text,
+            },
+            "repaired_claim_version_hash": commit.repaired_claim_version_hash,
+            "original_claim": commit.original_claim,
+            "repair_edge_payload": commit.repair_edge_payload,
+            "claim_status_basis": commit.claim_status_basis,
+            "counterexample_search_run_id": commit.counterexample_search_run_id,
+            "counterexample_search_run_head_hash": commit.counterexample_search_run_head_hash,
+            "actor": actor,
+        }))?;
+        let package_metadata_json = canonical_string(
+            &serde_json::to_value(&commit.package_metadata).map_err(|error| {
+                AppError::new(
+                    "MCL_ARTIFACT_METADATA_INVALID",
+                    error.to_string(),
+                    false,
+                    "Report this deterministic artifact serialization defect.",
+                )
+            })?,
+        )?;
+        let repaired_payload_json = canonical_string(&commit.repaired_claim.payload)?;
+        let repair_edge_payload_json = canonical_string(
+            &serde_json::to_value(&commit.repair_edge_payload).map_err(|error| {
+                AppError::new(
+                    "MCL_COUNTEREXAMPLE_SERIALIZATION_FAILED",
+                    error.to_string(),
+                    false,
+                    "Report this closed repair-edge serialization defect.",
+                )
+            })?,
+        )?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start atomic counterexample repair", error))?;
+        if let Some(existing) = read_idempotent_result(
+            &transaction,
+            COUNTEREXAMPLE_REPAIR_OPERATION,
+            idempotency_key,
+            &input_hash,
+        )? {
+            return Ok(existing);
+        }
+
+        let current = capture_claim_status_read_basis(&transaction, &commit.original_claim)?;
+        if current != commit.claim_status_basis {
+            return Err(counterexample_repair_conflict(
+                "claim truth inputs changed before the atomic repair commit",
+            ));
+        }
+        recheck_counterexample_search_run(
+            &transaction,
+            &commit.counterexample_search_run_id,
+            &commit.counterexample_search_run_head_hash,
+        )?;
+        validate_record_references(&transaction, &commit.repaired_claim)?;
+        reject_duplicate_record_version(&transaction, &commit.repaired_claim_version_hash)?;
+        if artifact_exists(&transaction, &commit.package_artifact_hash)? {
+            return Err(AppError::new(
+                "MCL_ARTIFACT_EXISTS",
+                format!(
+                    "counterexample package artifact {} is already registered without this idempotency receipt",
+                    commit.package_artifact_hash
+                ),
+                false,
+                "Retrieve the existing repair or retry with the original idempotency key.",
+            ));
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO artifacts(artifact_hash, media_type, byte_size, creation_source, license_expression, restriction, metadata_json, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch(), ?8)",
+                params![
+                    commit.package_artifact_hash,
+                    commit.package_metadata.media_type.as_str(),
+                    commit.package_byte_size as i64,
+                    commit.package_metadata.creation_source.as_str(),
+                    commit.package_metadata.license_expression,
+                    commit.package_metadata.restriction.as_str(),
+                    package_metadata_json,
+                    actor,
+                ],
+            )
+            .map_err(|error| AppError::database("insert counterexample package artifact", error))?;
+        #[cfg(test)]
+        if fail_after_artifact {
+            return Err(AppError::new(
+                "MCL_COUNTEREXAMPLE_REPAIR_INJECTED_FAILURE",
+                "injected failure after counterexample package registration",
+                true,
+                "Retry the exact idempotent repair after the transient test fault clears.",
+            ));
+        }
+
+        let repaired_claim_object_id = Uuid::now_v7().to_string();
+        transaction
+            .execute(
+                "INSERT INTO records(object_id, record_type, head_version_hash, created_at, created_by) VALUES (?1, 'claim', NULL, unixepoch(), ?2)",
+                params![repaired_claim_object_id, actor],
+            )
+            .map_err(|error| AppError::database("insert repaired claim object", error))?;
+        transaction
+            .execute(
+                "INSERT INTO record_versions(version_hash, object_id, schema_version, payload_json, predecessor_hash, created_at, created_by) VALUES (?1, ?2, ?3, ?4, NULL, unixepoch(), ?5)",
+                params![
+                    commit.repaired_claim_version_hash,
+                    repaired_claim_object_id,
+                    commit.repaired_claim.schema_version,
+                    repaired_payload_json,
+                    actor,
+                ],
+            )
+            .map_err(|error| AppError::database("insert repaired claim version", error))?;
+        transaction
+            .execute(
+                "UPDATE records SET head_version_hash = ?1 WHERE object_id = ?2 AND head_version_hash IS NULL",
+                params![commit.repaired_claim_version_hash, repaired_claim_object_id],
+            )
+            .map_err(|error| AppError::database("set repaired claim head", error))?;
+        update_search_projection(
+            &transaction,
+            &repaired_claim_object_id,
+            &commit.repaired_claim,
+        )?;
+
+        let repair_edge_id = Uuid::now_v7().to_string();
+        transaction
+            .execute(
+                "INSERT INTO edges(edge_id, edge_type, source_object_id, source_version_hash, target_object_id, target_version_hash, payload_json, created_at, created_by) VALUES (?1, 'research.repairs', ?2, ?3, ?4, ?5, ?6, unixepoch(), ?7)",
+                params![
+                    repair_edge_id,
+                    repaired_claim_object_id,
+                    commit.repaired_claim_version_hash,
+                    commit.original_claim.object_id,
+                    commit.original_claim.version_hash,
+                    repair_edge_payload_json,
+                    actor,
+                ],
+            )
+            .map_err(|error| AppError::database("insert controlled claim repair edge", error))?;
+
+        let snapshot = CounterexampleRepairSnapshot {
+            package_artifact: read_artifact(&transaction, &commit.package_artifact_hash)?,
+            repaired_claim: read_snapshot(
+                &transaction,
+                &repaired_claim_object_id,
+                Some(&commit.repaired_claim_version_hash),
+            )?,
+            repair_edge: read_edge(&transaction, &repair_edge_id)?,
+        };
+        write_idempotent_result(
+            &transaction,
+            COUNTEREXAMPLE_REPAIR_OPERATION,
+            idempotency_key,
+            &input_hash,
+            &snapshot,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit atomic counterexample repair", error))?;
+        Ok(snapshot)
+    }
+
     pub fn get_edge(&self, edge_id: &str) -> Result<EdgeSnapshot, AppError> {
         read_edge(&self.connection, edge_id)
     }
+}
+
+fn validate_counterexample_repair_commit_shape(
+    commit: &CounterexampleRepairCommit,
+) -> Result<(), AppError> {
+    validate_hash(
+        &commit.package_artifact_hash,
+        "counterexample package artifact",
+    )?;
+    commit.package_metadata.validate(commit.package_byte_size)?;
+    if commit.package_metadata.media_type != ArtifactMediaType::Json
+        || commit.package_metadata.creation_source != ArtifactCreationSource::Generated
+        || commit.package_metadata.license_expression.is_some()
+        || commit.package_metadata.restriction != ArtifactRestriction::Private
+    {
+        return Err(counterexample_repair_integrity_error(
+            "counterexample package metadata is not controlled generated private canonical JSON",
+        ));
+    }
+    let expected_metadata = BTreeMap::from([
+        (
+            "artifact_role".to_owned(),
+            "counterexample_package".to_owned(),
+        ),
+        (
+            "schema_version".to_owned(),
+            COUNTEREXAMPLE_PACKAGE_SCHEMA_VERSION.to_owned(),
+        ),
+        (
+            "package_hash".to_owned(),
+            commit.package_artifact_hash.clone(),
+        ),
+        (
+            "original_claim_object_id".to_owned(),
+            commit.original_claim.object_id.clone(),
+        ),
+        (
+            "original_claim_version_hash".to_owned(),
+            commit.original_claim.version_hash.clone(),
+        ),
+        (
+            "refutation_formalization_object_id".to_owned(),
+            commit
+                .repair_edge_payload
+                .refutation_formalization
+                .object_id
+                .clone(),
+        ),
+        (
+            "refutation_formalization_version_hash".to_owned(),
+            commit
+                .repair_edge_payload
+                .refutation_formalization
+                .version_hash
+                .clone(),
+        ),
+        (
+            "counterexample_search_run_id".to_owned(),
+            commit.counterexample_search_run_id.clone(),
+        ),
+        (
+            "counterexample_search_run_head_hash".to_owned(),
+            commit.counterexample_search_run_head_hash.clone(),
+        ),
+    ]);
+    if commit.package_metadata.semantic_metadata != expected_metadata {
+        return Err(counterexample_repair_integrity_error(
+            "counterexample package metadata does not bind the exact package, claim, refutation, and search run",
+        ));
+    }
+    if commit.repaired_claim.kind != RecordKind::Claim
+        || commit.repaired_claim.schema_version != crate::domain::schemas::CLAIM_SCHEMA_VERSION
+    {
+        return Err(counterexample_repair_integrity_error(
+            "counterexample repair must create one new claim/1 object",
+        ));
+    }
+    validate_record_payload(
+        commit.repaired_claim.kind,
+        &commit.repaired_claim.schema_version,
+        &commit.repaired_claim.payload,
+    )?;
+    let reproduced = record_version_hash(
+        &commit.repaired_claim.schema_version,
+        &commit.repaired_claim.payload,
+    )?;
+    if reproduced != commit.repaired_claim_version_hash
+        || reproduced == commit.original_claim.version_hash
+    {
+        return Err(counterexample_repair_integrity_error(
+            "repaired claim payload does not reproduce a distinct proposed version hash",
+        ));
+    }
+    let repaired_payload: ClaimPayload =
+        serde_json::from_value(commit.repaired_claim.payload.clone()).map_err(|error| {
+            counterexample_repair_integrity_error(format!(
+                "repaired claim payload cannot be decoded: {error}"
+            ))
+        })?;
+    if commit.claim_status_basis.claim != commit.original_claim
+        || commit
+            .claim_status_basis
+            .current_claim_head_version_hash
+            .as_deref()
+            != Some(commit.original_claim.version_hash.as_str())
+        || commit
+            .claim_status_basis
+            .current_source_head_version_hash
+            .as_deref()
+            != Some(commit.claim_status_basis.source.version_hash.as_str())
+        || repaired_payload.source_reference != commit.claim_status_basis.source
+    {
+        return Err(counterexample_repair_integrity_error(
+            "repair does not preserve the exact current original claim and source lineage",
+        ));
+    }
+    commit.repair_edge_payload.validate()?;
+    if commit.repair_edge_payload.schema_version != CLAIM_REPAIR_EDGE_SCHEMA_VERSION
+        || commit
+            .repair_edge_payload
+            .counterexample_package_artifact_hash
+            != commit.package_artifact_hash
+        || commit.repair_edge_payload.counterexample_search_run_id
+            != commit.counterexample_search_run_id
+        || commit
+            .repair_edge_payload
+            .counterexample_search_run_head_hash
+            != commit.counterexample_search_run_head_hash
+        || !commit
+            .claim_status_basis
+            .formalizations
+            .iter()
+            .any(|entry| entry.formalization == commit.repair_edge_payload.refutation_formalization)
+    {
+        return Err(counterexample_repair_integrity_error(
+            "repair edge does not bind the package, selected refutation, and exact search run",
+        ));
+    }
+    Ok(())
+}
+
+fn recheck_counterexample_search_run(
+    connection: &Connection,
+    run_id: &str,
+    expected_head_hash: &str,
+) -> Result<(), AppError> {
+    let row = connection
+        .query_row(
+            "SELECT run_kind, state, event_count, event_head_hash FROM runs WHERE run_id = ?1",
+            [run_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| AppError::database("read counterexample search run", error))?;
+    let Some((kind, state, event_count, head_hash)) = row else {
+        return Err(AppError::new(
+            "MCL_COUNTEREXAMPLE_SEARCH_RUN_INVALID",
+            format!("counterexample search run {run_id} does not exist"),
+            false,
+            "Start and reference one exact counterexample_search run.",
+        ));
+    };
+    if kind != "counterexample_search"
+        || state == "failed"
+        || !matches!(state.as_str(), "active" | "frozen" | "closed")
+        || event_count < 1
+        || head_hash.as_deref() != Some(expected_head_hash)
+    {
+        return Err(counterexample_repair_conflict(
+            "counterexample search run kind, state, chain, or head changed",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_duplicate_record_version(
+    connection: &Connection,
+    version_hash: &str,
+) -> Result<(), AppError> {
+    if let Some(object_id) = connection
+        .query_row(
+            "SELECT object_id FROM record_versions WHERE version_hash = ?1",
+            [version_hash],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| AppError::database("search duplicate repaired claim", error))?
+    {
+        return Err(AppError::new(
+            "MCL_RECORD_VERSION_EXISTS",
+            format!("identical repaired claim content already belongs to object {object_id}"),
+            false,
+            "Retrieve the existing claim instead of creating a duplicate repair.",
+        ));
+    }
+    Ok(())
+}
+
+fn artifact_exists(connection: &Connection, artifact_hash: &str) -> Result<bool, AppError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM artifacts WHERE artifact_hash = ?1)",
+            [artifact_hash],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| AppError::database("search counterexample package artifact", error))
+}
+
+fn reject_controlled_repair_edge(kind: EdgeKind) -> Result<(), AppError> {
+    if kind == EdgeKind::ResearchRepairs {
+        return Err(AppError::new(
+            "MCL_CLAIM_REPAIR_EDGE_CONTROLLED",
+            "research.repairs edges may only be created by the atomic counterexample repair path",
+            false,
+            "Use the shared counterexample repair application capability.",
+        ));
+    }
+    Ok(())
+}
+
+fn counterexample_repair_conflict(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_COUNTEREXAMPLE_REPAIR_CONFLICT",
+        message,
+        true,
+        "Reload the claim status and counterexample search run, then retry against their exact current heads.",
+    )
+}
+
+fn counterexample_repair_integrity_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_COUNTEREXAMPLE_REPAIR_INTEGRITY_FAILED",
+        message,
+        false,
+        "Quarantine the repair attempt and rebuild it through the controlled application path.",
+    )
 }
 
 fn read_current_formalizations_for_claim_bounded(

@@ -206,6 +206,7 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
         names,
         [
             "claim",
+            "counterexample",
             "formalization",
             "query",
             "research",
@@ -222,6 +223,12 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
         .expect("verify tool description");
     assert!(verify_description.contains("fidelity_review_request/1"));
     assert!(verify_description.contains("fidelity_review_request/2"));
+    let counterexample_description = tools
+        .iter()
+        .find(|tool| tool["name"] == "counterexample")
+        .and_then(|tool| tool["description"].as_str())
+        .expect("counterexample tool description");
+    assert!(counterexample_description.contains("counterexample_repair_request/1"));
     for forbidden in ["shell", "sql", "mark_proved", "sampling", "publish"] {
         assert!(!names.contains(&forbidden));
     }
@@ -277,6 +284,71 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
     assert_eq!(
         capabilities["result"]["structuredContent"]["claim_research_status"],
         "derived_read_only"
+    );
+    assert_eq!(
+        capabilities["result"]["structuredContent"]["counterexample_actions"],
+        json!(["repair", "get"])
+    );
+
+    let incomplete_repair = server.call(31201, "counterexample", json!({"action": "repair"}));
+    assert_eq!(incomplete_repair["result"]["isError"], true);
+    assert_eq!(
+        incomplete_repair["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_REQUIRED"
+    );
+    let malformed_repair = server.call(
+        31202,
+        "counterexample",
+        json!({
+            "action": "repair",
+            "request": {},
+            "actor": "mcp-test",
+            "idempotency_key": "counterexample-malformed",
+            "dry_run": true
+        }),
+    );
+    assert_eq!(malformed_repair["result"]["isError"], true);
+    assert_eq!(
+        malformed_repair["result"]["structuredContent"]["code"],
+        "MCL_COUNTEREXAMPLE_JSON_INVALID"
+    );
+    let missing_package = server.call(
+        31203,
+        "counterexample",
+        json!({"action": "get", "artifact_hash": "a".repeat(64)}),
+    );
+    assert_eq!(missing_package["result"]["isError"], true);
+    assert_eq!(
+        missing_package["result"]["structuredContent"]["code"],
+        "MCL_ARTIFACT_NOT_FOUND"
+    );
+    let forbidden_get_mutation = server.call(
+        31204,
+        "counterexample",
+        json!({
+            "action": "get",
+            "artifact_hash": "a".repeat(64),
+            "dry_run": true
+        }),
+    );
+    assert_eq!(forbidden_get_mutation["result"]["isError"], true);
+    assert_eq!(
+        forbidden_get_mutation["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_FORBIDDEN"
+    );
+    let forbidden_false_get_mutation = server.call(
+        31205,
+        "counterexample",
+        json!({
+            "action": "get",
+            "artifact_hash": "a".repeat(64),
+            "dry_run": false
+        }),
+    );
+    assert_eq!(forbidden_false_get_mutation["result"]["isError"], true);
+    assert_eq!(
+        forbidden_false_get_mutation["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_FORBIDDEN"
     );
 
     let incomplete_claim_status = server.call(3121, "verify", json!({"action": "claim_status"}));

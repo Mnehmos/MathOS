@@ -18,8 +18,9 @@ use serde_json::{Value, json, to_value};
 use crate::app::Application;
 use crate::config::ResolvedConfig;
 use crate::domain::{
-    EdgeKind, GraphTraversalRequest, PublicationOutcome, RecordDraft, RecordKind, RunEventDraft,
-    RunEventKind, RunKind, TraversalDirection, VersionedFidelityReviewRequest,
+    CounterexampleRepairRequest, EdgeKind, GraphTraversalRequest, PublicationOutcome, RecordDraft,
+    RecordKind, RunEventDraft, RunEventKind, RunKind, TraversalDirection,
+    VersionedFidelityReviewRequest,
 };
 use crate::error::AppError;
 
@@ -153,6 +154,29 @@ pub enum ResearchAction {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct CounterexampleRequest {
+    action: CounterexampleAction,
+    #[serde(default)]
+    request: Option<Value>,
+    #[serde(default)]
+    artifact_hash: Option<String>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
+    dry_run: Option<Option<bool>>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CounterexampleAction {
+    Repair,
+    Get,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct VerifyRequest {
     action: VerifyAction,
     #[serde(default, deserialize_with = "deserialize_present_optional")]
@@ -251,13 +275,14 @@ impl MathOsMcp {
             SystemAction::Health => Ok(to_value(Application::health(&self.config))
                 .expect("diagnostic report is serializable")),
             SystemAction::Capabilities => Ok(json!({
-                "tools": ["system", "query", "source", "claim", "formalization", "research", "verify"],
+                "tools": ["system", "query", "source", "claim", "formalization", "research", "counterexample", "verify"],
                 "system_actions": ["describe", "health", "capabilities", "policy"],
                 "query_actions": ["get", "search", "graph"],
                 "source_actions": ["propose", "version"],
                 "claim_actions": ["propose", "version"],
                 "formalization_actions": ["propose", "version"],
                 "research_actions": ["start", "observe", "submit"],
+                "counterexample_actions": ["repair", "get"],
                 "verify_actions": ["review_fidelity", "fidelity_status", "claim_status", "prepare_publication", "ingest_publication", "promote_publication_authority"],
                 "mutations": true,
                 "authoritative_verification": true,
@@ -313,6 +338,16 @@ impl MathOsMcp {
     )]
     fn research(&self, Parameters(request): Parameters<ResearchRequest>) -> CallToolResult {
         result_to_tool(self.execute_research(request))
+    }
+
+    #[tool(
+        description = "Build or retrieve a canonical counterexample package through the controlled atomic repair path. Closed actions: repair, get. repair requires one counterexample_repair_request/1 object, actor, and idempotency_key; get requires artifact_hash."
+    )]
+    fn counterexample(
+        &self,
+        Parameters(request): Parameters<CounterexampleRequest>,
+    ) -> CallToolResult {
+        result_to_tool(self.execute_counterexample(request))
     }
 
     #[tool(
@@ -471,6 +506,54 @@ impl MathOsMcp {
                     request.dry_run,
                 )?)
                 .map_err(serialization_error)
+            }
+        }
+    }
+
+    fn execute_counterexample(&self, request: CounterexampleRequest) -> Result<Value, AppError> {
+        let mut application = self.application()?;
+        match request.action {
+            CounterexampleAction::Repair => {
+                reject_present(request.artifact_hash, "artifact_hash", "repair")?;
+                let repair_value = request
+                    .request
+                    .ok_or_else(|| missing_field("request", "repair", "counterexample"))?;
+                let repair_request: CounterexampleRepairRequest =
+                    serde_json::from_value(repair_value).map_err(|error| {
+                        AppError::new(
+                            "MCL_COUNTEREXAMPLE_JSON_INVALID",
+                            error.to_string(),
+                            false,
+                            "Supply one closed counterexample_repair_request/1 object.",
+                        )
+                    })?;
+                let actor = required(request.actor, "actor", "counterexample repair")?;
+                let idempotency_key = required(
+                    request.idempotency_key,
+                    "idempotency_key",
+                    "counterexample repair",
+                )?;
+                to_value(application.repair_disproved_claim(
+                    &repair_request,
+                    &actor,
+                    &idempotency_key,
+                    mutation_dry_run(request.dry_run, "counterexample repair")?,
+                )?)
+                .map_err(serialization_error)
+            }
+            CounterexampleAction::Get => {
+                reject_present(request.request, "request", "counterexample get")?;
+                reject_present(request.actor, "actor", "counterexample get")?;
+                reject_present(
+                    request.idempotency_key,
+                    "idempotency_key",
+                    "counterexample get",
+                )?;
+                reject_present(request.dry_run, "dry_run", "counterexample get")?;
+                let artifact_hash =
+                    required(request.artifact_hash, "artifact_hash", "counterexample get")?;
+                to_value(application.get_counterexample_package(&artifact_hash)?)
+                    .map_err(serialization_error)
             }
         }
     }

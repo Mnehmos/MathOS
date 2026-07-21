@@ -80,3 +80,5 @@ mcl verify claim-status \
 ```
 
 The same actions are available through the MCP `verify` family as `review_fidelity`, `fidelity_status`, and `claim_status`. CLI and MCP call the same application read and return the same closed snapshot.
+
+A `disproved` snapshot is only the eligibility gate for a correction. It does not mutate the false claim or prove a proposed replacement. The separate [counterexample repair boundary](COUNTEREXAMPLE_REPAIR.md) packages one exact current refutation and creates a new independently unproved claim.

@@ -14,25 +14,33 @@ use crate::artifacts::ArtifactStore;
 use crate::canonical::{canonical_json, record_version_hash};
 use crate::config::ResolvedConfig;
 use crate::domain::schemas::{
-    ClaimPayload, ExactVersionReference, FormalizationClaimPolarity, FormalizationPayload,
-    SourcePayload, SourceType, validate_record_payload,
+    CLAIM_SCHEMA_VERSION, ClaimPayload, ExactVersionReference, FormalSystem,
+    FormalizationClaimPolarity, FormalizationPayload, SourcePayload, SourceType,
+    validate_record_payload,
 };
 use crate::domain::{
-    ArtifactMetadata, ArtifactSnapshot, EdgeDraft, EdgeSnapshot, EnvironmentManifest,
+    ArtifactCreationSource, ArtifactMediaType, ArtifactMetadata, ArtifactRestriction,
+    ArtifactSnapshot, CLAIM_REPAIR_EDGE_SCHEMA_VERSION, COUNTEREXAMPLE_PACKAGE_SCHEMA_VERSION,
+    ClaimRepairEdgePayload, CounterexampleCheckerBinding, CounterexamplePackage,
+    CounterexampleRepairRequest, CounterexampleRepairSnapshot, CounterexampleSearchProvenance,
+    CounterexampleSearchResult, EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest,
     EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult,
     EvidenceSnapshot, FidelityReviewHistoryEntry, FidelityReviewReport, FidelityStatus,
     FidelityStatusSnapshot, FidelityVerdict, GraphTraversalHit, GraphTraversalRequest,
     LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditReport, LeanAuditRequest,
-    PublicationAttestationVerification, PublicationAuthorityBinding, PublicationClassification,
-    PublicationIngestionReceiptSnapshot, PublicationOutcome, PublicationReport, PublicationRequest,
-    PublicationRetainedArtifactRole, PublicationRetainedClosure, PublicationStage,
-    PublicationStageArtifact, PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot,
-    RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
-    VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
-    VerifierJobSnapshot, VerifierJobState,
+    ProposedRepairedClaim, PublicationAttestationVerification, PublicationAuthorityBinding,
+    PublicationClassification, PublicationIngestionReceiptSnapshot, PublicationOutcome,
+    PublicationReport, PublicationRequest, PublicationRetainedArtifactRole,
+    PublicationRetainedClosure, PublicationStage, PublicationStageArtifact,
+    PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot, ResearchStatus,
+    RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot, RunState,
+    TraversalDirection, VerifierExecutionClassification, VerifierExecutionReport,
+    VerifierJobRequest, VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
-use crate::store::{ClaimStatusReadBasis, PublicationAuthorityCommit, Store};
+use crate::store::{
+    ClaimStatusReadBasis, CounterexampleRepairCommit, PublicationAuthorityCommit, Store,
+};
 
 const DOCTOR_CANARY: &[u8] = b"mcl doctor artifact integrity canary v1";
 const MAX_RETAINED_JSON_BYTES: usize = 1_048_576;
@@ -200,6 +208,23 @@ pub struct FidelityReviewOutcome {
     pub proposed_evidence_hash: String,
     pub report: crate::domain::fidelity::VersionedFidelityReviewReport,
     pub evidence: Option<EvidenceSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CounterexampleRepairOutcome {
+    pub dry_run: bool,
+    pub proposed_counterexample_package_artifact_hash: String,
+    pub proposed_repaired_claim_version_hash: String,
+    pub package: CounterexamplePackage,
+    pub repair: Option<CounterexampleRepairSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CounterexamplePackageSnapshot {
+    pub artifact: ArtifactSnapshot,
+    pub package: CounterexamplePackage,
+    pub repaired_claim: RecordSnapshot,
+    pub repair_edge: EdgeSnapshot,
 }
 
 pub struct Application {
@@ -1124,6 +1149,20 @@ impl Application {
         &mut self,
         claim: &ExactVersionReference,
     ) -> Result<crate::domain::ClaimResearchStatusSnapshot, AppError> {
+        let (basis, snapshot) = self.derive_claim_research_status(claim)?;
+        self.finish_claim_research_status(&basis, snapshot)
+    }
+
+    fn derive_claim_research_status(
+        &mut self,
+        claim: &ExactVersionReference,
+    ) -> Result<
+        (
+            ClaimStatusReadBasis,
+            crate::domain::ClaimResearchStatusSnapshot,
+        ),
+        AppError,
+    > {
         use crate::domain::{
             AmbiguityDisposition, ClaimResearchStatusNonqualification,
             ClaimResearchStatusNonqualificationReason, ClaimResearchStatusSnapshot,
@@ -1151,12 +1190,10 @@ impl Application {
         };
 
         if basis.current_claim_head_version_hash.as_deref() != Some(&claim.version_hash) {
-            return self
-                .finish_claim_research_status(&basis, empty_snapshot(ResearchStatus::Superseded));
+            return Ok((basis, empty_snapshot(ResearchStatus::Superseded)));
         }
         if basis.formalizations.is_empty() {
-            return self
-                .finish_claim_research_status(&basis, empty_snapshot(ResearchStatus::NotStarted));
+            return Ok((basis, empty_snapshot(ResearchStatus::NotStarted)));
         }
         if basis.current_source_head_version_hash.as_deref()
             != Some(basis.source.version_hash.as_str())
@@ -1171,8 +1208,8 @@ impl Application {
                     authority_evidence_id: None,
                 })
                 .collect();
-            return self.finish_claim_research_status(
-                &basis,
+            return Ok((
+                basis,
                 ClaimResearchStatusSnapshot {
                     schema_version:
                         crate::domain::research_status::CLAIM_RESEARCH_STATUS_SCHEMA_VERSION
@@ -1182,7 +1219,7 @@ impl Application {
                     witnesses: Vec::new(),
                     nonqualifications,
                 },
-            );
+            ));
         }
 
         let mut witnesses = Vec::new();
@@ -1417,8 +1454,8 @@ impl Application {
         } else {
             ResearchStatus::Open
         };
-        self.finish_claim_research_status(
-            &basis,
+        Ok((
+            basis,
             ClaimResearchStatusSnapshot {
                 schema_version:
                     crate::domain::research_status::CLAIM_RESEARCH_STATUS_SCHEMA_VERSION.to_owned(),
@@ -1427,7 +1464,7 @@ impl Application {
                 witnesses,
                 nonqualifications,
             },
-        )
+        ))
     }
 
     fn finish_claim_research_status(
@@ -1439,6 +1476,526 @@ impl Application {
         snapshot.validate()?;
         self.store.recheck_claim_status_read_basis(basis)?;
         Ok(snapshot)
+    }
+
+    pub fn repair_disproved_claim(
+        &mut self,
+        request: &CounterexampleRepairRequest,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<CounterexampleRepairOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        request.validate()?;
+
+        let (claim_status_basis, mut status) =
+            self.derive_claim_research_status(&request.original_claim)?;
+        status.sort_components();
+        status.validate()?;
+        if status.status != ResearchStatus::Disproved {
+            return Err(counterexample_repair_error(
+                "MCL_COUNTEREXAMPLE_DISPROVED_CLAIM_REQUIRED",
+                format!(
+                    "counterexample repair requires a current disproved claim, received `{}`",
+                    status.status.as_str()
+                ),
+                "Select an exact current claim with derived `disproved` status.",
+            ));
+        }
+        let selected_witnesses = status
+            .witnesses
+            .iter()
+            .filter(|witness| witness.formalization == request.refutation_formalization)
+            .cloned()
+            .collect::<Vec<_>>();
+        let [refutation_witness] = selected_witnesses.as_slice() else {
+            return Err(counterexample_repair_error(
+                "MCL_COUNTEREXAMPLE_REFUTATION_REQUIRED",
+                "selected formalization does not resolve to exactly one current refutation witness",
+                "Use one exact refutation formalization returned by the current claim-status snapshot.",
+            ));
+        };
+        if refutation_witness.kind != crate::domain::ClaimResearchStatusWitnessKind::Refutation {
+            return Err(counterexample_repair_error(
+                "MCL_COUNTEREXAMPLE_REFUTATION_REQUIRED",
+                "selected claim-status witness is not a refutation",
+                "Use one exact refutation witness returned by the current claim-status snapshot.",
+            ));
+        }
+
+        let original_claim = self.read_validated_exact_record(
+            &request.original_claim,
+            RecordKind::Claim,
+            "counterexample original claim",
+        )?;
+        let original_claim_payload: ClaimPayload =
+            decode_counterexample_payload(original_claim.payload, "counterexample original claim")?;
+        if original_claim_payload.source_reference != claim_status_basis.source {
+            return Err(counterexample_repair_integrity_error(
+                "original claim source differs from the captured claim-status source",
+            ));
+        }
+        self.read_validated_exact_record(
+            &original_claim_payload.source_reference,
+            RecordKind::Source,
+            "counterexample source",
+        )?;
+        let formalization = self.read_validated_exact_record(
+            &request.refutation_formalization,
+            RecordKind::Formalization,
+            "counterexample refutation formalization",
+        )?;
+        let formalization_payload: FormalizationPayload = decode_counterexample_payload(
+            formalization.payload,
+            "counterexample refutation formalization",
+        )?;
+        if formalization_payload.claim_version != request.original_claim
+            || formalization_payload.claim_polarity != Some(FormalizationClaimPolarity::Negation)
+        {
+            return Err(counterexample_repair_integrity_error(
+                "selected formalization is not the exact logical negation of the original claim",
+            ));
+        }
+
+        if request.proposed_repaired_claim.source_reference
+            != original_claim_payload.source_reference
+        {
+            return Err(counterexample_repair_error(
+                "MCL_CLAIM_REPAIR_SOURCE_MISMATCH",
+                "proposed repaired claim does not retain the original exact source version",
+                "Create the repaired claim from the same exact source version as the disproved claim.",
+            ));
+        }
+        let repaired_claim_payload = serde_json::to_value(&request.proposed_repaired_claim)
+            .map_err(counterexample_serialization_error)?;
+        validate_record_payload(
+            RecordKind::Claim,
+            CLAIM_SCHEMA_VERSION,
+            &repaired_claim_payload,
+        )?;
+        let repaired_claim_version_hash =
+            record_version_hash(CLAIM_SCHEMA_VERSION, &repaired_claim_payload)?;
+        if repaired_claim_version_hash == request.original_claim.version_hash {
+            return Err(counterexample_repair_error(
+                "MCL_CLAIM_REPAIR_UNCHANGED",
+                "proposed repaired claim is canonically identical to the disproved claim",
+                "Change the mathematical statement or assumptions before creating a repair.",
+            ));
+        }
+
+        self.validate_counterexample_search_run(
+            &request.counterexample_search_run_id,
+            &request.counterexample_search_run_head_hash,
+            &request.original_claim,
+            &request.refutation_formalization,
+            &request.witness,
+        )?;
+        self.get_environment(&formalization_payload.environment_hash)?;
+        let module = self.verify_artifact(&formalization_payload.module_artifact_hash)?;
+        if module.artifact.media_type != ArtifactMediaType::LeanSource {
+            return Err(counterexample_repair_integrity_error(
+                "refutation checker module is not a verified Lean source artifact",
+            ));
+        }
+        if let Some(minimization) = &request.minimization {
+            for artifact_hash in &minimization.supporting_artifact_hashes {
+                self.verify_artifact(artifact_hash).map_err(|error| {
+                    counterexample_repair_error(
+                        "MCL_COUNTEREXAMPLE_SUPPORTING_ARTIFACT_INVALID",
+                        format!(
+                            "minimization artifact {artifact_hash} is unavailable or invalid: {}",
+                            error.message
+                        ),
+                        "Reference only registered, hash-verified supporting artifacts.",
+                    )
+                })?;
+            }
+        }
+
+        let checker = counterexample_checker(&formalization_payload)?;
+        let package = CounterexamplePackage {
+            schema_version: COUNTEREXAMPLE_PACKAGE_SCHEMA_VERSION.to_owned(),
+            source: original_claim_payload.source_reference.clone(),
+            original_claim: request.original_claim.clone(),
+            witness: request.witness.clone(),
+            checker,
+            refutation_witness: refutation_witness.clone(),
+            minimization: request.minimization.clone(),
+            failing_assumption_explanation: request.failing_assumption_explanation.clone(),
+            repair_operation: request.repair_operation,
+            proposed_repaired_claim: ProposedRepairedClaim {
+                schema_version: CLAIM_SCHEMA_VERSION.to_owned(),
+                version_hash: repaired_claim_version_hash.clone(),
+                payload: request.proposed_repaired_claim.clone(),
+            },
+            search_provenance: CounterexampleSearchProvenance {
+                run_id: request.counterexample_search_run_id.clone(),
+                event_head_hash: request.counterexample_search_run_head_hash.clone(),
+            },
+        };
+        let package_bytes = package.canonical_bytes()?;
+        let package_artifact_hash = package.package_hash()?;
+        let exact_package_hash = format!("{:x}", Sha256::digest(&package_bytes));
+        if package_artifact_hash != exact_package_hash {
+            return Err(counterexample_repair_integrity_error(
+                "counterexample package canonical identity differs from its exact bytes",
+            ));
+        }
+        let package_metadata = counterexample_package_metadata(
+            &package_artifact_hash,
+            &request.original_claim,
+            &request.refutation_formalization,
+            &request.counterexample_search_run_id,
+            &request.counterexample_search_run_head_hash,
+        );
+        package_metadata.validate_bytes(&package_bytes)?;
+        let repair_edge_payload = ClaimRepairEdgePayload {
+            schema_version: CLAIM_REPAIR_EDGE_SCHEMA_VERSION.to_owned(),
+            counterexample_package_artifact_hash: package_artifact_hash.clone(),
+            repair_operation: request.repair_operation,
+            refutation_formalization: request.refutation_formalization.clone(),
+            counterexample_search_run_id: request.counterexample_search_run_id.clone(),
+            counterexample_search_run_head_hash: request
+                .counterexample_search_run_head_hash
+                .clone(),
+        };
+        repair_edge_payload.validate()?;
+        let commit = CounterexampleRepairCommit {
+            package_artifact_hash: package_artifact_hash.clone(),
+            package_byte_size: package_bytes.len() as u64,
+            package_metadata,
+            repaired_claim: RecordDraft {
+                kind: RecordKind::Claim,
+                schema_version: CLAIM_SCHEMA_VERSION.to_owned(),
+                payload: repaired_claim_payload,
+                searchable_text: request.repaired_claim_searchable_text.clone(),
+            },
+            repaired_claim_version_hash: repaired_claim_version_hash.clone(),
+            original_claim: request.original_claim.clone(),
+            repair_edge_payload,
+            claim_status_basis,
+            counterexample_search_run_id: request.counterexample_search_run_id.clone(),
+            counterexample_search_run_head_hash: request
+                .counterexample_search_run_head_hash
+                .clone(),
+        };
+
+        let repair = if dry_run {
+            self.store.validate_counterexample_repair(&commit)?;
+            None
+        } else {
+            let stored_hash = self.artifacts.put(&package_bytes)?;
+            if stored_hash != package_artifact_hash {
+                return Err(counterexample_repair_integrity_error(
+                    "content-addressed storage returned a different counterexample package identity",
+                ));
+            }
+            #[cfg(test)]
+            self.store.apply_counterexample_repair_run_head_change(
+                &commit.counterexample_search_run_id,
+                &commit.counterexample_search_run_head_hash,
+            )?;
+            Some(
+                self.store
+                    .commit_counterexample_repair(&commit, actor, idempotency_key)?,
+            )
+        };
+        Ok(CounterexampleRepairOutcome {
+            dry_run,
+            proposed_counterexample_package_artifact_hash: package_artifact_hash,
+            proposed_repaired_claim_version_hash: repaired_claim_version_hash,
+            package,
+            repair,
+        })
+    }
+
+    pub fn get_counterexample_package(
+        &mut self,
+        artifact_hash: &str,
+    ) -> Result<CounterexamplePackageSnapshot, AppError> {
+        let artifact = self.store.get_artifact(artifact_hash)?;
+        let bytes = self.artifacts.read(artifact_hash)?;
+        if artifact.byte_size != bytes.len() as u64 {
+            return Err(counterexample_repair_integrity_error(
+                "counterexample package metadata byte size differs from its verified CAS bytes",
+            ));
+        }
+        let package: CounterexamplePackage = serde_json::from_slice(&bytes).map_err(|error| {
+            counterexample_repair_integrity_error(format!(
+                "stored counterexample package is invalid: {error}"
+            ))
+        })?;
+        package.validate().map_err(|error| {
+            counterexample_repair_integrity_error(format!(
+                "stored counterexample package failed validation: {}",
+                error.message
+            ))
+        })?;
+        if package.canonical_bytes()? != bytes || package.package_hash()? != artifact_hash {
+            return Err(counterexample_repair_integrity_error(
+                "stored counterexample package is noncanonical or has the wrong content identity",
+            ));
+        }
+        let expected_metadata = counterexample_package_metadata(
+            artifact_hash,
+            &package.original_claim,
+            &package.refutation_witness.formalization,
+            &package.search_provenance.run_id,
+            &package.search_provenance.event_head_hash,
+        );
+        if !artifact_matches_metadata(&artifact, &expected_metadata, bytes.len()) {
+            return Err(counterexample_repair_integrity_error(
+                "stored counterexample package does not have exact controlled artifact metadata",
+            ));
+        }
+
+        self.read_validated_exact_record(
+            &package.source,
+            RecordKind::Source,
+            "stored counterexample source",
+        )?;
+        let original_claim = self.read_validated_exact_record(
+            &package.original_claim,
+            RecordKind::Claim,
+            "stored counterexample original claim",
+        )?;
+        let original_claim_payload: ClaimPayload = decode_counterexample_payload(
+            original_claim.payload,
+            "stored counterexample original claim",
+        )?;
+        let formalization = self.read_validated_exact_record(
+            &package.refutation_witness.formalization,
+            RecordKind::Formalization,
+            "stored counterexample refutation formalization",
+        )?;
+        let formalization_payload: FormalizationPayload = decode_counterexample_payload(
+            formalization.payload,
+            "stored counterexample refutation formalization",
+        )?;
+        if original_claim_payload.source_reference != package.source
+            || formalization_payload.claim_version != package.original_claim
+            || counterexample_checker(&formalization_payload)? != package.checker
+        {
+            return Err(counterexample_repair_integrity_error(
+                "stored counterexample package does not reproduce its exact source, claim, and checker lineage",
+            ));
+        }
+        self.get_environment(&package.checker.environment_hash)?;
+        let module = self.verify_artifact(&package.checker.module_artifact_hash)?;
+        if module.artifact.media_type != ArtifactMediaType::LeanSource {
+            return Err(counterexample_repair_integrity_error(
+                "stored counterexample checker module is not verified Lean source",
+            ));
+        }
+        if let Some(minimization) = &package.minimization {
+            for supporting_hash in &minimization.supporting_artifact_hashes {
+                self.verify_artifact(supporting_hash).map_err(|error| {
+                    counterexample_repair_integrity_error(format!(
+                        "stored counterexample supporting artifact {supporting_hash} is invalid: {}",
+                        error.message
+                    ))
+                })?;
+            }
+        }
+
+        self.validate_counterexample_search_run(
+            &package.search_provenance.run_id,
+            &package.search_provenance.event_head_hash,
+            &package.original_claim,
+            &package.refutation_witness.formalization,
+            &package.witness,
+        )
+        .map_err(|error| {
+            counterexample_repair_integrity_error(format!(
+                "stored counterexample search provenance is invalid: {}",
+                error.message
+            ))
+        })?;
+
+        let fidelity = self
+            .store
+            .get_evidence(&package.refutation_witness.fidelity_evidence_id)?;
+        if fidelity.evidence_hash != package.refutation_witness.fidelity_evidence_hash
+            || fidelity.payload.subject != package.refutation_witness.formalization
+            || fidelity.payload.evidence_kind != EvidenceKind::StatementFidelityReview
+            || fidelity.payload.result != EvidenceResult::Accepted
+            || fidelity.payload.authority_class != EvidenceAuthorityClass::Reviewed
+            || fidelity.payload.stale
+        {
+            return Err(counterexample_repair_integrity_error(
+                "stored counterexample fidelity witness identity or qualification changed",
+            ));
+        }
+        let (fidelity_report_hash, fidelity_report) = self.read_fidelity_report(&fidelity)?;
+        let fidelity_request = fidelity_report.request();
+        if fidelity_report_hash != package.refutation_witness.fidelity_report_artifact_hash
+            || fidelity_request.schema_version()
+                != package.refutation_witness.fidelity_request_schema_version
+            || fidelity_request.source() != &package.source
+            || fidelity_request.claim() != &package.original_claim
+            || fidelity_request.formalization() != &package.refutation_witness.formalization
+            || fidelity_request.reviewed_source_relation()
+                != Some(crate::domain::ReviewedSourceRelation::LogicalNegation)
+        {
+            return Err(counterexample_repair_integrity_error(
+                "stored counterexample fidelity report does not reproduce its refutation lineage",
+            ));
+        }
+
+        let authority = self
+            .store
+            .get_evidence(&package.refutation_witness.authority_evidence_id)?;
+        if authority.evidence_hash != package.refutation_witness.authority_evidence_hash
+            || authority.payload.subject != package.refutation_witness.formalization
+            || authority.payload.evidence_kind != EvidenceKind::LeanKernelRefutation
+            || authority.payload.stale
+            || authority
+                .payload
+                .publication_authority
+                .as_ref()
+                .map(|binding| binding.ingestion_receipt_hash.as_str())
+                != Some(package.refutation_witness.publication_receipt_hash.as_str())
+        {
+            return Err(counterexample_repair_integrity_error(
+                "stored counterexample authority witness identity or receipt binding changed",
+            ));
+        }
+        let authority_commit = self.revalidate_publication_authority_evidence(&authority)?;
+        if authority_commit.subject != package.refutation_witness.formalization
+            || authority_commit.outcome != PublicationOutcome::Refutation
+            || authority_commit.environment_hash != package.checker.environment_hash
+        {
+            return Err(counterexample_repair_integrity_error(
+                "stored counterexample authority witness no longer revalidates as the exact refutation checker",
+            ));
+        }
+
+        let repaired_claim = self
+            .store
+            .get_record_version(&package.proposed_repaired_claim.version_hash)?;
+        let repaired_claim_payload = serde_json::to_value(&package.proposed_repaired_claim.payload)
+            .map_err(counterexample_serialization_error)?;
+        if repaired_claim.kind != RecordKind::Claim
+            || repaired_claim.schema_version != CLAIM_SCHEMA_VERSION
+            || repaired_claim.payload != repaired_claim_payload
+            || repaired_claim.predecessor_hash.is_some()
+        {
+            return Err(counterexample_repair_integrity_error(
+                "stored repaired claim is not the exact new immutable claim declared by the package",
+            ));
+        }
+        let hits = self.store.traverse_graph(&GraphTraversalRequest {
+            root_object_id: repaired_claim.object_id.clone(),
+            root_version_hash: repaired_claim.version_hash.clone(),
+            direction: TraversalDirection::Outgoing,
+            edge_kinds: vec![EdgeKind::ResearchRepairs],
+            max_depth: 1,
+            limit: 2,
+        })?;
+        let expected_edge_payload = ClaimRepairEdgePayload {
+            schema_version: CLAIM_REPAIR_EDGE_SCHEMA_VERSION.to_owned(),
+            counterexample_package_artifact_hash: artifact_hash.to_owned(),
+            repair_operation: package.repair_operation,
+            refutation_formalization: package.refutation_witness.formalization.clone(),
+            counterexample_search_run_id: package.search_provenance.run_id.clone(),
+            counterexample_search_run_head_hash: package.search_provenance.event_head_hash.clone(),
+        };
+        let expected_edge_payload = serde_json::to_value(expected_edge_payload)
+            .map_err(counterexample_serialization_error)?;
+        let [repair_hit] = hits.as_slice() else {
+            return Err(counterexample_repair_integrity_error(
+                "stored repaired claim does not have exactly one controlled repair edge",
+            ));
+        };
+        if repair_hit.depth != 1
+            || repair_hit.edge.target_object_id != package.original_claim.object_id
+            || repair_hit.edge.target_version_hash != package.original_claim.version_hash
+            || repair_hit.edge.payload != expected_edge_payload
+        {
+            return Err(counterexample_repair_integrity_error(
+                "stored repair edge does not exactly bind the package and original claim",
+            ));
+        }
+        Ok(CounterexamplePackageSnapshot {
+            artifact,
+            package,
+            repaired_claim,
+            repair_edge: repair_hit.edge.clone(),
+        })
+    }
+
+    fn validate_counterexample_search_run(
+        &self,
+        run_id: &str,
+        bound_result_event_hash: &str,
+        original_claim: &ExactVersionReference,
+        refutation_formalization: &ExactVersionReference,
+        witness: &crate::domain::CounterexampleWitness,
+    ) -> Result<(), AppError> {
+        let run = self.store.get_run(run_id).map_err(|error| {
+            counterexample_repair_error(
+                "MCL_COUNTEREXAMPLE_SEARCH_RUN_INVALID",
+                format!(
+                    "counterexample search run {run_id} is unavailable: {}",
+                    error.message
+                ),
+                "Start and reference one exact counterexample_search run.",
+            )
+        })?;
+        if run.kind != RunKind::CounterexampleSearch || run.state == RunState::Failed {
+            return Err(counterexample_repair_error(
+                "MCL_COUNTEREXAMPLE_SEARCH_RUN_INVALID",
+                "counterexample search run kind or state is invalid",
+                "Use a non-failed counterexample_search run with one exact bound result observation.",
+            ));
+        }
+        let report = self.store.verify_run_chain(run_id)?;
+        if !report.valid
+            || report.event_count != run.event_count
+            || report.head_hash != run.event_head_hash
+        {
+            return Err(counterexample_repair_integrity_error(
+                "counterexample search run event chain failed exact replay",
+            ));
+        }
+        let events = self.store.list_run_events(run_id)?;
+        let result_event = events
+            .iter()
+            .find(|event| event.event_hash == bound_result_event_hash)
+            .ok_or_else(|| {
+                counterexample_repair_error(
+                    "MCL_COUNTEREXAMPLE_SEARCH_RUN_INVALID",
+                    "bound counterexample result event is absent from the verified run chain",
+                    "Use the exact event hash of a matching counterexample result observation.",
+                )
+            })?;
+        if result_event.kind != crate::domain::RunEventKind::Observation {
+            return Err(counterexample_repair_error(
+                "MCL_COUNTEREXAMPLE_SEARCH_RESULT_INVALID",
+                "bound counterexample result event is not an observation",
+                "Bind the repair to one counterexample_search_result/1 observation.",
+            ));
+        }
+        let result: CounterexampleSearchResult =
+            serde_json::from_value(result_event.payload.clone()).map_err(|error| {
+                counterexample_repair_error(
+                    "MCL_COUNTEREXAMPLE_SEARCH_RESULT_INVALID",
+                    format!("bound counterexample result payload is invalid: {error}"),
+                    "Submit one closed counterexample_search_result/1 observation.",
+                )
+            })?;
+        result.validate()?;
+        if result.original_claim != *original_claim
+            || result.refutation_formalization != *refutation_formalization
+            || result.witness != *witness
+        {
+            return Err(counterexample_repair_error(
+                "MCL_COUNTEREXAMPLE_SEARCH_RESULT_MISMATCH",
+                "bound counterexample result does not exactly match the repair claim, formalization, and witness",
+                "Use the exact matching counterexample search result or start a new search run.",
+            ));
+        }
+        Ok(())
     }
 
     fn read_fidelity_report(
@@ -4997,6 +5554,112 @@ fn verify_publication_gh_version(
     Ok(expected_version.to_owned())
 }
 
+fn counterexample_checker(
+    formalization: &FormalizationPayload,
+) -> Result<CounterexampleCheckerBinding, AppError> {
+    if formalization.formal_system != FormalSystem::Lean4
+        || formalization.claim_polarity != Some(FormalizationClaimPolarity::Negation)
+    {
+        return Err(counterexample_repair_integrity_error(
+            "counterexample checker is not an exact Lean 4 logical-negation formalization",
+        ));
+    }
+    let checker = CounterexampleCheckerBinding {
+        formal_system: "lean4".to_owned(),
+        environment_hash: formalization.environment_hash.clone(),
+        module_artifact_hash: formalization.module_artifact_hash.clone(),
+        declaration_name: formalization.declaration_name.clone(),
+        exact_theorem_type: formalization.exact_theorem_type.clone(),
+        declaration_hash: formalization.declaration_hash.clone(),
+    };
+    checker.validate()?;
+    Ok(checker)
+}
+
+fn counterexample_package_metadata(
+    package_hash: &str,
+    original_claim: &ExactVersionReference,
+    refutation_formalization: &ExactVersionReference,
+    search_run_id: &str,
+    search_run_head_hash: &str,
+) -> ArtifactMetadata {
+    ArtifactMetadata {
+        schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION.to_owned(),
+        media_type: ArtifactMediaType::Json,
+        creation_source: ArtifactCreationSource::Generated,
+        license_expression: None,
+        restriction: ArtifactRestriction::Private,
+        semantic_metadata: BTreeMap::from([
+            (
+                "artifact_role".to_owned(),
+                "counterexample_package".to_owned(),
+            ),
+            (
+                "schema_version".to_owned(),
+                COUNTEREXAMPLE_PACKAGE_SCHEMA_VERSION.to_owned(),
+            ),
+            ("package_hash".to_owned(), package_hash.to_owned()),
+            (
+                "original_claim_object_id".to_owned(),
+                original_claim.object_id.clone(),
+            ),
+            (
+                "original_claim_version_hash".to_owned(),
+                original_claim.version_hash.clone(),
+            ),
+            (
+                "refutation_formalization_object_id".to_owned(),
+                refutation_formalization.object_id.clone(),
+            ),
+            (
+                "refutation_formalization_version_hash".to_owned(),
+                refutation_formalization.version_hash.clone(),
+            ),
+            (
+                "counterexample_search_run_id".to_owned(),
+                search_run_id.to_owned(),
+            ),
+            (
+                "counterexample_search_run_head_hash".to_owned(),
+                search_run_head_hash.to_owned(),
+            ),
+        ]),
+    }
+}
+
+fn decode_counterexample_payload<T: DeserializeOwned>(
+    value: Value,
+    label: &str,
+) -> Result<T, AppError> {
+    serde_json::from_value(value).map_err(|error| {
+        counterexample_repair_integrity_error(format!("stored {label} payload is invalid: {error}"))
+    })
+}
+
+fn counterexample_serialization_error(error: serde_json::Error) -> AppError {
+    counterexample_repair_error(
+        "MCL_COUNTEREXAMPLE_SERIALIZATION_FAILED",
+        format!("counterexample contract could not be serialized: {error}"),
+        "Report this closed-contract serialization defect.",
+    )
+}
+
+fn counterexample_repair_error(
+    code: &'static str,
+    message: impl Into<String>,
+    corrective_action: impl Into<String>,
+) -> AppError {
+    AppError::new(code, message, false, corrective_action)
+}
+
+fn counterexample_repair_integrity_error(message: impl Into<String>) -> AppError {
+    counterexample_repair_error(
+        "MCL_COUNTEREXAMPLE_REPAIR_INTEGRITY_FAILED",
+        message,
+        "Quarantine the repair attempt and rebuild it through the controlled application path.",
+    )
+}
+
 fn validate_attribution(actor: &str, idempotency_key: &str) -> Result<(), AppError> {
     if actor.trim().is_empty() || idempotency_key.trim().is_empty() {
         return Err(AppError::new(
@@ -6134,6 +6797,603 @@ mod tests {
         )
     }
 
+    fn counterexample_repair_request(
+        fixture: &mut LocalPublicationAuthorityFixture,
+        key_suffix: &str,
+    ) -> Result<CounterexampleRepairRequest, AppError> {
+        let (source, claim, _) = fixture_fidelity_lineage(fixture);
+        let witness = crate::domain::CounterexampleWitness {
+            mathematical_type: "Prop".to_owned(),
+            canonical_value: json!({"proposition": "False"}),
+        };
+        let run = fixture
+            .application
+            .create_run(
+                RunKind::CounterexampleSearch,
+                &json!({"max_candidates": 1}),
+                "counterexample-researcher",
+                &format!("counterexample-search-{key_suffix}"),
+                false,
+            )?
+            .run
+            .expect("persisted counterexample search run");
+        let event = fixture
+            .application
+            .append_run_event(
+                &run.run_id,
+                run.event_head_hash.as_deref().expect("search run head"),
+                &RunEventDraft {
+                    kind: crate::domain::RunEventKind::Observation,
+                    payload: json!({
+                        "schema_version": "counterexample_search_result/1",
+                        "original_claim": claim,
+                        "refutation_formalization": fixture.request.subject,
+                        "witness": witness,
+                        "result": "counterexample_confirmed"
+                    }),
+                },
+                "counterexample-researcher",
+                &format!("counterexample-search-result-{key_suffix}"),
+                false,
+            )?
+            .event
+            .expect("persisted counterexample search result");
+        Ok(CounterexampleRepairRequest {
+            schema_version:
+                crate::domain::counterexample::COUNTEREXAMPLE_REPAIR_REQUEST_SCHEMA_VERSION
+                    .to_owned(),
+            original_claim: claim,
+            refutation_formalization: fixture.request.subject.clone(),
+            witness,
+            minimization: None,
+            failing_assumption_explanation:
+                "The original existential claim supplies no inhabitant of False.".to_owned(),
+            repair_operation: crate::domain::ClaimRepairOperation::AddMissingHypothesis,
+            proposed_repaired_claim: ClaimPayload {
+                source_reference: source,
+                normalized_informal_statement:
+                    "Under the explicit assumption False, False is inhabited.".to_owned(),
+                claim_kind: crate::domain::schemas::ClaimKind::Universal,
+                logical_shape: Some("False -> False".to_owned()),
+                assumptions: vec!["False".to_owned()],
+                variables: Vec::new(),
+                concept_links: Vec::new(),
+                source_citations: Vec::new(),
+                ambiguity_notes: Vec::new(),
+            },
+            repaired_claim_searchable_text: "repaired false inhabitance explicit assumption"
+                .to_owned(),
+            counterexample_search_run_id: run.run_id,
+            counterexample_search_run_head_hash: event.event_hash,
+        })
+    }
+
+    #[test]
+    fn counterexample_repair_is_dry_run_atomic_idempotent_and_restart_stable()
+    -> Result<(), AppError> {
+        let mut fixture = local_publication_authority_fixture_for(PublicationOutcome::Refutation);
+        let (_, original_claim, _) = fixture_fidelity_lineage(&fixture);
+        fixture.application.promote_publication_authority(
+            &fixture.receipt.receipt_hash,
+            "publication-authority-test",
+            "counterexample-repair-authority",
+            false,
+        )?;
+        add_fixture_verified_fidelity(
+            &mut fixture,
+            Some(crate::domain::ReviewedSourceRelation::LogicalNegation),
+            "counterexample-repair",
+        )?;
+        assert_eq!(
+            fixture
+                .application
+                .claim_research_status(&original_claim)?
+                .status,
+            ResearchStatus::Disproved
+        );
+        let request = counterexample_repair_request(&mut fixture, "atomic")?;
+
+        let artifact_count_before = fixture.application.store.artifact_count()?;
+        let dry_run = fixture.application.repair_disproved_claim(
+            &request,
+            "counterexample-researcher",
+            "counterexample-repair-atomic",
+            true,
+        )?;
+        assert!(dry_run.dry_run);
+        assert!(dry_run.repair.is_none());
+        assert_eq!(
+            fixture.application.store.artifact_count()?,
+            artifact_count_before
+        );
+        assert!(
+            !fixture_cas_path(
+                fixture.root.path(),
+                &dry_run.proposed_counterexample_package_artifact_hash
+            )
+            .exists()
+        );
+        assert!(
+            fixture
+                .application
+                .store
+                .get_record_version(&dry_run.proposed_repaired_claim_version_hash)
+                .is_err()
+        );
+
+        fixture
+            .application
+            .store
+            .inject_counterexample_repair_failure_after_artifact();
+        let injected = fixture
+            .application
+            .repair_disproved_claim(
+                &request,
+                "counterexample-researcher",
+                "counterexample-repair-atomic",
+                false,
+            )
+            .expect_err("injected transaction fault must roll back logical state");
+        assert_eq!(injected.code, "MCL_COUNTEREXAMPLE_REPAIR_INJECTED_FAILURE");
+        assert!(injected.retryable);
+        assert_eq!(
+            fixture.application.store.artifact_count()?,
+            artifact_count_before
+        );
+        assert!(
+            fixture
+                .application
+                .store
+                .get_artifact(&dry_run.proposed_counterexample_package_artifact_hash)
+                .is_err()
+        );
+        assert!(
+            fixture
+                .application
+                .store
+                .get_record_version(&dry_run.proposed_repaired_claim_version_hash)
+                .is_err()
+        );
+        assert_eq!(
+            fixture
+                .application
+                .claim_research_status(&original_claim)?
+                .status,
+            ResearchStatus::Disproved
+        );
+        assert!(
+            fixture_cas_path(
+                fixture.root.path(),
+                &dry_run.proposed_counterexample_package_artifact_hash
+            )
+            .exists()
+        );
+
+        let persisted = fixture.application.repair_disproved_claim(
+            &request,
+            "counterexample-researcher",
+            "counterexample-repair-atomic",
+            false,
+        )?;
+        assert!(!persisted.dry_run);
+        assert_eq!(
+            persisted.proposed_counterexample_package_artifact_hash,
+            dry_run.proposed_counterexample_package_artifact_hash
+        );
+        assert_eq!(
+            persisted.proposed_repaired_claim_version_hash,
+            dry_run.proposed_repaired_claim_version_hash
+        );
+        assert_eq!(
+            fixture.application.store.artifact_count()?,
+            artifact_count_before + 1
+        );
+        let repair = persisted.repair.as_ref().expect("persisted atomic repair");
+        assert_ne!(repair.repaired_claim.object_id, original_claim.object_id);
+        assert!(repair.repaired_claim.predecessor_hash.is_none());
+        assert_eq!(repair.repair_edge.kind, EdgeKind::ResearchRepairs);
+        assert_eq!(
+            repair.repair_edge.source_object_id,
+            repair.repaired_claim.object_id
+        );
+        assert_eq!(
+            repair.repair_edge.target_object_id,
+            original_claim.object_id
+        );
+        assert_eq!(
+            repair.repair_edge.target_version_hash,
+            original_claim.version_hash
+        );
+        assert_eq!(
+            fixture
+                .application
+                .claim_research_status(&original_claim)?
+                .status,
+            ResearchStatus::Disproved
+        );
+        let repaired_claim_reference = ExactVersionReference {
+            object_id: repair.repaired_claim.object_id.clone(),
+            version_hash: repair.repaired_claim.version_hash.clone(),
+        };
+        assert_eq!(
+            fixture
+                .application
+                .claim_research_status(&repaired_claim_reference)?
+                .status,
+            ResearchStatus::NotStarted
+        );
+
+        let loaded = fixture
+            .application
+            .get_counterexample_package(&persisted.proposed_counterexample_package_artifact_hash)?;
+        assert_eq!(loaded.package, persisted.package);
+        assert_eq!(loaded.repaired_claim, repair.repaired_claim);
+        assert_eq!(loaded.repair_edge, repair.repair_edge);
+        let later_event = fixture
+            .application
+            .append_run_event(
+                &request.counterexample_search_run_id,
+                &request.counterexample_search_run_head_hash,
+                &RunEventDraft {
+                    kind: crate::domain::RunEventKind::Diagnostic,
+                    payload: json!({"message": "search bookkeeping completed after repair"}),
+                },
+                "counterexample-researcher",
+                "counterexample-search-after-repair",
+                false,
+            )?
+            .event
+            .expect("later search event persists");
+        assert_ne!(
+            later_event.event_hash,
+            request.counterexample_search_run_head_hash
+        );
+        let loaded_after_run_advance = fixture
+            .application
+            .get_counterexample_package(&persisted.proposed_counterexample_package_artifact_hash)?;
+        assert_eq!(loaded_after_run_advance.package, loaded.package);
+        assert_eq!(
+            loaded_after_run_advance.repaired_claim,
+            loaded.repaired_claim
+        );
+        assert_eq!(loaded_after_run_advance.repair_edge, loaded.repair_edge);
+        let retry = fixture.application.repair_disproved_claim(
+            &request,
+            "counterexample-researcher",
+            "counterexample-repair-atomic",
+            false,
+        )?;
+        assert_eq!(
+            serde_json::to_value(&retry).expect("retry serializes"),
+            serde_json::to_value(&persisted).expect("persisted repair serializes")
+        );
+        let registered_artifacts = fixture.application.store.artifact_count()?;
+        let mut rebound = request.clone();
+        rebound
+            .proposed_repaired_claim
+            .normalized_informal_statement =
+            "Under a different explicit assumption, False is inhabited.".to_owned();
+        rebound.proposed_repaired_claim.logical_shape = Some("True -> False".to_owned());
+        let rebinding = fixture
+            .application
+            .repair_disproved_claim(
+                &rebound,
+                "counterexample-researcher",
+                "counterexample-repair-atomic",
+                false,
+            )
+            .expect_err("idempotency key cannot be rebound to another repair");
+        assert_eq!(rebinding.code, "MCL_IDEMPOTENCY_CONFLICT");
+        assert_eq!(
+            fixture.application.store.artifact_count()?,
+            registered_artifacts
+        );
+
+        let generic_edge_error = fixture
+            .application
+            .create_edge(
+                &EdgeDraft {
+                    kind: EdgeKind::ResearchRepairs,
+                    source_object_id: repair.repaired_claim.object_id.clone(),
+                    source_version_hash: repair.repaired_claim.version_hash.clone(),
+                    target_object_id: original_claim.object_id.clone(),
+                    target_version_hash: original_claim.version_hash.clone(),
+                    payload: json!({}),
+                },
+                "counterexample-researcher",
+                "generic-repair-edge-forbidden",
+                false,
+            )
+            .expect_err("generic repair edges are controlled");
+        assert_eq!(generic_edge_error.code, "MCL_CLAIM_REPAIR_EDGE_CONTROLLED");
+
+        let config = ResolvedConfig::load(fixture.root.path(), None)?;
+        let package_hash = persisted.proposed_counterexample_package_artifact_hash;
+        drop(fixture.application);
+        let mut reopened = Application::open(&config)?;
+        let restarted = reopened.get_counterexample_package(&package_hash)?;
+        assert_eq!(restarted.package, persisted.package);
+        assert_eq!(restarted.repaired_claim, repair.repaired_claim);
+        assert_eq!(
+            reopened.claim_research_status(&original_claim)?.status,
+            ResearchStatus::Disproved
+        );
+        assert_eq!(
+            reopened
+                .claim_research_status(&repaired_claim_reference)?
+                .status,
+            ResearchStatus::NotStarted
+        );
+        fs::write(
+            fixture_cas_path(fixture.root.path(), &package_hash),
+            b"corrupt counterexample package",
+        )
+        .expect("test corrupts exact package CAS object");
+        let corrupt = reopened
+            .get_counterexample_package(&package_hash)
+            .expect_err("corrupt package CAS bytes must fail closed");
+        assert_eq!(corrupt.code, "MCL_ARTIFACT_INTEGRITY_FAILED");
+        Ok(())
+    }
+
+    #[test]
+    fn counterexample_repair_rejects_unqualified_or_mismatched_inputs() -> Result<(), AppError> {
+        let mut fixture = local_publication_authority_fixture_for(PublicationOutcome::Refutation);
+        let request = counterexample_repair_request(&mut fixture, "rejections")?;
+        let open_error = fixture
+            .application
+            .repair_disproved_claim(
+                &request,
+                "counterexample-researcher",
+                "counterexample-repair-open",
+                true,
+            )
+            .expect_err("open claim cannot be repaired through the disproved gate");
+        assert_eq!(
+            open_error.code,
+            "MCL_COUNTEREXAMPLE_DISPROVED_CLAIM_REQUIRED"
+        );
+
+        fixture.application.promote_publication_authority(
+            &fixture.receipt.receipt_hash,
+            "publication-authority-test",
+            "counterexample-rejection-authority",
+            false,
+        )?;
+        add_fixture_verified_fidelity(
+            &mut fixture,
+            Some(crate::domain::ReviewedSourceRelation::LogicalNegation),
+            "counterexample-rejections",
+        )?;
+
+        let mut wrong_formalization = request.clone();
+        wrong_formalization.refutation_formalization = request.original_claim.clone();
+        assert_eq!(
+            fixture
+                .application
+                .repair_disproved_claim(
+                    &wrong_formalization,
+                    "counterexample-researcher",
+                    "counterexample-repair-wrong-formalization",
+                    true,
+                )
+                .expect_err("wrong refutation identity fails")
+                .code,
+            "MCL_COUNTEREXAMPLE_REFUTATION_REQUIRED"
+        );
+
+        let mut wrong_source = request.clone();
+        wrong_source.proposed_repaired_claim.source_reference = request.original_claim.clone();
+        assert_eq!(
+            fixture
+                .application
+                .repair_disproved_claim(
+                    &wrong_source,
+                    "counterexample-researcher",
+                    "counterexample-repair-wrong-source",
+                    true,
+                )
+                .expect_err("source substitution fails")
+                .code,
+            "MCL_CLAIM_REPAIR_SOURCE_MISMATCH"
+        );
+
+        let original = fixture.application.get_record(
+            &request.original_claim.object_id,
+            Some(&request.original_claim.version_hash),
+        )?;
+        let mut unchanged = request.clone();
+        unchanged.proposed_repaired_claim =
+            serde_json::from_value(original.payload).expect("original claim decodes");
+        assert_eq!(
+            fixture
+                .application
+                .repair_disproved_claim(
+                    &unchanged,
+                    "counterexample-researcher",
+                    "counterexample-repair-unchanged",
+                    true,
+                )
+                .expect_err("unchanged claim fails")
+                .code,
+            "MCL_CLAIM_REPAIR_UNCHANGED"
+        );
+
+        let wrong_run = fixture
+            .application
+            .create_run(
+                RunKind::LiteratureReview,
+                &json!({}),
+                "counterexample-researcher",
+                "counterexample-wrong-run-kind",
+                false,
+            )?
+            .run
+            .expect("wrong-kind run persists");
+        let mut wrong_run_request = request.clone();
+        wrong_run_request.counterexample_search_run_id = wrong_run.run_id;
+        wrong_run_request.counterexample_search_run_head_hash =
+            wrong_run.event_head_hash.expect("wrong-kind run head");
+        assert_eq!(
+            fixture
+                .application
+                .repair_disproved_claim(
+                    &wrong_run_request,
+                    "counterexample-researcher",
+                    "counterexample-repair-wrong-run",
+                    true,
+                )
+                .expect_err("wrong search-run kind fails")
+                .code,
+            "MCL_COUNTEREXAMPLE_SEARCH_RUN_INVALID"
+        );
+
+        let conflict_preview = fixture.application.repair_disproved_claim(
+            &request,
+            "counterexample-researcher",
+            "counterexample-repair-concurrent-head",
+            true,
+        )?;
+        let artifact_count_before_conflict = fixture.application.store.artifact_count()?;
+        fixture
+            .application
+            .store
+            .inject_counterexample_repair_run_head_change_before_commit();
+        let conflict = fixture
+            .application
+            .repair_disproved_claim(
+                &request,
+                "counterexample-researcher",
+                "counterexample-repair-concurrent-head",
+                false,
+            )
+            .expect_err("a concurrently advanced search head must lose");
+        assert_eq!(conflict.code, "MCL_COUNTEREXAMPLE_REPAIR_CONFLICT");
+        assert!(conflict.retryable);
+        assert_eq!(
+            fixture.application.store.artifact_count()?,
+            artifact_count_before_conflict
+        );
+        assert!(
+            fixture
+                .application
+                .store
+                .get_artifact(&conflict_preview.proposed_counterexample_package_artifact_hash)
+                .is_err()
+        );
+        assert!(
+            fixture
+                .application
+                .store
+                .get_record_version(&conflict_preview.proposed_repaired_claim_version_hash)
+                .is_err()
+        );
+        assert_eq!(
+            fixture
+                .application
+                .claim_research_status(&request.original_claim)?
+                .status,
+            ResearchStatus::Disproved
+        );
+
+        let mut stale_head = request.clone();
+        stale_head.counterexample_search_run_head_hash = "f".repeat(64);
+        assert_eq!(
+            fixture
+                .application
+                .repair_disproved_claim(
+                    &stale_head,
+                    "counterexample-researcher",
+                    "counterexample-repair-stale-head",
+                    true,
+                )
+                .expect_err("stale search head fails")
+                .code,
+            "MCL_COUNTEREXAMPLE_SEARCH_RUN_INVALID"
+        );
+
+        let mut mismatched_witness = request.clone();
+        mismatched_witness.witness.canonical_value = json!({"proposition": "True"});
+        assert_eq!(
+            fixture
+                .application
+                .repair_disproved_claim(
+                    &mismatched_witness,
+                    "counterexample-researcher",
+                    "counterexample-repair-mismatched-result",
+                    true,
+                )
+                .expect_err("search result must bind the exact requested witness")
+                .code,
+            "MCL_COUNTEREXAMPLE_SEARCH_RESULT_MISMATCH"
+        );
+
+        let start_only_run = fixture
+            .application
+            .create_run(
+                RunKind::CounterexampleSearch,
+                &json!({}),
+                "counterexample-researcher",
+                "counterexample-start-only-run",
+                false,
+            )?
+            .run
+            .expect("start-only search run persists");
+        let mut start_only_request = request.clone();
+        start_only_request.counterexample_search_run_id = start_only_run.run_id;
+        start_only_request.counterexample_search_run_head_hash = start_only_run
+            .event_head_hash
+            .expect("start-only run has origin event");
+        assert_eq!(
+            fixture
+                .application
+                .repair_disproved_claim(
+                    &start_only_request,
+                    "counterexample-researcher",
+                    "counterexample-repair-start-only-run",
+                    true,
+                )
+                .expect_err("run_started alone is not a counterexample result")
+                .code,
+            "MCL_COUNTEREXAMPLE_SEARCH_RESULT_INVALID"
+        );
+
+        let current_claim = fixture.application.get_record(
+            &request.original_claim.object_id,
+            Some(&request.original_claim.version_hash),
+        )?;
+        let mut successor_payload = current_claim.payload;
+        successor_payload["normalized_informal_statement"] =
+            Value::String("A successor claim supersedes the disproved version.".to_owned());
+        fixture.application.version_record(
+            &current_claim.object_id,
+            &current_claim.version_hash,
+            &RecordDraft {
+                kind: RecordKind::Claim,
+                schema_version: current_claim.schema_version,
+                payload: successor_payload,
+                searchable_text: "successor claim".to_owned(),
+            },
+            "counterexample-researcher",
+            "counterexample-supersede-original",
+            false,
+        )?;
+        let superseded = fixture
+            .application
+            .repair_disproved_claim(
+                &request,
+                "counterexample-researcher",
+                "counterexample-repair-superseded",
+                true,
+            )
+            .expect_err("superseded claim cannot be repaired as current disproved truth");
+        assert_eq!(
+            superseded.code,
+            "MCL_COUNTEREXAMPLE_DISPROVED_CLAIM_REQUIRED"
+        );
+        Ok(())
+    }
+
     #[test]
     fn claim_status_requires_both_revalidated_fidelity_and_authority_and_survives_restart()
     -> Result<(), AppError> {
@@ -6178,6 +7438,21 @@ mod tests {
         assert_eq!(
             witness.publication_receipt_hash,
             fixture.receipt.receipt_hash
+        );
+        let proved_repair_request =
+            counterexample_repair_request(&mut fixture, "proved-claim-rejection")?;
+        let proved_repair_error = fixture
+            .application
+            .repair_disproved_claim(
+                &proved_repair_request,
+                "counterexample-researcher",
+                "counterexample-repair-proved-claim",
+                true,
+            )
+            .expect_err("proved claim cannot enter the disproved repair path");
+        assert_eq!(
+            proved_repair_error.code,
+            "MCL_COUNTEREXAMPLE_DISPROVED_CLAIM_REQUIRED"
         );
 
         let config = ResolvedConfig::load(fixture.root.path(), None)?;

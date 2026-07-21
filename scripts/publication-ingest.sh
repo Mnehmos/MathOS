@@ -283,4 +283,237 @@ jq -e \
   exit 71
 }
 
+if [[ "$expected_evidence_kind" == "lean_kernel_refutation" ]]; then
+  counterexample_researcher="protected-counterexample-researcher"
+  "$mcl_bin" --root "$candidate_dir" --json research start \
+    --kind counterexample_search \
+    --budget-json '{"max_candidates":1}' \
+    --actor "$counterexample_researcher" \
+    --idempotency-key "pilot-a-counterexample-search:$receipt_hash" \
+    >"$output_dir/counterexample-search-run.json"
+  counterexample_run_id="$(jq -er '.run.run_id' "$output_dir/counterexample-search-run.json")"
+  counterexample_run_head="$(jq -er '.run.event_head_hash' "$output_dir/counterexample-search-run.json")"
+
+  jq -cnS \
+    --arg claim_object_id "$claim_object_id" \
+    --arg claim_version_hash "$claim_version_hash" \
+    --arg formalization_object_id "$formalization_object_id" \
+    --arg formalization_version_hash "$formalization_version_hash" '
+    {
+      schema_version: "counterexample_search_result/1",
+      original_claim: {
+        object_id: $claim_object_id,
+        version_hash: $claim_version_hash
+      },
+      refutation_formalization: {
+        object_id: $formalization_object_id,
+        version_hash: $formalization_version_hash
+      },
+      witness: {mathematical_type: "Nat", canonical_value: 2},
+      result: "counterexample_confirmed"
+    }
+  ' >"$output_dir/counterexample-search-event.json"
+  "$mcl_bin" --root "$candidate_dir" --json research submit \
+    --run-id "$counterexample_run_id" \
+    --expected-head "$counterexample_run_head" \
+    --kind observation \
+    --payload-json "$(<"$output_dir/counterexample-search-event.json")" \
+    --actor "$counterexample_researcher" \
+    --idempotency-key "pilot-a-counterexample-result:$receipt_hash" \
+    >"$output_dir/counterexample-search-result.json"
+  counterexample_run_head="$(jq -er '.event.event_hash' "$output_dir/counterexample-search-result.json")"
+  "$mcl_bin" --root "$candidate_dir" --json research events \
+    --run-id "$counterexample_run_id" \
+    >"$output_dir/counterexample-search-events.json"
+  "$mcl_bin" --root "$candidate_dir" --json research verify \
+    --run-id "$counterexample_run_id" \
+    >"$output_dir/counterexample-search-verification.json"
+  jq -e \
+    --arg run_id "$counterexample_run_id" \
+    --arg head "$counterexample_run_head" '
+    .run_id == $run_id and
+    .valid == true and
+    .event_count == 2 and
+    .head_hash == $head and
+    .first_invalid_sequence == null
+  ' "$output_dir/counterexample-search-verification.json" >/dev/null || {
+    printf 'Pilot A counterexample search chain failed exact replay\n' >&2
+    exit 71
+  }
+
+  jq -cnS \
+    --arg source_object_id "$source_object_id" \
+    --arg source_version_hash "$source_version_hash" \
+    --arg claim_object_id "$claim_object_id" \
+    --arg claim_version_hash "$claim_version_hash" \
+    --arg formalization_object_id "$formalization_object_id" \
+    --arg formalization_version_hash "$formalization_version_hash" \
+    --arg module_hash "$module_hash" \
+    --arg run_id "$counterexample_run_id" \
+    --arg run_head "$counterexample_run_head" '
+    {
+      schema_version: "counterexample_repair_request/1",
+      original_claim: {
+        object_id: $claim_object_id,
+        version_hash: $claim_version_hash
+      },
+      refutation_formalization: {
+        object_id: $formalization_object_id,
+        version_hash: $formalization_version_hash
+      },
+      witness: {mathematical_type: "Nat", canonical_value: 2},
+      minimization: {
+        explanation: "The witness is one canonical scalar natural number; no structural reduction is applicable.",
+        supporting_artifact_hashes: [$module_hash]
+      },
+      failing_assumption_explanation: "The universal conclusion fails at boundary prime 2 because the retained odd predicate excludes 2; the repaired claim excludes that boundary case.",
+      repair_operation: "exclude_boundary_case",
+      proposed_repaired_claim: {
+        source_reference: {
+          object_id: $source_object_id,
+          version_hash: $source_version_hash
+        },
+        normalized_informal_statement: "Every prime number other than 2 is odd.",
+        claim_kind: "universal",
+        logical_shape: "forall n : Nat, Prime(n) -> n != 2 -> Odd(n)",
+        assumptions: ["n != 2"],
+        variables: [{
+          symbol: "n",
+          domain: "natural numbers",
+          notes: "Prime and odd use the exact predicates retained in the refutation module."
+        }],
+        concept_links: [],
+        source_citations: [],
+        ambiguity_notes: []
+      },
+      repaired_claim_searchable_text: "Every prime number other than 2 is odd",
+      counterexample_search_run_id: $run_id,
+      counterexample_search_run_head_hash: $run_head
+    }
+  ' >"$output_dir/counterexample-repair-request.json"
+
+  "$mcl_bin" --root "$candidate_dir" --json counterexample repair \
+    --request-json "$(<"$output_dir/counterexample-repair-request.json")" \
+    --actor "$counterexample_researcher" \
+    --idempotency-key "pilot-a-counterexample-repair:$receipt_hash" \
+    --dry-run \
+    >"$output_dir/counterexample-repair-dry-run.json"
+  "$mcl_bin" --root "$candidate_dir" --json counterexample repair \
+    --request-json "$(<"$output_dir/counterexample-repair-request.json")" \
+    --actor "$counterexample_researcher" \
+    --idempotency-key "pilot-a-counterexample-repair:$receipt_hash" \
+    >"$output_dir/counterexample-repair.json"
+  "$mcl_bin" --root "$candidate_dir" --json counterexample repair \
+    --request-json "$(<"$output_dir/counterexample-repair-request.json")" \
+    --actor "$counterexample_researcher" \
+    --idempotency-key "pilot-a-counterexample-repair:$receipt_hash" \
+    >"$output_dir/counterexample-repair-retry.json"
+  cmp --silent \
+    "$output_dir/counterexample-repair.json" \
+    "$output_dir/counterexample-repair-retry.json" || {
+    printf 'Pilot A counterexample repair retry changed its exact result\n' >&2
+    exit 71
+  }
+
+  counterexample_package_hash="$(jq -er '.proposed_counterexample_package_artifact_hash' "$output_dir/counterexample-repair.json")"
+  repaired_claim_object_id="$(jq -er '.repair.repaired_claim.object_id' "$output_dir/counterexample-repair.json")"
+  repaired_claim_version_hash="$(jq -er '.repair.repaired_claim.version_hash' "$output_dir/counterexample-repair.json")"
+  cp -- "$(cas_path "$counterexample_package_hash")" "$output_dir/counterexample-package.json"
+  echo "$counterexample_package_hash  $output_dir/counterexample-package.json" \
+    | sha256sum --check --strict
+
+  "$mcl_bin" --root "$candidate_dir" --json counterexample get \
+    --artifact-hash "$counterexample_package_hash" \
+    >"$output_dir/counterexample-package-read.json"
+  "$mcl_bin" --root "$candidate_dir" --json verify claim-status \
+    --claim-object-id "$claim_object_id" \
+    --claim-version-hash "$claim_version_hash" \
+    >"$output_dir/claim-status-after-repair-original.json"
+  "$mcl_bin" --root "$candidate_dir" --json verify claim-status \
+    --claim-object-id "$repaired_claim_object_id" \
+    --claim-version-hash "$repaired_claim_version_hash" \
+    >"$output_dir/claim-status-repaired.json"
+
+  jq -e \
+    --arg package_hash "$counterexample_package_hash" \
+    --arg source_object_id "$source_object_id" \
+    --arg source_version_hash "$source_version_hash" \
+    --arg claim_object_id "$claim_object_id" \
+    --arg claim_version_hash "$claim_version_hash" \
+    --arg formalization_object_id "$formalization_object_id" \
+    --arg formalization_version_hash "$formalization_version_hash" \
+    --arg run_id "$counterexample_run_id" \
+    --arg run_head "$counterexample_run_head" \
+    --arg repaired_claim_object_id "$repaired_claim_object_id" \
+    --arg repaired_claim_version_hash "$repaired_claim_version_hash" '
+    .dry_run == false and
+    .proposed_counterexample_package_artifact_hash == $package_hash and
+    .proposed_repaired_claim_version_hash == $repaired_claim_version_hash and
+    .package.schema_version == "counterexample_package/1" and
+    .package.source == {object_id: $source_object_id, version_hash: $source_version_hash} and
+    .package.original_claim == {object_id: $claim_object_id, version_hash: $claim_version_hash} and
+    .package.witness == {mathematical_type: "Nat", canonical_value: 2} and
+    .package.refutation_witness.formalization == {object_id: $formalization_object_id, version_hash: $formalization_version_hash} and
+    .package.refutation_witness.kind == "refutation" and
+    .package.repair_operation == "exclude_boundary_case" and
+    .package.proposed_repaired_claim.payload.normalized_informal_statement == "Every prime number other than 2 is odd." and
+    .package.search_provenance == {run_id: $run_id, event_head_hash: $run_head} and
+    .repair.package_artifact.artifact_hash == $package_hash and
+    .repair.package_artifact.creation_source == "generated" and
+    .repair.package_artifact.restriction == "private" and
+    .repair.package_artifact.semantic_metadata.artifact_role == "counterexample_package" and
+    .repair.repaired_claim.object_id == $repaired_claim_object_id and
+    .repair.repaired_claim.version_hash == $repaired_claim_version_hash and
+    .repair.repaired_claim.predecessor_hash == null and
+    .repair.repair_edge.kind == "research.repairs" and
+    .repair.repair_edge.source_object_id == $repaired_claim_object_id and
+    .repair.repair_edge.source_version_hash == $repaired_claim_version_hash and
+    .repair.repair_edge.target_object_id == $claim_object_id and
+    .repair.repair_edge.target_version_hash == $claim_version_hash and
+    .repair.repair_edge.payload.counterexample_package_artifact_hash == $package_hash
+  ' "$output_dir/counterexample-repair.json" >/dev/null || {
+    printf 'Pilot A counterexample repair failed its closed contract\n' >&2
+    exit 71
+  }
+  jq -e \
+    --arg package_hash "$counterexample_package_hash" \
+    --arg repaired_claim_version_hash "$repaired_claim_version_hash" '
+    .dry_run == true and
+    .repair == null and
+    .proposed_counterexample_package_artifact_hash == $package_hash and
+    .proposed_repaired_claim_version_hash == $repaired_claim_version_hash
+  ' "$output_dir/counterexample-repair-dry-run.json" >/dev/null || {
+    printf 'Pilot A counterexample repair dry-run changed proposed identities\n' >&2
+    exit 71
+  }
+  jq -e --slurpfile repair "$output_dir/counterexample-repair.json" '
+    $repair[0] as $expected |
+    .artifact == $expected.repair.package_artifact and
+    .package == $expected.package and
+    .repaired_claim == $expected.repair.repaired_claim and
+    .repair_edge == $expected.repair.repair_edge
+  ' "$output_dir/counterexample-package-read.json" >/dev/null || {
+    printf 'Pilot A counterexample package read did not replay the atomic repair\n' >&2
+    exit 71
+  }
+  cmp --silent \
+    "$output_dir/claim-status-after-fidelity.json" \
+    "$output_dir/claim-status-after-repair-original.json" || {
+    printf 'Pilot A repair changed the original claim status response\n' >&2
+    exit 71
+  }
+  jq -e \
+    --arg object_id "$repaired_claim_object_id" \
+    --arg version_hash "$repaired_claim_version_hash" '
+    .schema_version == "claim_research_status/1" and
+    .claim == {object_id: $object_id, version_hash: $version_hash} and
+    .status == "not_started" and
+    (.witnesses | length) == 0 and
+    (.nonqualifications | length) == 0
+  ' "$output_dir/claim-status-repaired.json" >/dev/null || {
+    printf 'Pilot A repaired claim did not begin as an independent unproved claim\n' >&2
+    exit 71
+  }
+fi
+
 jq -cS . "$output_dir/claim-status-after-fidelity.json"
