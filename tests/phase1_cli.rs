@@ -2258,6 +2258,25 @@ fn canonical_pedagogy_cli_reviews_validates_and_restarts_a_prerequisite_path() {
     let error: Value = serde_json::from_slice(&stale.stderr).expect("stale error JSON");
     assert_eq!(error["code"], "MCL_PEDAGOGY_REFERENCE_STALE");
 
+    let stale_propose_retry =
+        propose_pedagogy_unit(&root, &explanation_payload, "explanation-create", false);
+    assert_cli_success(&stale_propose_retry);
+    assert_eq!(
+        parse_stdout(&stale_propose_retry)["record"],
+        explanation_draft
+    );
+    let stale_review_retry = review_pedagogy_unit(
+        &root,
+        explanation_draft["object_id"].as_str().expect("object ID"),
+        explanation_draft["version_hash"]
+            .as_str()
+            .expect("draft hash"),
+        "explanation-review",
+        false,
+    );
+    assert_cli_success(&stale_review_retry);
+    assert_eq!(parse_stdout(&stale_review_retry)["record"], explanation);
+
     let restricted_payload = pedagogy_payload(
         &source_version,
         &claim,
@@ -2352,4 +2371,113 @@ fn canonical_pedagogy_cli_reviews_validates_and_restarts_a_prerequisite_path() {
     let error: Value =
         serde_json::from_slice(&rejected_crosswalk.stderr).expect("taxonomy-license error JSON");
     assert_eq!(error["code"], "MCL_TAXONOMY_LICENSE_MISMATCH");
+
+    let mut revised_explanation = pedagogy_payload(
+        &source_version,
+        &claim,
+        &artifact_hash,
+        "explanation",
+        "Explain the repaired claim after rebasing its exact source grounding.",
+        Vec::new(),
+    );
+    revised_explanation["audience_track"] = json!("pilot_a_counterexample_repair_revised");
+    let version_arguments = vec![
+        "pedagogy".to_owned(),
+        "version".to_owned(),
+        "--object-id".to_owned(),
+        explanation["object_id"]
+            .as_str()
+            .expect("explanation ID")
+            .to_owned(),
+        "--expected-head".to_owned(),
+        explanation["version_hash"]
+            .as_str()
+            .expect("explanation hash")
+            .to_owned(),
+        "--payload-json".to_owned(),
+        revised_explanation.to_string(),
+        "--searchable-text".to_owned(),
+        "Pilot A revised explanation".to_owned(),
+        "--actor".to_owned(),
+        "pedagogy-test".to_owned(),
+        "--idempotency-key".to_owned(),
+        "explanation-version-current-source".to_owned(),
+    ];
+    let revised = mcl_owned(&root, &version_arguments);
+    assert_cli_success(&revised);
+    let revised = parse_stdout(&revised)["record"].clone();
+
+    let stale_link_retry = mcl_owned(
+        &root,
+        &[
+            "pedagogy".to_owned(),
+            "link".to_owned(),
+            "--kind".to_owned(),
+            "pedagogy.hard_prerequisite".to_owned(),
+            "--source-object-id".to_owned(),
+            exercise["object_id"]
+                .as_str()
+                .expect("exercise ID")
+                .to_owned(),
+            "--source-version-hash".to_owned(),
+            exercise["version_hash"]
+                .as_str()
+                .expect("exercise hash")
+                .to_owned(),
+            "--target-object-id".to_owned(),
+            explanation["object_id"]
+                .as_str()
+                .expect("explanation ID")
+                .to_owned(),
+            "--target-version-hash".to_owned(),
+            explanation["version_hash"]
+                .as_str()
+                .expect("explanation hash")
+                .to_owned(),
+            "--payload-json".to_owned(),
+            "{\"rationale\":\"The exercise assumes the explanation.\"}".to_owned(),
+            "--actor".to_owned(),
+            "pedagogy-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "exercise-explanation-link".to_owned(),
+        ],
+    );
+    assert_cli_success(&stale_link_retry);
+    assert_eq!(parse_stdout(&stale_link_retry), parse_stdout(&link));
+
+    let mut twice_changed_source = pedagogy_source_payload();
+    twice_changed_source["provenance_notes"] =
+        json!("Source head advanced again after a successful pedagogy version.");
+    twice_changed_source["redistribution_status"] = json!("restricted");
+    twice_changed_source["redaction_class"] = json!("private");
+    let second_source_version = mcl_owned(
+        &root,
+        &[
+            "source".to_owned(),
+            "version".to_owned(),
+            "--object-id".to_owned(),
+            source_version["object_id"]
+                .as_str()
+                .expect("source ID")
+                .to_owned(),
+            "--expected-head".to_owned(),
+            source_version["version_hash"]
+                .as_str()
+                .expect("source hash")
+                .to_owned(),
+            "--payload-json".to_owned(),
+            twice_changed_source.to_string(),
+            "--searchable-text".to_owned(),
+            "Pilot A canonical pedagogy source second revision".to_owned(),
+            "--actor".to_owned(),
+            "pedagogy-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "pedagogy-source-version-again".to_owned(),
+        ],
+    );
+    assert_cli_success(&second_source_version);
+
+    let stale_version_retry = mcl_owned(&root, &version_arguments);
+    assert_cli_success(&stale_version_retry);
+    assert_eq!(parse_stdout(&stale_version_retry)["record"], revised);
 }

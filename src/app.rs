@@ -4107,6 +4107,17 @@ impl Application {
     ) -> Result<RecordMutationOutcome, AppError> {
         validate_attribution(actor, idempotency_key)?;
         if draft.kind == RecordKind::LearningUnit {
+            if !dry_run
+                && let Some(record) =
+                    self.store
+                        .existing_record_create_result(draft, actor, idempotency_key)?
+            {
+                return Ok(RecordMutationOutcome {
+                    dry_run: false,
+                    proposed_version_hash: record.version_hash.clone(),
+                    record: Some(record),
+                });
+            }
             self.validate_authored_learning_unit_draft(draft)?;
         }
         let (proposed_version_hash, record) = if dry_run {
@@ -4133,6 +4144,21 @@ impl Application {
     ) -> Result<RecordMutationOutcome, AppError> {
         validate_attribution(actor, idempotency_key)?;
         if draft.kind == RecordKind::LearningUnit {
+            if !dry_run
+                && let Some(record) = self.store.existing_record_version_result(
+                    object_id,
+                    expected_head,
+                    draft,
+                    actor,
+                    idempotency_key,
+                )?
+            {
+                return Ok(RecordMutationOutcome {
+                    dry_run: false,
+                    proposed_version_hash: record.version_hash.clone(),
+                    record: Some(record),
+                });
+            }
             self.validate_authored_learning_unit_draft(draft)?;
         }
         let (proposed_version_hash, record) = if dry_run {
@@ -4269,13 +4295,28 @@ impl Application {
             LEARNING_UNIT_SCHEMA_VERSION,
             &payload_value,
         )?;
-        self.validate_learning_unit_dependencies(&payload)?;
         let draft = RecordDraft {
             kind: RecordKind::LearningUnit,
             schema_version: LEARNING_UNIT_SCHEMA_VERSION.to_owned(),
             searchable_text: learning_unit_searchable_text(&payload),
             payload: payload_value,
         };
+        if !dry_run
+            && let Some(record) = self.store.existing_record_version_result(
+                object_id,
+                expected_head,
+                &draft,
+                actor,
+                idempotency_key,
+            )?
+        {
+            return Ok(RecordMutationOutcome {
+                dry_run: false,
+                proposed_version_hash: record.version_hash.clone(),
+                record: Some(record),
+            });
+        }
+        self.validate_learning_unit_dependencies(&payload)?;
         let (proposed_version_hash, record) = if dry_run {
             (
                 self.store
@@ -4409,6 +4450,16 @@ impl Application {
     ) -> Result<EdgeMutationOutcome, AppError> {
         validate_attribution(actor, idempotency_key)?;
         if is_pedagogy_edge(draft.kind) {
+            if !dry_run
+                && let Some(edge) =
+                    self.store
+                        .existing_edge_create_result(draft, actor, idempotency_key)?
+            {
+                return Ok(EdgeMutationOutcome {
+                    dry_run: false,
+                    edge: Some(edge),
+                });
+            }
             self.validate_pedagogy_edge(draft)?;
         }
         let edge = if dry_run {

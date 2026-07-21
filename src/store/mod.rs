@@ -2400,6 +2400,79 @@ impl Store {
         requeue_expired_jobs(&self.connection)
     }
 
+    pub(crate) fn existing_record_create_result(
+        &self,
+        draft: &RecordDraft,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<RecordSnapshot>, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        validate_record_payload(draft.kind, &draft.schema_version, &draft.payload)?;
+        record_version_hash(&draft.schema_version, &draft.payload)?;
+        let input_hash = mutation_input_hash("record.create", None, None, draft, actor)?;
+        read_idempotent_result(
+            &self.connection,
+            "record.create",
+            idempotency_key,
+            &input_hash,
+        )
+    }
+
+    pub(crate) fn existing_record_version_result(
+        &self,
+        object_id: &str,
+        expected_head: &str,
+        draft: &RecordDraft,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<RecordSnapshot>, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        validate_record_payload(draft.kind, &draft.schema_version, &draft.payload)?;
+        validate_hash(expected_head, "expected head")?;
+        let version_hash = record_version_hash(&draft.schema_version, &draft.payload)?;
+        if version_hash == expected_head {
+            return Err(AppError::new(
+                "MCL_RECORD_VERSION_UNCHANGED",
+                "new canonical content is identical to the expected head",
+                false,
+                "Do not create a new version unless canonical content changes.",
+            ));
+        }
+        let input_hash = mutation_input_hash(
+            "record.version",
+            Some(object_id),
+            Some(expected_head),
+            draft,
+            actor,
+        )?;
+        read_idempotent_result(
+            &self.connection,
+            "record.version",
+            idempotency_key,
+            &input_hash,
+        )
+    }
+
+    pub(crate) fn existing_edge_create_result(
+        &self,
+        draft: &EdgeDraft,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<EdgeSnapshot>, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        reject_controlled_repair_edge(draft.kind)?;
+        validate_hash(&draft.source_version_hash, "source version")?;
+        validate_hash(&draft.target_version_hash, "target version")?;
+        canonical_json(&draft.payload)?;
+        let input_hash = edge_create_input_hash(draft, actor)?;
+        read_idempotent_result(
+            &self.connection,
+            "edge.create",
+            idempotency_key,
+            &input_hash,
+        )
+    }
+
     pub fn create_record(
         &mut self,
         draft: &RecordDraft,
@@ -2733,16 +2806,7 @@ impl Store {
         reject_controlled_repair_edge(draft.kind)?;
         validate_hash(&draft.source_version_hash, "source version")?;
         validate_hash(&draft.target_version_hash, "target version")?;
-        let input_hash = value_hash(&json!({
-            "operation": "edge.create",
-            "kind": draft.kind,
-            "source_object_id": draft.source_object_id,
-            "source_version_hash": draft.source_version_hash,
-            "target_object_id": draft.target_object_id,
-            "target_version_hash": draft.target_version_hash,
-            "payload": draft.payload,
-            "actor": actor,
-        }))?;
+        let input_hash = edge_create_input_hash(draft, actor)?;
         let payload_json = String::from_utf8(canonical_json(&draft.payload)?).map_err(|error| {
             AppError::new(
                 "MCL_CANONICAL_JSON_INVALID",
@@ -5167,6 +5231,19 @@ fn mutation_input_hash(
         "schema_version": draft.schema_version,
         "payload": draft.payload,
         "searchable_text": draft.searchable_text,
+        "actor": actor,
+    }))
+}
+
+fn edge_create_input_hash(draft: &EdgeDraft, actor: &str) -> Result<String, AppError> {
+    value_hash(&json!({
+        "operation": "edge.create",
+        "kind": draft.kind,
+        "source_object_id": draft.source_object_id,
+        "source_version_hash": draft.source_version_hash,
+        "target_object_id": draft.target_object_id,
+        "target_version_hash": draft.target_version_hash,
+        "payload": draft.payload,
         "actor": actor,
     }))
 }
