@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  printf 'usage: %s <candidate-directory> <attestation-bundle> <output-directory>\n' "$0" >&2
+if [[ $# -lt 3 || $# -gt 4 ]]; then
+  printf 'usage: %s <candidate-directory> <attestation-bundle> <output-directory> [state-directory]\n' "$0" >&2
   exit 64
 fi
 
 candidate_dir="$1"
 bundle="$2"
 output_dir="$3"
+requested_state_root="${4:-$candidate_dir}"
 mcl_bin="${PUBLICATION_MCL_BIN:-target/debug/mcl}"
 
 [[ -d "$candidate_dir" && ! -L "$candidate_dir" ]] || {
@@ -17,6 +18,10 @@ mcl_bin="${PUBLICATION_MCL_BIN:-target/debug/mcl}"
 }
 [[ -f "$bundle" && ! -L "$bundle" ]] || {
   printf 'publication attestation bundle is unavailable or unsafe\n' >&2
+  exit 66
+}
+[[ -d "$requested_state_root" && ! -L "$requested_state_root" ]] || {
+  printf 'publication state directory is unavailable or unsafe\n' >&2
   exit 66
 }
 [[ ! -e "$output_dir" && ! -L "$output_dir" ]] || {
@@ -29,10 +34,25 @@ mcl_bin="${PUBLICATION_MCL_BIN:-target/debug/mcl}"
 }
 
 candidate_dir="$(cd "$candidate_dir" && pwd -P)"
+state_root="$(cd "$requested_state_root" && pwd -P)"
+case "$candidate_dir/" in
+  "$state_root/"*) ;;
+  *)
+    printf 'publication candidate must be contained by the canonical state directory\n' >&2
+    exit 66
+    ;;
+esac
 bundle_parent="$(cd "$(dirname "$bundle")" && pwd -P)"
 bundle="$bundle_parent/$(basename "$bundle")"
 output_parent="$(cd "$(dirname "$output_dir")" && pwd -P)"
 output_dir="$output_parent/$(basename "$output_dir")"
+case "$output_dir/" in
+  "$state_root/"*) ;;
+  *)
+    printf 'publication ingestion output must be contained by the canonical state directory\n' >&2
+    exit 66
+    ;;
+esac
 mkdir -- "$output_dir"
 
 staged_bundle="$candidate_dir/publication-attestation.json"
@@ -44,11 +64,11 @@ cp -- "$bundle" "$staged_bundle"
 bundle_hash="$(sha256sum "$staged_bundle" | cut -d ' ' -f 1)"
 report_hash="$(sha256sum "$candidate_dir/publication-report.json" | cut -d ' ' -f 1)"
 
-"$mcl_bin" --root "$candidate_dir" --json verify stage-publication-candidate \
-  --report-file publication-report.json \
-  --retained-closure-file publication-retained-closure.json \
-  --retained-root . \
-  --attestation-bundle-file publication-attestation.json \
+"$mcl_bin" --root "$state_root" --json verify stage-publication-candidate \
+  --report-file "$candidate_dir/publication-report.json" \
+  --retained-closure-file "$candidate_dir/publication-retained-closure.json" \
+  --retained-root "$candidate_dir" \
+  --attestation-bundle-file "$staged_bundle" \
   --actor publication-boundary \
   --idempotency-key "publication-stage:$report_hash:$bundle_hash" \
   >"$output_dir/publication-stage.json"
@@ -66,7 +86,7 @@ jq -e \
   exit 71
 }
 
-"$mcl_bin" --root "$candidate_dir" --json verify ingest-publication \
+"$mcl_bin" --root "$state_root" --json verify ingest-publication \
   --report-artifact-hash "$report_hash" \
   --attestation-bundle-artifact-hash "$bundle_hash" \
   --actor publication-boundary \
@@ -94,7 +114,7 @@ jq -e \
 cas_path() {
   local hash="$1"
   printf '%s/.mcl/artifacts/sha256/%s/%s/%s' \
-    "$candidate_dir" "${hash:0:2}" "${hash:2:2}" "$hash"
+    "$state_root" "${hash:0:2}" "${hash:2:2}" "$hash"
 }
 
 cp -- "$(cas_path "$raw_hash")" "$output_dir/attestation-verification-raw.json"
@@ -102,7 +122,7 @@ cp -- "$(cas_path "$receipt_hash")" "$output_dir/attestation-verification.json"
 echo "$raw_hash  $output_dir/attestation-verification-raw.json" | sha256sum --check --strict
 echo "$receipt_hash  $output_dir/attestation-verification.json" | sha256sum --check --strict
 
-"$mcl_bin" --root "$candidate_dir" --json verify promote-publication-authority \
+"$mcl_bin" --root "$state_root" --json verify promote-publication-authority \
   --publication-receipt-hash "$receipt_hash" \
   --actor publication-boundary \
   --idempotency-key "publication-authority:$receipt_hash" \
@@ -147,7 +167,7 @@ source_object_id="$(jq -er '.object_id' "$candidate_dir/closure/source-version.j
 source_version_hash="$(jq -er '.version_hash' "$candidate_dir/closure/source-version.json")"
 module_hash="$(jq -er '.payload.module_artifact_hash' "$candidate_dir/closure/formalization-version.json")"
 
-"$mcl_bin" --root "$candidate_dir" --json verify claim-status \
+"$mcl_bin" --root "$state_root" --json verify claim-status \
   --claim-object-id "$claim_object_id" \
   --claim-version-hash "$claim_version_hash" \
   >"$output_dir/claim-status-before-fidelity.json"
@@ -168,7 +188,7 @@ jq -e \
 }
 
 reviewer="protected-fidelity-reviewer"
-"$mcl_bin" --root "$candidate_dir" --json research start \
+"$mcl_bin" --root "$state_root" --json research start \
   --kind literature_review \
   --budget-json '{}' \
   --actor "$reviewer" \
@@ -213,7 +233,7 @@ jq -cnS \
   }
 ' >"$output_dir/fidelity-review-request.json"
 
-"$mcl_bin" --root "$candidate_dir" --json verify review-fidelity \
+"$mcl_bin" --root "$state_root" --json verify review-fidelity \
   --request-json "$(<"$output_dir/fidelity-review-request.json")" \
   --actor "$reviewer" \
   --idempotency-key "publication-fidelity-review:$receipt_hash" \
@@ -246,7 +266,7 @@ jq -e \
   exit 71
 }
 
-"$mcl_bin" --root "$candidate_dir" --json verify claim-status \
+"$mcl_bin" --root "$state_root" --json verify claim-status \
   --claim-object-id "$claim_object_id" \
   --claim-version-hash "$claim_version_hash" \
   >"$output_dir/claim-status-after-fidelity.json"
@@ -285,7 +305,7 @@ jq -e \
 
 if [[ "$expected_evidence_kind" == "lean_kernel_refutation" ]]; then
   counterexample_researcher="protected-counterexample-researcher"
-  "$mcl_bin" --root "$candidate_dir" --json research start \
+  "$mcl_bin" --root "$state_root" --json research start \
     --kind counterexample_search \
     --budget-json '{"max_candidates":1}' \
     --actor "$counterexample_researcher" \
@@ -313,7 +333,7 @@ if [[ "$expected_evidence_kind" == "lean_kernel_refutation" ]]; then
       result: "counterexample_confirmed"
     }
   ' >"$output_dir/counterexample-search-event.json"
-  "$mcl_bin" --root "$candidate_dir" --json research submit \
+  "$mcl_bin" --root "$state_root" --json research submit \
     --run-id "$counterexample_run_id" \
     --expected-head "$counterexample_run_head" \
     --kind observation \
@@ -322,10 +342,10 @@ if [[ "$expected_evidence_kind" == "lean_kernel_refutation" ]]; then
     --idempotency-key "pilot-a-counterexample-result:$receipt_hash" \
     >"$output_dir/counterexample-search-result.json"
   counterexample_run_head="$(jq -er '.event.event_hash' "$output_dir/counterexample-search-result.json")"
-  "$mcl_bin" --root "$candidate_dir" --json research events \
+  "$mcl_bin" --root "$state_root" --json research events \
     --run-id "$counterexample_run_id" \
     >"$output_dir/counterexample-search-events.json"
-  "$mcl_bin" --root "$candidate_dir" --json research verify \
+  "$mcl_bin" --root "$state_root" --json research verify \
     --run-id "$counterexample_run_id" \
     >"$output_dir/counterexample-search-verification.json"
   jq -e \
@@ -392,18 +412,18 @@ if [[ "$expected_evidence_kind" == "lean_kernel_refutation" ]]; then
     }
   ' >"$output_dir/counterexample-repair-request.json"
 
-  "$mcl_bin" --root "$candidate_dir" --json counterexample repair \
+  "$mcl_bin" --root "$state_root" --json counterexample repair \
     --request-json "$(<"$output_dir/counterexample-repair-request.json")" \
     --actor "$counterexample_researcher" \
     --idempotency-key "pilot-a-counterexample-repair:$receipt_hash" \
     --dry-run \
     >"$output_dir/counterexample-repair-dry-run.json"
-  "$mcl_bin" --root "$candidate_dir" --json counterexample repair \
+  "$mcl_bin" --root "$state_root" --json counterexample repair \
     --request-json "$(<"$output_dir/counterexample-repair-request.json")" \
     --actor "$counterexample_researcher" \
     --idempotency-key "pilot-a-counterexample-repair:$receipt_hash" \
     >"$output_dir/counterexample-repair.json"
-  "$mcl_bin" --root "$candidate_dir" --json counterexample repair \
+  "$mcl_bin" --root "$state_root" --json counterexample repair \
     --request-json "$(<"$output_dir/counterexample-repair-request.json")" \
     --actor "$counterexample_researcher" \
     --idempotency-key "pilot-a-counterexample-repair:$receipt_hash" \
@@ -422,14 +442,14 @@ if [[ "$expected_evidence_kind" == "lean_kernel_refutation" ]]; then
   echo "$counterexample_package_hash  $output_dir/counterexample-package.json" \
     | sha256sum --check --strict
 
-  "$mcl_bin" --root "$candidate_dir" --json counterexample get \
+  "$mcl_bin" --root "$state_root" --json counterexample get \
     --artifact-hash "$counterexample_package_hash" \
     >"$output_dir/counterexample-package-read.json"
-  "$mcl_bin" --root "$candidate_dir" --json verify claim-status \
+  "$mcl_bin" --root "$state_root" --json verify claim-status \
     --claim-object-id "$claim_object_id" \
     --claim-version-hash "$claim_version_hash" \
     >"$output_dir/claim-status-after-repair-original.json"
-  "$mcl_bin" --root "$candidate_dir" --json verify claim-status \
+  "$mcl_bin" --root "$state_root" --json verify claim-status \
     --claim-object-id "$repaired_claim_object_id" \
     --claim-version-hash "$repaired_claim_version_hash" \
     >"$output_dir/claim-status-repaired.json"
@@ -512,6 +532,80 @@ if [[ "$expected_evidence_kind" == "lean_kernel_refutation" ]]; then
     (.nonqualifications | length) == 0
   ' "$output_dir/claim-status-repaired.json" >/dev/null || {
     printf 'Pilot A repaired claim did not begin as an independent unproved claim\n' >&2
+    exit 71
+  }
+else
+  prior_ingestion_dir="$state_root/refutation-ingestion"
+  prior_repair="$prior_ingestion_dir/counterexample-repair.json"
+  prior_original_status="$prior_ingestion_dir/claim-status-after-repair-original.json"
+  prior_package_read="$prior_ingestion_dir/counterexample-package-read.json"
+  [[ -f "$prior_repair" && ! -L "$prior_repair" \
+      && -f "$prior_original_status" && ! -L "$prior_original_status" \
+      && -f "$prior_package_read" && ! -L "$prior_package_read" ]] || {
+    printf 'repaired proof requires the retained refutation and atomic repair lifecycle\n' >&2
+    exit 71
+  }
+
+  original_claim_object_id="$(jq -er '.package.original_claim.object_id' "$prior_repair")"
+  original_claim_version_hash="$(jq -er '.package.original_claim.version_hash' "$prior_repair")"
+  repaired_claim_object_id="$(jq -er '.repair.repaired_claim.object_id' "$prior_repair")"
+  repaired_claim_version_hash="$(jq -er '.repair.repaired_claim.version_hash' "$prior_repair")"
+  counterexample_package_hash="$(jq -er '.proposed_counterexample_package_artifact_hash' "$prior_repair")"
+  [[ "$claim_object_id" == "$repaired_claim_object_id" \
+      && "$claim_version_hash" == "$repaired_claim_version_hash" ]] || {
+    printf 'proof publication subject is not the exact repaired claim\n' >&2
+    exit 71
+  }
+
+  "$mcl_bin" --root "$state_root" --json verify claim-status \
+    --claim-object-id "$original_claim_object_id" \
+    --claim-version-hash "$original_claim_version_hash" \
+    >"$output_dir/claim-status-original-after-proof.json"
+  cmp --silent \
+    "$prior_original_status" \
+    "$output_dir/claim-status-original-after-proof.json" || {
+    printf 'repaired proof changed the original disproved claim status\n' >&2
+    exit 71
+  }
+
+  "$mcl_bin" --root "$state_root" --json counterexample get \
+    --artifact-hash "$counterexample_package_hash" \
+    >"$output_dir/counterexample-package-after-proof.json"
+  cmp --silent \
+    "$prior_package_read" \
+    "$output_dir/counterexample-package-after-proof.json" || {
+    printf 'repaired proof changed the original counterexample package or repair edge\n' >&2
+    exit 71
+  }
+
+  "$mcl_bin" --root "$state_root" --json claim get \
+    --object-id "$original_claim_object_id" \
+    --version-hash "$original_claim_version_hash" \
+    | jq -cS . | tr -d '\n' >"$output_dir/original-claim-version-after-proof.json"
+  cmp --silent \
+    "$state_root/closure/claim-version.json" \
+    "$output_dir/original-claim-version-after-proof.json" || {
+    printf 'repaired proof changed the original immutable claim version\n' >&2
+    exit 71
+  }
+
+  jq -e \
+    --slurpfile original "$prior_original_status" \
+    --slurpfile authority "$output_dir/publication-authority.json" \
+    --slurpfile fidelity "$output_dir/fidelity-review.json" '
+    .status == "proved" and
+    (.witnesses | length) == 1 and
+    .witnesses[0].kind == "proof" and
+    .witnesses[0].authority_evidence_id == $authority[0].evidence.evidence_id and
+    .witnesses[0].fidelity_evidence_id == $fidelity[0].evidence.evidence_id and
+    .witnesses[0].authority_evidence_id != .witnesses[0].fidelity_evidence_id and
+    .witnesses[0].authority_evidence_hash != .witnesses[0].fidelity_evidence_hash and
+    .witnesses[0].authority_evidence_id != $original[0].witnesses[0].authority_evidence_id and
+    .witnesses[0].fidelity_evidence_id != $original[0].witnesses[0].fidelity_evidence_id and
+    $authority[0].evidence.created_by == "publication-boundary" and
+    $fidelity[0].evidence.created_by == "protected-fidelity-reviewer"
+  ' "$output_dir/claim-status-after-fidelity.json" >/dev/null || {
+    printf 'repaired proof inherited evidence or violated role separation\n' >&2
     exit 71
   }
 fi

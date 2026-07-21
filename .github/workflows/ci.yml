@@ -78,6 +78,18 @@ jobs:
           set -euo pipefail
           lean --version | tee "${RUNNER_TEMP}/lean-version.txt"
           grep --fixed-strings "Lean (version 4.32.0," "${RUNNER_TEMP}/lean-version.txt"
+      - name: Prove the repaired Pilot A theorem has no axioms
+        shell: bash
+        run: |
+          set -euo pipefail
+          driver="${RUNNER_TEMP}/PilotARepairedProofAudit.lean"
+          output="${RUNNER_TEMP}/PilotARepairedProofAudit.txt"
+          cp fixtures/publication/PilotARefutation.lean "${driver}"
+          printf '\n#print axioms MathOS.PilotA.every_prime_other_than_two_is_odd\n' >>"${driver}"
+          lean -DwarningAsError=true "${driver}" 2>&1 | tee "${output}"
+          grep --fixed-strings --line-regexp \
+            "'MathOS.PilotA.every_prime_other_than_two_is_odd' does not depend on any axioms" \
+            "${output}"
       - name: Install publication isolation control
         shell: bash
         run: |
@@ -112,7 +124,20 @@ jobs:
           cargo build --locked --bin mcl
           export PUBLICATION_SOURCE_TREE_SHA
           PUBLICATION_SOURCE_TREE_SHA="$(git rev-parse 'HEAD^{tree}')"
-          bash scripts/publication-candidate.sh "${RUNNER_TEMP}/publication-candidate-simulated-main"
+          candidate="${RUNNER_TEMP}/publication-candidate-simulated-main"
+          bash scripts/publication-candidate.sh "${candidate}"
+          if bash scripts/publication-candidate.sh \
+            "${candidate}/repaired-proof-without-repair" \
+            repaired-proof \
+            "${candidate}" \
+            >"${RUNNER_TEMP}/unexpected-repaired-proof.json" \
+            2>"${RUNNER_TEMP}/expected-missing-repair.txt"; then
+            echo "repaired proof candidate was created without the atomic repair" >&2
+            exit 1
+          fi
+          grep --fixed-strings \
+            "repaired proof requires the retained atomic repair in canonical state" \
+            "${RUNNER_TEMP}/expected-missing-repair.txt"
       - name: Exercise staged-CAS ingestion barrier without authority
         shell: bash
         run: |
@@ -201,6 +226,7 @@ jobs:
             ${{ runner.temp }}/publication-candidate-simulated-main/closure/
             ${{ runner.temp }}/publication-candidate-simulated-main/publication-retained-closure.json
             ${{ runner.temp }}/publication-candidate-simulated-main/publication-report.json
+            ${{ runner.temp }}/publication-candidate-simulated-main/repaired-proof-without-repair/attempt/
 
   legacy-python-regression:
     name: Legacy Python regression evidence
