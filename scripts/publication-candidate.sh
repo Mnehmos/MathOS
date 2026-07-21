@@ -16,8 +16,9 @@ readonly WORKFLOW_PATH=".github/workflows/publication.yml"
 readonly SOURCE_REF="refs/heads/main"
 readonly REPORT_RUNNER_ENVIRONMENT="github_hosted"
 readonly LEAN_TOOLCHAIN="leanprover/lean4:v4.32.0"
-readonly DECLARATION_NAME="MathOS.Publication.smoke"
-readonly MODULE_FIXTURE="fixtures/publication/Smoke.lean"
+readonly DECLARATION_NAME="MathOS.PilotA.every_prime_is_odd_refuted"
+readonly EXACT_THEOREM_TYPE="Not (∀ n : Nat, MathOS.PilotA.Prime n -> MathOS.PilotA.Odd n)"
+readonly MODULE_FIXTURE="fixtures/publication/PilotARefutation.lean"
 readonly ENVIRONMENT_FIXTURE="fixtures/environment/lean-4.32-no-imports-local.json"
 readonly ENVIRONMENT_HASH_FIXTURE="fixtures/environment/lean-4.32-no-imports-local.sha256"
 readonly PUBLICATION_POLICY="policies/lean-publication-1.json"
@@ -349,10 +350,10 @@ source_payload="$(jq -cn \
   --arg locator "git:$REPOSITORY@$PUBLICATION_SOURCE_COMMIT_SHA:$MODULE_FIXTURE" \
   --arg acquisition_date "$acquisition_date" \
   --arg content_hash "$module_hash" \
-  '{source_type:"repository",title_or_label:"MathOS protected publication candidate",authors_or_origin:["MathOS protected publication workflow"],canonical_locator:$locator,acquisition_date:$acquisition_date,license_expression:null,redistribution_status:"restricted",content_hash:$content_hash,citation_metadata:{},redaction_class:"private",provenance_notes:"Fresh canonical state for a non-authoritative protected candidate.",original_text:"True is inhabited."}')"
+  '{source_type:"repository",title_or_label:"MathOS Pilot A protected refutation candidate",authors_or_origin:["MathOS protected publication workflow"],canonical_locator:$locator,acquisition_date:$acquisition_date,license_expression:null,redistribution_status:"restricted",content_hash:$content_hash,citation_metadata:{},redaction_class:"private",provenance_notes:"Fresh canonical state for the non-authoritative Pilot A protected refutation candidate.",original_text:"Every prime number is odd."}')"
 run_mcl source create \
   --payload-json "$source_payload" \
-  --searchable-text "MathOS protected publication candidate True" \
+  --searchable-text "MathOS Pilot A every prime number is odd" \
   --actor publication-candidate \
   --idempotency-key publication-candidate-source \
   >"$temporary_root/source.json"
@@ -362,28 +363,29 @@ source_version_hash="$(jq -er '.record.version_hash' "$temporary_root/source.jso
 claim_payload="$(jq -cn \
   --arg source_object_id "$source_object_id" \
   --arg source_version_hash "$source_version_hash" \
-  '{source_reference:{object_id:$source_object_id,version_hash:$source_version_hash},normalized_informal_statement:"True is inhabited.",claim_kind:"existential",logical_shape:"True",assumptions:[],variables:[],concept_links:[],source_citations:[],ambiguity_notes:[]}')"
+  '{source_reference:{object_id:$source_object_id,version_hash:$source_version_hash},normalized_informal_statement:"Every prime number is odd.",claim_kind:"universal",logical_shape:"forall n : Nat, Prime(n) -> Odd(n)",assumptions:[],variables:[{symbol:"n",domain:"natural numbers",notes:"Prime and odd use the exact predicates retained in the formalization module."}],concept_links:[],source_citations:[],ambiguity_notes:[]}')"
 run_mcl claim create \
   --payload-json "$claim_payload" \
-  --searchable-text "True is inhabited" \
+  --searchable-text "Every prime number is odd" \
   --actor publication-candidate \
   --idempotency-key publication-candidate-claim \
   >"$temporary_root/claim.json"
 claim_object_id="$(jq -er '.record.object_id' "$temporary_root/claim.json")"
 claim_version_hash="$(jq -er '.record.version_hash' "$temporary_root/claim.json")"
 
-declaration_hash="$(printf '%s' "$DECLARATION_NAME : True" | sha256sum | cut -d ' ' -f 1)"
+declaration_hash="$(printf '%s' "$DECLARATION_NAME : $EXACT_THEOREM_TYPE" | sha256sum | cut -d ' ' -f 1)"
 formalization_payload="$(jq -cn \
   --arg claim_object_id "$claim_object_id" \
   --arg claim_version_hash "$claim_version_hash" \
   --arg environment_hash "$environment_hash" \
   --arg module_hash "$module_hash" \
   --arg declaration "$DECLARATION_NAME" \
+  --arg theorem_type "$EXACT_THEOREM_TYPE" \
   --arg declaration_hash "$declaration_hash" \
-  '{claim_version:{object_id:$claim_object_id,version_hash:$claim_version_hash},formal_system:"lean4",claim_polarity:"claim",environment_hash:$environment_hash,module_artifact_hash:$module_hash,declaration_name:$declaration,exact_theorem_type:"True",declaration_hash:$declaration_hash,import_manifest:[],formalization_notes:"Fresh no-import candidate for protected non-authoritative reproduction.",fidelity_evidence_references:[],verification_evidence_references:[]}')"
+  '{claim_version:{object_id:$claim_object_id,version_hash:$claim_version_hash},formal_system:"lean4",claim_polarity:"negation",environment_hash:$environment_hash,module_artifact_hash:$module_hash,declaration_name:$declaration,exact_theorem_type:$theorem_type,declaration_hash:$declaration_hash,import_manifest:[],formalization_notes:"Exact no-import formalization of the logical negation of the normalized Pilot A claim; the retained module exposes witness 2 separately.",fidelity_evidence_references:[],verification_evidence_references:[]}')"
 run_mcl formalization create \
   --payload-json "$formalization_payload" \
-  --searchable-text "$DECLARATION_NAME True" \
+  --searchable-text "$DECLARATION_NAME $EXACT_THEOREM_TYPE witness 2" \
   --actor publication-candidate \
   --idempotency-key publication-candidate-formalization \
   >"$temporary_root/formalization.json"
@@ -522,7 +524,7 @@ jq -e \
 run_mcl verify prepare-publication \
   --formalization-object-id "$formalization_object_id" \
   --formalization-version-hash "$formalization_version_hash" \
-  --outcome proof \
+  --outcome refutation \
   --diagnostic-evidence-id "$diagnostic_evidence_id" \
   --proof-closure-evidence-id "$proof_closure_evidence_id" \
   --axiom-audit-evidence-id "$axiom_audit_evidence_id" \
@@ -553,7 +555,7 @@ jq -e \
   .artifact.artifact_hash == $request_hash and
   .request.schema_version == "publication_request/1" and
   .request.subject == {object_id:$subject_id,version_hash:$subject_hash} and
-  .request.outcome == "proof" and
+  .request.outcome == "refutation" and
   .request.diagnostic_evidence_id == $diagnostic_id and
   .request.diagnostic_evidence_hash == $diagnostic_hash and
   .request.proof_closure_evidence_id == $proof_id and
