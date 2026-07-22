@@ -31,6 +31,11 @@ jobs:
           "${RUNNER_TEMP}/elan-init" -y --default-toolchain none --no-modify-path
           echo "${HOME}/.elan/bin" >> "${GITHUB_PATH}"
           "${HOME}/.elan/bin/elan" toolchain install "$(cat lean-toolchain)"
+      - name: Install pinned landrun build toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: "1.24.2"
+          cache: false
       - name: Build exact Comparator tools and exercise the real sandbox
         shell: bash
         run: |
@@ -40,8 +45,9 @@ jobs:
           comparator_source="${probe_root}/comparator-source"
           landrun_source="${probe_root}/landrun-source"
           project_dir="${probe_root}/project"
+          gate_dir="${probe_root}/gate"
           mathos_toolchain="$(cat lean-toolchain)"
-          mkdir --parents "${tools_dir}" "${project_dir}"
+          mkdir --parents "${tools_dir}" "${project_dir}" "${gate_dir}"
 
           git clone --no-checkout https://github.com/leanprover/comparator "${comparator_source}"
           git -C "${comparator_source}" checkout --detach 68a064109f01c08f47c8edc9f51d6a2bbffaa188
@@ -71,9 +77,6 @@ jobs:
           "${tools_dir}/landrun" --ro / --rw /dev --ldd --add-exec /usr/bin/true
           systemctl --user show-environment >/dev/null
 
-          cp -- "${comparator_source}/tests/projects/simple_match/Challenge.lean" "${project_dir}/Challenge.lean"
-          cp -- "${comparator_source}/tests/projects/simple_match/Solution.lean" "${project_dir}/Solution.lean"
-          cp -- "${comparator_source}/tests/projects/simple_match/config.json" "${project_dir}/config.json"
           printf '%s\n' \
             'name = "mathos_comparator_probe"' \
             'version = "0.1.0"' \
@@ -85,12 +88,28 @@ jobs:
             'name = "Solution"' \
             > "${project_dir}/lakefile.toml"
           printf '%s\n' "${mathos_toolchain}" > "${project_dir}/lean-toolchain"
+          (cd "${project_dir}" && lake update)
+          cp -- "${comparator_source}/tests/projects/simple_match/Challenge.lean" "${project_dir}/Challenge.lean"
+          cp -- "${comparator_source}/tests/projects/simple_match/Solution.lean" "${project_dir}/Solution.lean"
+          cp -- "${comparator_source}/tests/projects/simple_match/config.json" "${project_dir}/config.json"
           [[ ! -e "${project_dir}/.lake" ]]
           [[ -z "$(find "${project_dir}" -name '*.olean' -print -quit)" ]]
 
           probe_unit="mathos-comparator-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          probe_ready="${project_dir}/.systemd-ready"
-          probe_go="${project_dir}/.systemd-go"
+          probe_ready="${gate_dir}/systemd-ready"
+          probe_go="${gate_dir}/systemd-go"
+          listener_port_file="${gate_dir}/tcp-listener-port"
+          python3 scripts/comparator-network-probe.py listen "${listener_port_file}" \
+            >"${probe_root}/tcp-listener.stdout" \
+            2>"${probe_root}/tcp-listener.stderr" &
+          listener_pid="$!"
+          for _ in $(seq 1 200); do
+            [[ -s "${listener_port_file}" ]] && break
+            kill -0 "${listener_pid}"
+            sleep 0.05
+          done
+          [[ -s "${listener_port_file}" ]]
+          listener_port="$(tr -d '\n' <"${listener_port_file}")"
           /usr/bin/systemd-run \
             --user \
             --quiet \
@@ -105,8 +124,8 @@ jobs:
             --setenv="COMPARATOR_LANDRUN=${tools_dir}/landrun" \
             --setenv="COMPARATOR_LEAN4EXPORT=${tools_dir}/lean4export" \
             -- \
-            bash -c 'touch "$2"; while [[ ! -e "$3" ]]; do sleep 0.05; done; printf "MATHOS_PROBE_UID=%s\n" "$(id -u)"; exec lake env "$1" config.json' \
-            bash "${tools_dir}/comparator" "${probe_ready}" "${probe_go}" \
+            bash -c 'set -euo pipefail; touch "$2"; while [[ ! -e "$3" ]]; do sleep 0.05; done; python3 "$4" unix; "$5" --best-effort --ro / --rw /dev -ldd -add-exec /usr/bin/python3 "$4" tcp "$6"; printf "MATHOS_PROBE_UID=%s\n" "$(id -u)"; exec lake env "$1" config.json' \
+            bash "${tools_dir}/comparator" "${probe_ready}" "${probe_go}" "$(pwd)/scripts/comparator-network-probe.py" "${tools_dir}/landrun" "${listener_port}" \
             > "${probe_root}/comparator.stdout" \
             2> "${probe_root}/comparator.stderr" &
           systemd_pid="$!"
@@ -123,11 +142,16 @@ jobs:
             > "${probe_root}/systemd.properties"
           touch "${probe_go}"
           wait "${systemd_pid}"
+          kill "${listener_pid}" 2>/dev/null || true
+          wait "${listener_pid}" 2>/dev/null || true
           cat "${probe_root}/comparator.stdout"
           cat "${probe_root}/comparator.stderr" >&2
           cat "${probe_root}/systemd.properties"
           grep --fixed-strings --line-regexp 'Your solution is okay!' "${probe_root}/comparator.stdout"
           grep --fixed-strings --line-regexp 'Lean default kernel accepts the solution' "${probe_root}/comparator.stdout"
+          grep --fixed-strings --line-regexp 'MATHOS_LANDRUN_TCP_DENIED=passed' "${probe_root}/comparator.stdout"
+          grep --fixed-strings --line-regexp 'MATHOS_SYSTEMD_AF_UNIX_DENIED=passed' "${probe_root}/comparator.stdout"
+          [[ ! -s "${probe_root}/comparator.stderr" ]]
           grep --fixed-strings --line-regexp 'NoNewPrivileges=yes' "${probe_root}/systemd.properties"
           grep --fixed-strings 'RestrictAddressFamilies=~AF_UNIX' "${probe_root}/systemd.properties"
           printf '%s\n' '{"authoritative":false,"purpose":"platform_probe"}' > "${probe_root}/NON_AUTHORITY.json"
