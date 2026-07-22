@@ -830,7 +830,12 @@ fn project_release_tasks(
     for candidate in &candidates {
         let mut variants = candidates
             .iter()
-            .filter(|variant| variant.claim.source_reference == candidate.claim.source_reference)
+            .filter(|variant| {
+                exact_claim_matches(
+                    &variant.formalization,
+                    &candidate.formalization.claim_version,
+                )
+            })
             .collect::<Vec<_>>();
         variants.sort_by(|left, right| {
             left.formalization_info
@@ -991,6 +996,13 @@ fn candidate_paths(release: &BoundRelease, candidate: &FormalizationCandidate) -
         format!("artifacts/{}", candidate.formalization.module_artifact_hash),
         release.source.manifest.replay.environment_path.clone(),
     ]
+}
+
+fn exact_claim_matches(
+    formalization: &FormalizationPayload,
+    claim: &ExactVersionReference,
+) -> bool {
+    formalization.claim_version == *claim
 }
 
 fn project_counterexample_tasks(
@@ -1200,7 +1212,12 @@ fn build_task(
     fidelity: &EvidenceInfo,
     files: &mut BTreeMap<String, ExportFile>,
 ) -> Result<RlTask, AppError> {
-    let (evidence, policy) = materialize_task_evidence(release, source_paths, files)?;
+    let source_paths = trusted_task_source_paths(
+        source_paths,
+        authority.path.as_str(),
+        fidelity.path.as_str(),
+    );
+    let (evidence, policy) = materialize_task_evidence(release, &source_paths, files)?;
     let mut authority_evidence_ids = vec![authority.evidence.evidence_id.clone()];
     authority_evidence_ids.sort();
     authority_evidence_ids.dedup();
@@ -1234,6 +1251,18 @@ fn build_task(
     task.task_id = task.expected_task_id()?;
     task.validate()?;
     Ok(task)
+}
+
+fn trusted_task_source_paths(
+    source_paths: &[String],
+    authority_path: &str,
+    fidelity_path: &str,
+) -> Vec<String> {
+    let mut paths = source_paths.to_vec();
+    paths.extend([authority_path.to_owned(), fidelity_path.to_owned()]);
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 fn materialize_task_evidence(
@@ -2017,6 +2046,26 @@ mod tests {
         }
     }
 
+    fn formalization_payload(claim_version_hash: char, imports: &[&str]) -> FormalizationPayload {
+        FormalizationPayload {
+            claim_version: ExactVersionReference {
+                object_id: uuid::Uuid::from_u128(20).to_string(),
+                version_hash: claim_version_hash.to_string().repeat(64),
+            },
+            formal_system: crate::domain::schemas::FormalSystem::Lean4,
+            claim_polarity: None,
+            environment_hash: "b".repeat(64),
+            module_artifact_hash: "c".repeat(64),
+            declaration_name: "Fixture.theorem".to_owned(),
+            exact_theorem_type: "True".to_owned(),
+            declaration_hash: "d".repeat(64),
+            import_manifest: imports.iter().map(|value| (*value).to_owned()).collect(),
+            formalization_notes: String::new(),
+            fidelity_evidence_references: Vec::new(),
+            verification_evidence_references: Vec::new(),
+        }
+    }
+
     fn dummy_release(entry: RlPlanRelease, key: &str) -> BoundRelease {
         let hash = entry.expected_manifest_hash.clone();
         let uuid = |seed| uuid::Uuid::from_u128(seed).to_string();
@@ -2411,23 +2460,7 @@ mod tests {
 
     #[test]
     fn import_manifest_leakage_identity_is_order_insensitive() {
-        let mut formalization = FormalizationPayload {
-            claim_version: ExactVersionReference {
-                object_id: uuid::Uuid::from_u128(20).to_string(),
-                version_hash: "a".repeat(64),
-            },
-            formal_system: crate::domain::schemas::FormalSystem::Lean4,
-            claim_polarity: None,
-            environment_hash: "b".repeat(64),
-            module_artifact_hash: "c".repeat(64),
-            declaration_name: "Fixture.theorem".to_owned(),
-            exact_theorem_type: "True".to_owned(),
-            declaration_hash: "d".repeat(64),
-            import_manifest: vec!["Mathlib.Data.Nat.Prime".to_owned(), "Mathlib".to_owned()],
-            formalization_notes: String::new(),
-            fidelity_evidence_references: Vec::new(),
-            verification_evidence_references: Vec::new(),
-        };
+        let mut formalization = formalization_payload('a', &["Mathlib.Data.Nat.Prime", "Mathlib"]);
         let first = derived_import_manifest_key(&formalization).expect("import key");
         formalization.import_manifest.reverse();
         formalization.import_manifest.push("Mathlib".to_owned());
@@ -2437,6 +2470,38 @@ mod tests {
         assert_eq!(
             derived_import_manifest_key(&formalization).expect("empty imports"),
             None
+        );
+    }
+
+    #[test]
+    fn fidelity_variants_match_the_exact_claim() {
+        let first = formalization_payload('a', &["Mathlib"]);
+        let same_claim = first.clone();
+        let different_claim = formalization_payload('e', &["Mathlib"]);
+        let matches = [&first, &same_claim, &different_claim]
+            .into_iter()
+            .filter(|candidate| exact_claim_matches(candidate, &first.claim_version))
+            .count();
+        assert_eq!(matches, 2);
+    }
+
+    #[test]
+    fn trusted_task_paths_always_include_authority_and_fidelity_evidence() {
+        let paths = trusted_task_source_paths(
+            &[
+                "objects/formalization.json".to_owned(),
+                "evidence/authority.json".to_owned(),
+            ],
+            "evidence/authority.json",
+            "evidence/fidelity.json",
+        );
+        assert_eq!(
+            paths,
+            vec![
+                "evidence/authority.json",
+                "evidence/fidelity.json",
+                "objects/formalization.json",
+            ]
         );
     }
 
