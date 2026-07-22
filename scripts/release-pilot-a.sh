@@ -39,6 +39,9 @@ evidence_dir="$state_root/release-build-evidence"
   exit 66
 }
 mkdir -- "$evidence_dir"
+state_content_file="$evidence_dir/pilot-a-repaired-proof-learning-unit.txt"
+cp -- "$content_file" "$state_content_file"
+content_file="$state_content_file"
 
 receipt_hash="$(jq -er '.receipt.receipt_hash' "$ingestion_dir/publication-ingestion.json")"
 source_object_id="$(jq -er '.object_id' "$candidate_dir/closure/source-version.json")"
