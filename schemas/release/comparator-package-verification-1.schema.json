@@ -38,7 +38,7 @@
     "solution": {"$ref": "#/$defs/file_binding"},
     "config": {"$ref": "#/$defs/file_binding"},
     "formalization": {"$ref": "#/$defs/file_binding"},
-    "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)*$"},
+    "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_']+(\\.[A-Za-z0-9_']+)*$"},
     "lean_toolchain": {"type": "string", "minLength": 1, "maxLength": 256},
     "tool_pins": {"$ref": "#/$defs/tool_pins"},
     "plan_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},

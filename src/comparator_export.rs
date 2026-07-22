@@ -889,7 +889,7 @@ fn is_lean_name(value: &str) -> bool {
             !segment.is_empty()
                 && segment
                     .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'\''))
         })
 }
 

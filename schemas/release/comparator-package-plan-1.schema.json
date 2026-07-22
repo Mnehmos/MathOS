@@ -25,13 +25,13 @@
       "minItems": 1,
       "maxItems": 1,
       "uniqueItems": true,
-      "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)*$"}
+      "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_']+(\\.[A-Za-z0-9_']+)*$"}
     },
     "permitted_axioms": {
       "type": "array",
       "maxItems": 64,
       "uniqueItems": true,
-      "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)*$"}
+      "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_']+(\\.[A-Za-z0-9_']+)*$"}
     },
     "enable_nanoda": {"type": "boolean"},
     "tool_pins": {"$ref": "#/$defs/tool_pins"},

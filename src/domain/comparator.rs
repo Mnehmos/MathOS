@@ -309,8 +309,8 @@ pub fn comparator_package_plan_schema() -> Value {
             "source_release_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "formalization": {"$ref": "#/$defs/exact_reference"},
             "challenge_source": {"type": "string", "minLength": 1, "maxLength": MAX_COMPARATOR_SOURCE_BYTES},
-            "theorem_names": {"type": "array", "minItems": 1, "maxItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)*$"}},
-            "permitted_axioms": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)*$"}},
+            "theorem_names": {"type": "array", "minItems": 1, "maxItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_']+(\\.[A-Za-z0-9_']+)*$"}},
+            "permitted_axioms": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_']+(\\.[A-Za-z0-9_']+)*$"}},
             "enable_nanoda": {"type": "boolean"},
             "tool_pins": {"$ref": "#/$defs/tool_pins"},
             "formalization_metadata": {"$ref": "#/$defs/formalization_metadata"}
@@ -345,7 +345,7 @@ pub fn comparator_package_verification_schema() -> Value {
             "solution": {"$ref": "#/$defs/file_binding"},
             "config": {"$ref": "#/$defs/file_binding"},
             "formalization": {"$ref": "#/$defs/file_binding"},
-            "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)*$"},
+            "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_']+(\\.[A-Za-z0-9_']+)*$"},
             "lean_toolchain": {"type": "string", "minLength": 1, "maxLength": 256},
             "tool_pins": {"$ref": "#/$defs/tool_pins"},
             "plan_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -456,7 +456,7 @@ fn is_lean_name(value: &str) -> bool {
             !segment.is_empty()
                 && segment
                     .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'\''))
         })
 }
 
@@ -535,6 +535,13 @@ mod tests {
     #[test]
     fn plan_is_closed_sorted_and_exactly_pinned() {
         plan().validate().expect("valid plan");
+
+        let mut primed_names = plan();
+        primed_names.theorem_names = vec!["Fixture.theorem'".to_owned()];
+        primed_names.permitted_axioms = vec!["Classical.choice'".to_owned()];
+        primed_names
+            .validate()
+            .expect("release-compatible primed Lean names validate");
 
         let mut unknown = serde_json::to_value(plan()).expect("plan JSON");
         unknown["verified"] = json!(true);
