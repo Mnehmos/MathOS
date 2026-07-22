@@ -240,6 +240,14 @@ pub struct PublicationAuthorityPromotionOutcome {
 struct RevalidatedPublicationAuthority {
     receipt_hash: String,
     commit: PublicationAuthorityCommit,
+    receipt: PublicationIngestionReceiptSnapshot,
+    stage: PublicationStageSnapshot,
+    report: PublicationReport,
+    retained_closure: PublicationRetainedClosure,
+    retained_files: RetainedPublicationFiles,
+    attestation_bundle: Vec<u8>,
+    raw_verification: Vec<u8>,
+    canonical_receipt: Vec<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3256,6 +3264,604 @@ impl Application {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_release(
+        &mut self,
+        publication_receipt_hash: &str,
+        pedagogy_root: &ExactVersionReference,
+        pedagogy_mode: PedagogyPathMode,
+        include_soft: bool,
+        max_depth: u32,
+        limit: usize,
+        profile: crate::domain::ReleaseProfile,
+        output_dir: &Path,
+        dry_run: bool,
+    ) -> Result<crate::release::ReleaseBuildOutcome, AppError> {
+        let validated = self.revalidate_publication_authority_receipt(publication_receipt_hash)?;
+        let path =
+            self.pedagogy_path(pedagogy_root, pedagogy_mode, include_soft, max_depth, limit)?;
+
+        let mut records = BTreeMap::<ExactVersionReference, RecordSnapshot>::new();
+        for role in [
+            PublicationRetainedArtifactRole::SourceVersion,
+            PublicationRetainedArtifactRole::ClaimVersion,
+            PublicationRetainedArtifactRole::FormalizationVersion,
+        ] {
+            let record: RecordSnapshot = decode_exact_canonical_publication_json(
+                validated.retained_files.get(role)?,
+                role.as_str(),
+                "MCL_RELEASE_PUBLICATION_RECORD_INVALID",
+                "MCL_RELEASE_PUBLICATION_RECORD_NONCANONICAL",
+            )?;
+            records.insert(
+                ExactVersionReference {
+                    object_id: record.object_id.clone(),
+                    version_hash: record.version_hash.clone(),
+                },
+                record,
+            );
+        }
+        for entry in &path.units {
+            records.insert(
+                ExactVersionReference {
+                    object_id: entry.unit.object_id.clone(),
+                    version_hash: entry.unit.version_hash.clone(),
+                },
+                entry.unit.clone(),
+            );
+        }
+
+        let publication_formalization =
+            records
+                .get(&validated.report.request.subject)
+                .ok_or_else(|| {
+                    release_build_error(
+                        "MCL_RELEASE_PUBLICATION_RECORD_INVALID",
+                        "publication formalization is absent from the retained record closure",
+                        "Restore the exact receipt-bound publication closure.",
+                    )
+                })?;
+        let publication_formalization_payload =
+            decode_formalization(&publication_formalization.payload)?;
+        let claim_status =
+            self.claim_research_status(&publication_formalization_payload.claim_version)?;
+        let expected_witness_kind = match validated.report.request.outcome {
+            PublicationOutcome::Proof => crate::domain::ClaimResearchStatusWitnessKind::Proof,
+            PublicationOutcome::Refutation => {
+                crate::domain::ClaimResearchStatusWitnessKind::Refutation
+            }
+        };
+        let matching_witnesses = claim_status
+            .witnesses
+            .iter()
+            .filter(|witness| {
+                witness.formalization == validated.report.request.subject
+                    && witness.kind == expected_witness_kind
+                    && witness.publication_receipt_hash == publication_receipt_hash
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let [publication_witness] = matching_witnesses.as_slice() else {
+            return Err(release_build_error(
+                "MCL_RELEASE_CURRENT_WITNESS_REQUIRED",
+                "release publication does not resolve to exactly one current authority/fidelity witness",
+                "Promote the exact receipt, complete an independent verified fidelity review, and retry.",
+            ));
+        };
+        let authority_evidence = self.get_evidence(&publication_witness.authority_evidence_id)?;
+        let fidelity_status = self.fidelity_status(&validated.report.request.subject)?;
+        let fidelity_entry = fidelity_status
+            .history
+            .iter()
+            .find(|entry| entry.evidence.evidence_id == publication_witness.fidelity_evidence_id)
+            .cloned()
+            .ok_or_else(|| {
+                release_build_error(
+                    "MCL_RELEASE_CURRENT_WITNESS_REQUIRED",
+                    "release fidelity head disappeared during exact witness revalidation",
+                    "Retry against an unchanged canonical evidence history.",
+                )
+            })?;
+        if fidelity_status.status != FidelityStatus::Verified
+            || fidelity_status.head_evidence_id.as_deref()
+                != Some(publication_witness.fidelity_evidence_id.as_str())
+            || authority_evidence.evidence_hash != publication_witness.authority_evidence_hash
+            || fidelity_entry.evidence.evidence_hash != publication_witness.fidelity_evidence_hash
+            || fidelity_entry.report_artifact_hash
+                != publication_witness.fidelity_report_artifact_hash
+        {
+            return Err(release_build_error(
+                "MCL_RELEASE_CURRENT_WITNESS_REQUIRED",
+                "release authority or fidelity witness changed during construction",
+                "Retry against an unchanged current canonical witness.",
+            ));
+        }
+        let mut fidelity_entries = fidelity_status
+            .history
+            .iter()
+            .map(|entry| (entry.evidence.evidence_id.clone(), entry.clone()))
+            .collect::<BTreeMap<_, _>>();
+
+        let mut evidence = BTreeMap::<String, EvidenceSnapshot>::new();
+        for role in [
+            PublicationRetainedArtifactRole::DiagnosticEvidence,
+            PublicationRetainedArtifactRole::ProofClosureEvidence,
+            PublicationRetainedArtifactRole::AxiomAuditEvidence,
+        ] {
+            let snapshot: EvidenceSnapshot = decode_exact_canonical_publication_json(
+                validated.retained_files.get(role)?,
+                role.as_str(),
+                "MCL_RELEASE_PUBLICATION_EVIDENCE_INVALID",
+                "MCL_RELEASE_PUBLICATION_EVIDENCE_NONCANONICAL",
+            )?;
+            evidence.insert(snapshot.evidence_id.clone(), snapshot);
+        }
+        evidence.insert(
+            authority_evidence.evidence_id.clone(),
+            authority_evidence.clone(),
+        );
+        for entry in fidelity_entries.values() {
+            evidence.insert(entry.evidence.evidence_id.clone(), entry.evidence.clone());
+        }
+
+        let mut edges = BTreeMap::<String, EdgeSnapshot>::new();
+        for hit in &path.edges {
+            edges.insert(hit.edge.edge_id.clone(), hit.edge.clone());
+        }
+        let pedagogy_edge_ids = edges.keys().cloned().collect::<Vec<_>>();
+        for hit in self.traverse_graph(&GraphTraversalRequest {
+            root_object_id: publication_formalization_payload
+                .claim_version
+                .object_id
+                .clone(),
+            root_version_hash: publication_formalization_payload
+                .claim_version
+                .version_hash
+                .clone(),
+            direction: TraversalDirection::Outgoing,
+            edge_kinds: vec![EdgeKind::ResearchRepairs],
+            max_depth: 1,
+            limit: 1_000,
+        })? {
+            edges.insert(hit.edge.edge_id.clone(), hit.edge);
+        }
+        let mut repair_packages = BTreeMap::new();
+        for edge in edges
+            .values()
+            .filter(|edge| edge.kind == EdgeKind::ResearchRepairs)
+        {
+            let repair: ClaimRepairEdgePayload = serde_json::from_value(edge.payload.clone())
+                .map_err(|error| {
+                    release_build_error(
+                        "MCL_RELEASE_LOGICAL_EDGE_INVALID",
+                        format!("claim repair edge payload is invalid: {error}"),
+                        "Restore the application-created exact repair edge.",
+                    )
+                })?;
+            repair.validate()?;
+            let package =
+                self.get_counterexample_package(&repair.counterexample_package_artifact_hash)?;
+            if package.repair_edge != *edge {
+                return Err(release_build_error(
+                    "MCL_RELEASE_LOGICAL_EDGE_INVALID",
+                    "revalidated counterexample package resolves to a different repair edge",
+                    "Restore the exact controlled counterexample repair lifecycle.",
+                ));
+            }
+            let authority =
+                self.get_evidence(&package.package.refutation_witness.authority_evidence_id)?;
+            evidence.insert(authority.evidence_id.clone(), authority);
+            let original_fidelity =
+                self.fidelity_status(&package.package.refutation_witness.formalization)?;
+            if original_fidelity.status != FidelityStatus::Verified
+                || original_fidelity.head_evidence_id.as_deref()
+                    != Some(
+                        package
+                            .package
+                            .refutation_witness
+                            .fidelity_evidence_id
+                            .as_str(),
+                    )
+            {
+                return Err(release_build_error(
+                    "MCL_RELEASE_LOGICAL_EDGE_INVALID",
+                    "counterexample package no longer names the current verified fidelity head",
+                    "Rebuild the repair lifecycle from current exact evidence.",
+                ));
+            }
+            for entry in original_fidelity.history {
+                evidence.insert(entry.evidence.evidence_id.clone(), entry.evidence.clone());
+                fidelity_entries.insert(entry.evidence.evidence_id.clone(), entry);
+            }
+            repair_packages.insert(repair.counterexample_package_artifact_hash, package);
+        }
+        let mut pending = BTreeSet::new();
+        for record in records.values() {
+            pending.extend(crate::release::record_references(record)?);
+        }
+        for snapshot in evidence.values() {
+            pending.insert(snapshot.payload.subject.clone());
+        }
+        for edge in edges.values() {
+            pending.extend([
+                ExactVersionReference {
+                    object_id: edge.source_object_id.clone(),
+                    version_hash: edge.source_version_hash.clone(),
+                },
+                ExactVersionReference {
+                    object_id: edge.target_object_id.clone(),
+                    version_hash: edge.target_version_hash.clone(),
+                },
+            ]);
+            if edge.kind == EdgeKind::ResearchRepairs {
+                let repair: ClaimRepairEdgePayload = serde_json::from_value(edge.payload.clone())
+                    .map_err(|error| {
+                    release_build_error(
+                        "MCL_RELEASE_LOGICAL_EDGE_INVALID",
+                        format!("claim repair edge payload is invalid: {error}"),
+                        "Restore the application-created exact repair edge.",
+                    )
+                })?;
+                repair.validate()?;
+                pending.insert(repair.refutation_formalization);
+                let package = repair_packages
+                    .get(&repair.counterexample_package_artifact_hash)
+                    .ok_or_else(|| {
+                        release_build_error(
+                            "MCL_RELEASE_LOGICAL_EDGE_INVALID",
+                            "revalidated counterexample package disappeared during closure",
+                            "Retry against unchanged canonical state.",
+                        )
+                    })?;
+                pending.extend([
+                    package.package.source.clone(),
+                    package.package.original_claim.clone(),
+                ]);
+            }
+        }
+        while let Some(reference) = pending.pop_first() {
+            if records.contains_key(&reference) {
+                continue;
+            }
+            if records.len() >= crate::domain::release::MAX_RELEASE_MEMBERS / 2 {
+                return Err(release_build_error(
+                    "MCL_RELEASE_OBJECT_CLOSURE_LIMIT",
+                    "release object reference closure exceeds its reviewed bound",
+                    "Select a smaller reviewed pedagogy path or split the release.",
+                ));
+            }
+            let record = self.get_record(&reference.object_id, Some(&reference.version_hash))?;
+            pending.extend(crate::release::record_references(&record)?);
+            records.insert(reference, record);
+        }
+
+        let mut environment_hashes =
+            BTreeSet::from([validated.report.request.environment_hash.clone()]);
+        let mut artifact_hashes = validated
+            .stage
+            .stage
+            .retained_artifacts
+            .iter()
+            .map(|artifact| artifact.artifact_hash.clone())
+            .collect::<BTreeSet<_>>();
+        artifact_hashes.extend([
+            validated.stage.stage.report_artifact_hash.clone(),
+            validated.stage.stage.retained_closure_artifact_hash.clone(),
+            validated
+                .stage
+                .stage
+                .attestation_bundle_artifact_hash
+                .clone(),
+            validated.receipt.verification.raw_verification_hash.clone(),
+            validated.receipt.receipt_hash.clone(),
+        ]);
+        for record in records.values() {
+            match record.kind {
+                RecordKind::Formalization => {
+                    let formalization = decode_formalization(&record.payload)?;
+                    environment_hashes.insert(formalization.environment_hash);
+                    artifact_hashes.insert(formalization.module_artifact_hash);
+                }
+                RecordKind::LearningUnit => {
+                    let unit = decode_learning_unit(&record.payload)?;
+                    artifact_hashes.insert(unit.content_artifact_hash);
+                }
+                _ => {}
+            }
+        }
+        for snapshot in evidence.values() {
+            artifact_hashes.extend(snapshot.payload.artifact_hashes.iter().cloned());
+            environment_hashes.extend(snapshot.payload.environment_hash.iter().cloned());
+        }
+        for edge in edges.values() {
+            if edge.kind == EdgeKind::ResearchRepairs {
+                let repair: ClaimRepairEdgePayload = serde_json::from_value(edge.payload.clone())
+                    .map_err(|error| {
+                    release_build_error(
+                        "MCL_RELEASE_LOGICAL_EDGE_INVALID",
+                        format!("claim repair edge payload is invalid: {error}"),
+                        "Restore the application-created exact repair edge.",
+                    )
+                })?;
+                repair.validate()?;
+                artifact_hashes.insert(repair.counterexample_package_artifact_hash);
+            }
+        }
+        for package in repair_packages.values() {
+            environment_hashes.insert(package.package.checker.environment_hash.clone());
+            artifact_hashes.insert(package.package.checker.module_artifact_hash.clone());
+            if let Some(minimization) = &package.package.minimization {
+                artifact_hashes.extend(minimization.supporting_artifact_hashes.iter().cloned());
+            }
+        }
+
+        let mut files = BTreeMap::<String, crate::release::ReleaseFile>::new();
+        for record in records.values() {
+            let (license, restriction) = crate::release::record_policy(record)?;
+            insert_release_file(
+                &mut files,
+                crate::release::object_path(record),
+                crate::release::ReleaseFile::canonical(
+                    record,
+                    crate::domain::ReleaseMemberKind::Object,
+                    license,
+                    restriction,
+                )?,
+            )?;
+        }
+        for edge in edges.values() {
+            insert_release_file(
+                &mut files,
+                format!("edges/{}.json", edge.edge_id),
+                generated_release_json(edge, crate::domain::ReleaseMemberKind::Edge)?,
+            )?;
+        }
+        for snapshot in evidence.values() {
+            insert_release_file(
+                &mut files,
+                format!(
+                    "evidence/{}@{}.json",
+                    snapshot.evidence_id, snapshot.evidence_hash
+                ),
+                generated_release_json(snapshot, crate::domain::ReleaseMemberKind::Evidence)?,
+            )?;
+        }
+        for environment_hash in environment_hashes {
+            let environment = self.store.get_environment(&environment_hash)?;
+            insert_release_file(
+                &mut files,
+                format!("environments/{environment_hash}.json"),
+                generated_release_json(
+                    &environment,
+                    crate::domain::ReleaseMemberKind::Environment,
+                )?,
+            )?;
+        }
+        for artifact_hash in &artifact_hashes {
+            let bytes = self.artifacts.read(artifact_hash)?;
+            let file = match self.store.get_artifact(artifact_hash) {
+                Ok(snapshot) => {
+                    if snapshot.byte_size != bytes.len() as u64 {
+                        return Err(release_build_error(
+                            "MCL_RELEASE_ARTIFACT_METADATA_MISMATCH",
+                            format!("artifact {artifact_hash} metadata size disagrees with CAS"),
+                            "Quarantine the instance and restore verified artifact metadata.",
+                        ));
+                    }
+                    crate::release::ReleaseFile::raw_artifact(
+                        bytes,
+                        ArtifactMetadata {
+                            schema_version:
+                                crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION.to_owned(),
+                            media_type: snapshot.media_type,
+                            creation_source: snapshot.creation_source,
+                            license_expression: snapshot.license_expression,
+                            restriction: snapshot.restriction,
+                            semantic_metadata: snapshot.semantic_metadata,
+                        },
+                    )
+                }
+                Err(error) if error.code == "MCL_ARTIFACT_NOT_FOUND" => {
+                    crate::release::ReleaseFile::unregistered_artifact(bytes)
+                }
+                Err(error) => return Err(error),
+            };
+            insert_release_file(&mut files, format!("artifacts/{artifact_hash}"), file)?;
+        }
+
+        insert_release_file(
+            &mut files,
+            "reports/publication-report.json".to_owned(),
+            generated_release_json(&validated.report, crate::domain::ReleaseMemberKind::Report)?,
+        )?;
+        insert_release_file(
+            &mut files,
+            "reports/publication-retained-closure.json".to_owned(),
+            generated_release_json(
+                &validated.retained_closure,
+                crate::domain::ReleaseMemberKind::Report,
+            )?,
+        )?;
+        insert_release_file(
+            &mut files,
+            "reports/publication-stage.json".to_owned(),
+            generated_release_json(&validated.stage, crate::domain::ReleaseMemberKind::Report)?,
+        )?;
+        insert_release_file(
+            &mut files,
+            "reports/publication-receipt.json".to_owned(),
+            generated_release_json(&validated.receipt, crate::domain::ReleaseMemberKind::Report)?,
+        )?;
+        for (name, bytes) in [
+            (
+                "reports/attestation-bundle.json",
+                validated.attestation_bundle.clone(),
+            ),
+            (
+                "reports/raw-attestation-verification.json",
+                validated.raw_verification.clone(),
+            ),
+            (
+                "reports/canonical-attestation-receipt.json",
+                validated.canonical_receipt.clone(),
+            ),
+        ] {
+            insert_release_file(
+                &mut files,
+                name.to_owned(),
+                crate::release::ReleaseFile {
+                    bytes,
+                    kind: crate::domain::ReleaseMemberKind::Report,
+                    license_expression: None,
+                    restriction: ArtifactRestriction::Private,
+                    artifact_metadata: None,
+                },
+            )?;
+        }
+
+        let release_mode = match pedagogy_mode {
+            PedagogyPathMode::Prerequisites => crate::domain::ReleasePedagogyMode::Prerequisites,
+            PedagogyPathMode::Recommended => crate::domain::ReleasePedagogyMode::Recommended,
+        };
+        let pedagogy = crate::domain::ReleasePedagogyBinding {
+            mode: release_mode,
+            include_soft,
+            root: pedagogy_root.clone(),
+            unit_order: path
+                .units
+                .iter()
+                .map(|entry| ExactVersionReference {
+                    object_id: entry.unit.object_id.clone(),
+                    version_hash: entry.unit.version_hash.clone(),
+                })
+                .collect(),
+            edge_ids: pedagogy_edge_ids,
+        };
+        let replay = crate::domain::ReleaseReplayBinding {
+            module_path: "replay/Submission.lean".to_owned(),
+            environment_path: "replay/environment.json".to_owned(),
+            declaration_name: validated.report.request.declaration_name.clone(),
+        };
+        insert_release_file(
+            &mut files,
+            "exports/pedagogy-path.json".to_owned(),
+            generated_release_json(&pedagogy, crate::domain::ReleaseMemberKind::Export)?,
+        )?;
+        insert_release_file(
+            &mut files,
+            "replay/replay.json".to_owned(),
+            generated_release_json(&replay, crate::domain::ReleaseMemberKind::Replay)?,
+        )?;
+        let replay_environment = self
+            .store
+            .get_environment(&validated.report.request.environment_hash)?;
+        insert_release_file(
+            &mut files,
+            "replay/environment.json".to_owned(),
+            generated_release_json(
+                &replay_environment,
+                crate::domain::ReleaseMemberKind::Replay,
+            )?,
+        )?;
+        for entry in fidelity_entries.values() {
+            insert_release_file(
+                &mut files,
+                format!(
+                    "reports/fidelity/{}@{}.json",
+                    entry.evidence.evidence_id, entry.evidence.evidence_hash
+                ),
+                generated_release_json(&entry.report, crate::domain::ReleaseMemberKind::Report)?,
+            )?;
+        }
+        let module_snapshot = self
+            .store
+            .get_artifact(&validated.report.request.module_artifact_hash)?;
+        insert_release_file(
+            &mut files,
+            "replay/Submission.lean".to_owned(),
+            crate::release::ReleaseFile {
+                bytes: self
+                    .artifacts
+                    .read(&validated.report.request.module_artifact_hash)?,
+                kind: crate::domain::ReleaseMemberKind::Replay,
+                license_expression: module_snapshot.license_expression,
+                restriction: module_snapshot.restriction,
+                artifact_metadata: None,
+            },
+        )?;
+
+        let license_entries = files
+            .iter()
+            .map(|(path, file)| {
+                let member = file.member(path.clone());
+                crate::release::ReleaseLicenseEntry {
+                    path: path.clone(),
+                    license_expression: member.license_expression,
+                    restriction: member.restriction,
+                }
+            })
+            .collect();
+        insert_release_file(
+            &mut files,
+            "licenses/index.json".to_owned(),
+            generated_release_json(
+                &crate::release::ReleaseLicenseIndex {
+                    schema_version: "release_license_index/1".to_owned(),
+                    entries: license_entries,
+                },
+                crate::domain::ReleaseMemberKind::License,
+            )?,
+        )?;
+
+        let manifest = crate::domain::ReleaseManifest {
+            schema_version: crate::domain::RELEASE_MANIFEST_SCHEMA_VERSION.to_owned(),
+            profile,
+            publication: crate::domain::ReleasePublicationBinding {
+                ingestion_receipt_hash: validated.commit.binding.ingestion_receipt_hash.clone(),
+                authority_evidence_id: authority_evidence.evidence_id.clone(),
+                authority_evidence_hash: authority_evidence.evidence_hash.clone(),
+                fidelity_evidence_id: fidelity_entry.evidence.evidence_id.clone(),
+                fidelity_evidence_hash: fidelity_entry.evidence.evidence_hash.clone(),
+                fidelity_report_artifact_hash: fidelity_entry.report_artifact_hash.clone(),
+                stage_hash: validated.commit.binding.stage_hash.clone(),
+                report_artifact_hash: validated.commit.binding.report_artifact_hash.clone(),
+                retained_closure_artifact_hash: validated
+                    .commit
+                    .binding
+                    .retained_closure_artifact_hash
+                    .clone(),
+                attestation_bundle_artifact_hash: validated
+                    .commit
+                    .binding
+                    .attestation_bundle_artifact_hash
+                    .clone(),
+                raw_verification_hash: validated.commit.binding.raw_verification_hash.clone(),
+                request_hash: validated.commit.binding.publication_request_hash.clone(),
+                policy_hash: validated.commit.binding.publication_policy_hash.clone(),
+                subject: validated.commit.subject.clone(),
+                outcome: validated.commit.outcome,
+                environment_hash: validated.commit.environment_hash.clone(),
+                module_artifact_hash: validated.report.request.module_artifact_hash.clone(),
+                declaration_name: validated.report.request.declaration_name.clone(),
+            },
+            pedagogy,
+            replay,
+            members: files
+                .iter()
+                .map(|(path, file)| file.member(path.clone()))
+                .collect(),
+        };
+        crate::release::write_release_bundle(output_dir, &manifest, &files, dry_run)
+    }
+
+    pub fn verify_release(
+        bundle_dir: &Path,
+        expected_manifest_hash: &str,
+    ) -> Result<crate::release::ReleaseVerificationReport, AppError> {
+        let lean_command = if cfg!(windows) { "lean.exe" } else { "lean" };
+        crate::release::verify_release_bundle(bundle_dir, expected_manifest_hash, lean_command)
+    }
+
     fn revalidate_publication_authority_receipt(
         &mut self,
         publication_receipt_hash: &str,
@@ -3361,8 +3967,16 @@ impl Application {
             artifact_hashes,
         };
         Ok(RevalidatedPublicationAuthority {
-            receipt_hash: receipt.receipt_hash,
+            receipt_hash: receipt.receipt_hash.clone(),
             commit,
+            receipt,
+            stage,
+            report: candidate.report,
+            retained_closure: candidate.retained_closure,
+            retained_files,
+            attestation_bundle: attestation_bundle_bytes,
+            raw_verification,
+            canonical_receipt,
         })
     }
 
@@ -4936,6 +5550,51 @@ fn decode_learning_unit(payload: &Value) -> Result<LearningUnitPayload, AppError
             "Submit one complete payload matching learning_unit/1.",
         )
     })
+}
+
+fn decode_formalization(payload: &Value) -> Result<FormalizationPayload, AppError> {
+    serde_json::from_value(payload.clone()).map_err(|error| {
+        release_build_error(
+            "MCL_RELEASE_FORMALIZATION_INVALID",
+            format!("formalization payload could not be decoded after validation: {error}"),
+            "Restore the exact schema-valid formalization before building a release.",
+        )
+    })
+}
+
+fn generated_release_json<T: Serialize>(
+    value: &T,
+    kind: crate::domain::ReleaseMemberKind,
+) -> Result<crate::release::ReleaseFile, AppError> {
+    crate::release::ReleaseFile::canonical(
+        value,
+        kind,
+        Some(crate::release::GENERATED_RELEASE_LICENSE.to_owned()),
+        ArtifactRestriction::Public,
+    )
+}
+
+fn insert_release_file(
+    files: &mut BTreeMap<String, crate::release::ReleaseFile>,
+    path: String,
+    file: crate::release::ReleaseFile,
+) -> Result<(), AppError> {
+    if files.insert(path.clone(), file).is_some() {
+        return Err(release_build_error(
+            "MCL_RELEASE_BUILD_PATH_COLLISION",
+            format!("release construction produced duplicate path `{path}`"),
+            "Quarantine the build and report this deterministic path collision.",
+        ));
+    }
+    Ok(())
+}
+
+fn release_build_error(
+    code: &'static str,
+    message: impl Into<String>,
+    corrective_action: impl Into<String>,
+) -> AppError {
+    AppError::new(code, message, false, corrective_action)
 }
 
 fn require_kind(
@@ -7524,6 +8183,272 @@ mod tests {
             formal_payload.claim_version.clone(),
             formal_payload,
         )
+    }
+
+    #[test]
+    fn portable_release_build_is_private_fail_closed_and_database_independent()
+    -> Result<(), AppError> {
+        let mut fixture = local_publication_authority_fixture();
+        fixture.application.promote_publication_authority(
+            &fixture.receipt.receipt_hash,
+            "release-authority",
+            "release-authority-promotion",
+            false,
+        )?;
+        add_fixture_verified_fidelity(&mut fixture, None, "release")?;
+        let (source, claim, _) = fixture_fidelity_lineage(&fixture);
+        let content = fixture
+            .application
+            .ingest_artifact(
+                b"Read the exact proof and check its prerequisite before mastery.",
+                &ArtifactMetadata {
+                    schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION
+                        .to_owned(),
+                    media_type: ArtifactMediaType::PlainText,
+                    creation_source: ArtifactCreationSource::UserIngest,
+                    license_expression: None,
+                    restriction: ArtifactRestriction::Private,
+                    semantic_metadata: BTreeMap::from([(
+                        "artifact_role".to_owned(),
+                        "learning_unit_content".to_owned(),
+                    )]),
+                },
+                "release-test",
+                "release-test-content",
+                false,
+            )?
+            .artifact
+            .expect("release content persists");
+
+        let lesson_payload = |kind: &str, prerequisites: Vec<ExactVersionReference>| {
+            json!({
+                "unit_kind": kind,
+                "target": {"kind": "claim", "object_id": claim.object_id, "version_hash": claim.version_hash},
+                "audience_track": "release_test",
+                "entry_assumptions": ["The learner can read Lean theorem statements."],
+                "learning_objectives": [format!("Complete the {kind} release step.")],
+                "hard_prerequisites": prerequisites,
+                "soft_prerequisites": [],
+                "grounded_source_references": [source],
+                "content_artifact_hash": content.artifact_hash,
+                "examples": [],
+                "nonexamples": [],
+                "counterexamples": [],
+                "misconceptions": [],
+                "exercises": [],
+                "mastery_checks": [],
+                "formalization_references": [fixture.request.subject],
+                "application_references": [],
+                "frontier_references": [],
+                "review": {"state": "draft", "reviewer": null, "notes": []},
+                "license_expression": null,
+                "training_status": "ineligible"
+            })
+        };
+        let draft = fixture
+            .application
+            .create_record(
+                &RecordDraft {
+                    kind: RecordKind::LearningUnit,
+                    schema_version: crate::domain::schemas::LEARNING_UNIT_SCHEMA_VERSION.to_owned(),
+                    payload: lesson_payload("explanation", Vec::new()),
+                    searchable_text: "release test explanation".to_owned(),
+                },
+                "release-author",
+                "release-test-explanation-draft",
+                false,
+            )?
+            .record
+            .expect("lesson draft persists");
+        let prerequisite = fixture
+            .application
+            .review_learning_unit(
+                &draft.object_id,
+                &draft.version_hash,
+                LearningUnitReviewState::Reviewed,
+                LearningUnitTrainingStatus::Ineligible,
+                vec!["Reviewed against the exact publication fixture.".to_owned()],
+                "release-reviewer",
+                "release-test-explanation-review",
+                false,
+            )?
+            .record
+            .expect("reviewed prerequisite persists");
+        let prerequisite_ref = ExactVersionReference {
+            object_id: prerequisite.object_id.clone(),
+            version_hash: prerequisite.version_hash.clone(),
+        };
+        let root_draft = fixture
+            .application
+            .create_record(
+                &RecordDraft {
+                    kind: RecordKind::LearningUnit,
+                    schema_version: crate::domain::schemas::LEARNING_UNIT_SCHEMA_VERSION.to_owned(),
+                    payload: lesson_payload("mastery_check", vec![prerequisite_ref.clone()]),
+                    searchable_text: "release test mastery".to_owned(),
+                },
+                "release-author",
+                "release-test-mastery-draft",
+                false,
+            )?
+            .record
+            .expect("root lesson draft persists");
+        let root_unit = fixture
+            .application
+            .review_learning_unit(
+                &root_draft.object_id,
+                &root_draft.version_hash,
+                LearningUnitReviewState::Reviewed,
+                LearningUnitTrainingStatus::Ineligible,
+                vec!["Reviewed against the exact publication fixture.".to_owned()],
+                "release-reviewer",
+                "release-test-mastery-review",
+                false,
+            )?
+            .record
+            .expect("reviewed root persists");
+        let root_ref = ExactVersionReference {
+            object_id: root_unit.object_id.clone(),
+            version_hash: root_unit.version_hash.clone(),
+        };
+        fixture.application.create_pedagogy_link(
+            &EdgeDraft {
+                kind: EdgeKind::PedagogyHardPrerequisite,
+                source_object_id: root_ref.object_id.clone(),
+                source_version_hash: root_ref.version_hash.clone(),
+                target_object_id: prerequisite_ref.object_id.clone(),
+                target_version_hash: prerequisite_ref.version_hash.clone(),
+                payload: json!({"rationale": "Mastery requires the reviewed explanation."}),
+            },
+            "release-author",
+            "release-test-prerequisite-edge",
+            false,
+        )?;
+
+        let bundle = fixture.root.path().join("portable-release");
+        let preview = fixture.application.build_release(
+            &fixture.receipt.receipt_hash,
+            &root_ref,
+            PedagogyPathMode::Prerequisites,
+            false,
+            8,
+            20,
+            crate::domain::ReleaseProfile::Private,
+            &bundle,
+            true,
+        )?;
+        assert!(preview.dry_run);
+        assert!(!bundle.exists());
+        let built = fixture.application.build_release(
+            &fixture.receipt.receipt_hash,
+            &root_ref,
+            PedagogyPathMode::Prerequisites,
+            false,
+            8,
+            20,
+            crate::domain::ReleaseProfile::Private,
+            &bundle,
+            false,
+        )?;
+        assert!(!built.dry_run);
+        assert_eq!(preview.manifest_hash, built.manifest_hash);
+        assert_eq!(
+            built.bundle_path,
+            bundle.canonicalize().expect("built bundle canonicalizes")
+        );
+        assert!(bundle.join("manifest.json").is_file());
+        let verified = crate::release::verify_release_bundle_integrity(&bundle)?;
+        assert_eq!(verified.manifest_hash, built.manifest_hash);
+        assert_eq!(verified.manifest.pedagogy.root, root_ref);
+
+        let config = ResolvedConfig::load(fixture.root.path(), None)?;
+        drop(fixture.application);
+        fixture.application = Application::open(&config)?;
+        let restarted_bundle = fixture.root.path().join("portable-release-after-restart");
+        let restarted = fixture.application.build_release(
+            &fixture.receipt.receipt_hash,
+            &root_ref,
+            PedagogyPathMode::Prerequisites,
+            false,
+            8,
+            20,
+            crate::domain::ReleaseProfile::Private,
+            &restarted_bundle,
+            false,
+        )?;
+        assert_eq!(restarted.manifest_hash, built.manifest_hash);
+        assert_eq!(
+            fs::read(bundle.join("manifest.json")).expect("first manifest reads"),
+            fs::read(restarted_bundle.join("manifest.json")).expect("restart manifest reads")
+        );
+        assert_eq!(
+            fixture
+                .application
+                .build_release(
+                    &fixture.receipt.receipt_hash,
+                    &root_ref,
+                    PedagogyPathMode::Prerequisites,
+                    false,
+                    8,
+                    20,
+                    crate::domain::ReleaseProfile::Private,
+                    &bundle,
+                    false,
+                )
+                .expect_err("release build must not overwrite an existing directory")
+                .code,
+            "MCL_RELEASE_OUTPUT_EXISTS"
+        );
+
+        let blocked = fixture.application.build_release(
+            &fixture.receipt.receipt_hash,
+            &root_ref,
+            PedagogyPathMode::Prerequisites,
+            false,
+            8,
+            20,
+            crate::domain::ReleaseProfile::Public,
+            &fixture.root.path().join("public-release"),
+            false,
+        );
+        assert_eq!(
+            blocked
+                .expect_err("private inputs block public export")
+                .code,
+            "MCL_RELEASE_PUBLIC_POLICY_BLOCKED"
+        );
+
+        drop(fixture.application);
+        let database = fixture.root.path().join(".mcl/state.sqlite3");
+        let hidden_database = fixture.root.path().join(".mcl/state.sqlite3.hidden");
+        fs::rename(&database, &hidden_database).expect("database hides after application closes");
+        let database_free = crate::release::verify_release_bundle_integrity(&bundle)?;
+        assert_eq!(database_free.manifest_hash, built.manifest_hash);
+        assert_eq!(
+            crate::release::verify_release_bundle(&bundle, &"0".repeat(64), "lean-must-not-run")
+                .expect_err("a substituted manifest identity must fail before replay")
+                .code,
+            "MCL_RELEASE_MANIFEST_HASH_MISMATCH"
+        );
+
+        fs::write(restarted_bundle.join("extra.txt"), b"extra")
+            .expect("test adds an unlisted member");
+        assert_eq!(
+            crate::release::verify_release_bundle_integrity(&restarted_bundle)
+                .expect_err("unlisted release file must fail")
+                .code,
+            "MCL_RELEASE_INVENTORY_MISMATCH"
+        );
+
+        let export = bundle.join("exports/pedagogy-path.json");
+        fs::write(&export, b"altered").expect("test tampers copied export");
+        assert_eq!(
+            crate::release::verify_release_bundle_integrity(&bundle)
+                .expect_err("tampered bundle must fail")
+                .code,
+            "MCL_RELEASE_MEMBER_INTEGRITY_FAILED"
+        );
+        Ok(())
     }
 
     fn add_fixture_verified_fidelity(

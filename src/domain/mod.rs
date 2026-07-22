@@ -13,6 +13,7 @@ pub mod environment;
 pub mod evidence;
 pub mod fidelity;
 pub mod publication;
+pub mod release;
 pub mod research_status;
 pub mod schemas;
 pub mod verifier;
@@ -54,6 +55,11 @@ pub use publication::{
     PublicationRequest, PublicationRetainedArtifactRole, PublicationRetainedClosure,
     PublicationRetainedClosureEntry, PublicationRunnerEnvironment, PublicationStage,
     PublicationStageArtifact, PublicationStageSnapshot,
+};
+pub use release::{
+    RELEASE_MANIFEST_SCHEMA_VERSION, ReleaseManifest, ReleaseMember, ReleaseMemberKind,
+    ReleasePedagogyBinding, ReleasePedagogyMode, ReleaseProfile, ReleasePublicationBinding,
+    ReleaseReplayBinding,
 };
 pub use research_status::{
     ClaimResearchStatusNonqualification, ClaimResearchStatusNonqualificationReason,

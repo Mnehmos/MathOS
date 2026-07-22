@@ -1285,6 +1285,32 @@ fn health_does_not_create_a_missing_database() {
 }
 
 #[test]
+fn release_verify_does_not_require_an_instance_root_or_configuration() {
+    let parent = TempDir::new().expect("temporary parent");
+    let missing_root = parent.path().join("missing-instance");
+    let bundle = parent.path().join("empty-release");
+    fs::create_dir(&bundle).expect("empty release directory creates");
+
+    let output = mcl_at(
+        &missing_root,
+        &[
+            "release",
+            "verify",
+            "--bundle-dir",
+            bundle.to_str().expect("bundle path is UTF-8"),
+            "--expected-manifest-hash",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ],
+    );
+
+    assert!(!output.status.success());
+    assert!(!missing_root.exists());
+    let error: Value = serde_json::from_slice(&output.stderr).expect("stderr is JSON");
+    assert_eq!(error["code"], "MCL_IO_ERROR");
+    assert_ne!(error["code"], "MCL_INSTANCE_NOT_INITIALIZED");
+}
+
+#[test]
 fn dry_run_does_not_create_a_missing_root() {
     let parent = TempDir::new().expect("temporary parent");
     let missing = parent.path().join("missing");

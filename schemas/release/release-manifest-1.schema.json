@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/release/manifest/1",
+  "title": "MathOS Portable Release Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile", "publication", "pedagogy", "replay", "members"],
+  "properties": {
+    "schema_version": {"const": "release_manifest/1"},
+    "profile": {"enum": ["private", "public"]},
+    "publication": {"$ref": "#/$defs/publication"},
+    "pedagogy": {"$ref": "#/$defs/pedagogy"},
+    "replay": {"$ref": "#/$defs/replay"},
+    "members": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {"$ref": "#/$defs/member"}
+    }
+  },
+  "$defs": {
+    "exact_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "format": "uuid"},
+        "version_hash": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ingestion_receipt_hash", "authority_evidence_id", "authority_evidence_hash", "fidelity_evidence_id", "fidelity_evidence_hash", "fidelity_report_artifact_hash", "stage_hash", "report_artifact_hash", "retained_closure_artifact_hash", "attestation_bundle_artifact_hash", "raw_verification_hash", "request_hash", "policy_hash", "subject", "outcome", "environment_hash", "module_artifact_hash", "declaration_name"],
+      "properties": {
+        "ingestion_receipt_hash": {"$ref": "#/$defs/hash"},
+        "authority_evidence_id": {"type": "string", "format": "uuid"},
+        "authority_evidence_hash": {"$ref": "#/$defs/hash"},
+        "fidelity_evidence_id": {"type": "string", "format": "uuid"},
+        "fidelity_evidence_hash": {"$ref": "#/$defs/hash"},
+        "fidelity_report_artifact_hash": {"$ref": "#/$defs/hash"},
+        "stage_hash": {"$ref": "#/$defs/hash"},
+        "report_artifact_hash": {"$ref": "#/$defs/hash"},
+        "retained_closure_artifact_hash": {"$ref": "#/$defs/hash"},
+        "attestation_bundle_artifact_hash": {"$ref": "#/$defs/hash"},
+        "raw_verification_hash": {"$ref": "#/$defs/hash"},
+        "request_hash": {"$ref": "#/$defs/hash"},
+        "policy_hash": {"$ref": "#/$defs/hash"},
+        "subject": {"$ref": "#/$defs/exact_ref"},
+        "outcome": {"enum": ["proof", "refutation"]},
+        "environment_hash": {"$ref": "#/$defs/hash"},
+        "module_artifact_hash": {"$ref": "#/$defs/hash"},
+        "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "pedagogy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "include_soft", "root", "unit_order", "edge_ids"],
+      "properties": {
+        "mode": {"enum": ["prerequisites", "recommended"]},
+        "include_soft": {"type": "boolean"},
+        "root": {"$ref": "#/$defs/exact_ref"},
+        "unit_order": {"type": "array", "minItems": 1, "maxItems": 1000, "items": {"$ref": "#/$defs/exact_ref"}},
+        "edge_ids": {"type": "array", "maxItems": 4096, "items": {"type": "string", "format": "uuid"}}
+      }
+    },
+    "replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module_path", "environment_path", "declaration_name"],
+      "properties": {
+        "module_path": {"const": "replay/Submission.lean"},
+        "environment_path": {"const": "replay/environment.json"},
+        "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind", "content_hash", "byte_size", "license_expression", "restriction", "artifact_metadata"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "kind": {"enum": ["object", "edge", "evidence", "artifact", "environment", "license", "replay", "report", "export"]},
+        "content_hash": {"$ref": "#/$defs/hash"},
+        "byte_size": {"type": "integer", "minimum": 0, "maximum": 268435456},
+        "license_expression": {"type": ["string", "null"], "maxLength": 512},
+        "restriction": {"enum": ["public", "restricted", "private"]},
+        "artifact_metadata": {"oneOf": [{"$ref": "https://mnehmos.ai/mathos/schemas/artifact/metadata/1"}, {"type": "null"}]}
+      }
+    }
+  }
+}

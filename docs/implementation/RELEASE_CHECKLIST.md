@@ -96,11 +96,13 @@ Phase 5 evidence: issue [#48](https://github.com/Mnehmos/MathOS/issues/48) adds 
 
 ## Releases and exports
 
-- [ ] Release bundles are complete, hashed, licensed, and policy-checked.
-- [ ] Releases verify without the operational database.
+- [x] Release bundles are complete, hashed, licensed, and policy-checked.
+- [x] Releases verify without the operational database.
 - [ ] MathCorpus and MCIP export works.
 - [ ] RL and evaluation exports work with leakage-aware splits.
 - [ ] Public exports fail closed on restricted or incomplete provenance.
+
+Phase 6 portable-release evidence: issue [#50](https://github.com/Mnehmos/MathOS/issues/50) adds the closed Rust-owned `release_manifest/1` schema and a deterministic dry-run/new-directory builder rooted in one fully replayed publication receipt plus its persisted authority/current fidelity witness and one exact reviewed pedagogy path. Every required SPEC directory has manifest-bound members; exact record, logical/pedagogy edge, evidence, artifact, environment, publication, replay, report-copy, and license relationships are checked without SQLite. Private members retain explicit restrictions, and the public release profile rejects any restricted, private, or unlicensed member. Unit coverage reproduces the preview hash after restart, blocks overwrite and public projection, hides SQLite, revalidates the directory, and rejects extra files, expected-hash substitution, and a changed export. The protected Pilot A workflow builds five reviewed privately eligible units, copies the resulting release, hides `state.sqlite3`, invokes verification with a nonexistent instance root and trusted manifest hash, replays the exact repaired theorem under Lean 4.32.0, and retains both bundle and report. The broader public-export box remains open until MathCorpus, MCIP, RL/evaluation, and their shared provenance gates exist.
 
 ## Migration
 

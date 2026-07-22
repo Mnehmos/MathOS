@@ -182,7 +182,15 @@ jobs:
             "${REPAIRED_PROOF_BUNDLE_PATH}" \
             "${RUNNER_TEMP}/publication-candidate/repaired-proof-ingestion" \
             "${RUNNER_TEMP}/publication-candidate"
-      - name: Retain smoke, both candidate closures, diagnostics, and Sigstore bundles
+      - name: Build and replay the private Pilot A portable release without SQLite
+        shell: bash
+        run: |
+          bash scripts/release-pilot-a.sh \
+            "${RUNNER_TEMP}/publication-candidate" \
+            "${RUNNER_TEMP}/publication-candidate/repaired-proof-candidate" \
+            "${RUNNER_TEMP}/publication-candidate/repaired-proof-ingestion" \
+            "${RUNNER_TEMP}/pilot-a-portable-release"
+      - name: Retain smoke, both candidate closures, release, diagnostics, and Sigstore bundles
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -207,3 +215,5 @@ jobs:
             ${{ runner.temp }}/publication-candidate/repaired-proof-attestation-verification/
             ${{ runner.temp }}/publication-candidate/repaired-proof-ingestion/
             ${{ steps.attest_repaired_proof.outputs.bundle-path }}
+            ${{ runner.temp }}/publication-candidate/release-build-evidence/
+            ${{ runner.temp }}/pilot-a-portable-release/
