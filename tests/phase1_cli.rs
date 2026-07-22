@@ -1455,6 +1455,65 @@ fn rl_export_and_verification_do_not_require_an_instance_root_or_configuration()
 }
 
 #[test]
+fn comparator_export_and_verification_do_not_require_an_instance_root_or_configuration() {
+    let parent = TempDir::new().expect("temporary parent");
+    let missing_root = parent.path().join("missing-instance");
+    let bundle = parent.path().join("empty-release");
+    let package = parent.path().join("empty-comparator-package");
+    let output_dir = parent.path().join("new-comparator-package");
+    let plan_path = parent.path().join("plan.json");
+    fs::create_dir(&bundle).expect("empty release creates");
+    fs::create_dir(&package).expect("empty package creates");
+    fs::write(&plan_path, b"{}").expect("invalid fixture plan writes");
+
+    let export = mcl_at(
+        &missing_root,
+        &[
+            "release",
+            "export-comparator",
+            "--plan",
+            plan_path.to_str().expect("plan path is UTF-8"),
+            "--bundle-dir",
+            bundle.to_str().expect("bundle path is UTF-8"),
+            "--expected-release-manifest-hash",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--output-dir",
+            output_dir.to_str().expect("output path is UTF-8"),
+        ],
+    );
+    assert!(!export.status.success());
+    assert!(!missing_root.exists());
+    assert!(!output_dir.exists());
+    let export_error: Value = serde_json::from_slice(&export.stderr).expect("export error JSON");
+    assert_eq!(export_error["code"], "MCL_COMPARATOR_JSON_INVALID");
+
+    let verify = mcl_at(
+        &missing_root,
+        &[
+            "release",
+            "verify-comparator-package",
+            "--package-dir",
+            package.to_str().expect("package path is UTF-8"),
+            "--expected-verification-hash",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--plan",
+            plan_path.to_str().expect("plan path is UTF-8"),
+            "--bundle-dir",
+            bundle.to_str().expect("bundle path is UTF-8"),
+            "--expected-release-manifest-hash",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ],
+    );
+    assert!(!verify.status.success());
+    assert!(!missing_root.exists());
+    let verify_error: Value = serde_json::from_slice(&verify.stderr).expect("verify error JSON");
+    assert_eq!(
+        verify_error["code"],
+        "MCL_COMPARATOR_PACKAGE_INVENTORY_MISMATCH"
+    );
+}
+
+#[test]
 fn corpus_export_rejects_unpinned_curation_before_writing() {
     let parent = TempDir::new().expect("temporary parent");
     let missing_root = parent.path().join("missing-instance");

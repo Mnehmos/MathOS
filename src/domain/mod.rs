@@ -8,6 +8,7 @@ use crate::error::AppError;
 
 pub mod artifact;
 pub mod audit;
+pub mod comparator;
 pub mod corpus;
 pub mod counterexample;
 pub mod environment;
@@ -27,6 +28,15 @@ pub use artifact::{
 pub use audit::{
     LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditPolicy, LeanAuditReport,
     LeanAuditRequest,
+};
+pub use comparator::{
+    COMPARATOR_FORMALIZATION_SCHEMA_VERSION, COMPARATOR_PACKAGE_PLAN_SCHEMA_VERSION,
+    COMPARATOR_PACKAGE_VERIFICATION_SCHEMA_VERSION, COMPARATOR_REPOSITORY, ComparatorFileBinding,
+    ComparatorFormalizationMetadata, ComparatorPackagePlan, ComparatorPackageStatus,
+    ComparatorPackageVerification, ComparatorPublicationStatus, ComparatorSourceMemberBinding,
+    ComparatorToolPins, LANDRUN_REPOSITORY, LEAN4EXPORT_REPOSITORY, MAX_COMPARATOR_FILE_BYTES,
+    MAX_COMPARATOR_SOURCE_BYTES, comparator_package_plan_schema,
+    comparator_package_verification_schema,
 };
 pub use corpus::{
     CORPUS_EXPORT_MANIFEST_SCHEMA_VERSION, CorpusExportCuration, CorpusExportManifest,

@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/release/comparator-package-verification/1",
+  "title": "MathOS Comparator Package Verification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "comparator_verified",
+    "authoritative",
+    "source_release_manifest_hash",
+    "source_formalization",
+    "source_formalization_member",
+    "theorem_source",
+    "dependency_manifest",
+    "challenge",
+    "solution",
+    "config",
+    "formalization",
+    "declaration_name",
+    "lean_toolchain",
+    "tool_pins",
+    "plan_hash",
+    "input_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {"const": "comparator_package_verification/1"},
+    "status": {"const": "ready"},
+    "comparator_verified": {"const": false},
+    "authoritative": {"const": false},
+    "source_release_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_formalization": {"$ref": "#/$defs/exact_reference"},
+    "source_formalization_member": {"$ref": "#/$defs/source_binding"},
+    "theorem_source": {"$ref": "#/$defs/source_binding"},
+    "dependency_manifest": {"$ref": "#/$defs/source_binding"},
+    "challenge": {"$ref": "#/$defs/file_binding"},
+    "solution": {"$ref": "#/$defs/file_binding"},
+    "config": {"$ref": "#/$defs/file_binding"},
+    "formalization": {"$ref": "#/$defs/file_binding"},
+    "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_']+(\\.[A-Za-z0-9_']+)*$"},
+    "lean_toolchain": {"type": "string", "minLength": 1, "maxLength": 256},
+    "tool_pins": {"$ref": "#/$defs/tool_pins"},
+    "plan_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "input_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "$defs": {
+    "exact_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "format": "uuid"},
+        "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "file_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "content_hash", "byte_size"],
+      "properties": {
+        "path": {"enum": ["Challenge.lean", "Solution.lean", "config.json", "formalization.yaml"]},
+        "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "byte_size": {"type": "integer", "minimum": 0, "maximum": 4194304}
+      }
+    },
+    "source_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "content_hash", "byte_size"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "byte_size": {"type": "integer", "minimum": 0, "maximum": 4194304}
+      }
+    },
+    "tool_pins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["comparator_repository", "comparator_commit", "lean4export_repository", "lean4export_commit", "landrun_repository", "landrun_commit"],
+      "properties": {
+        "comparator_repository": {"const": "https://github.com/leanprover/comparator"},
+        "comparator_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "lean4export_repository": {"const": "https://github.com/leanprover/lean4export"},
+        "lean4export_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "landrun_repository": {"const": "https://github.com/Zouuup/landrun"},
+        "landrun_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    }
+  }
+}
