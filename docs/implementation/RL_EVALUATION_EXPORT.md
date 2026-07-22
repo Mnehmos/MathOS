@@ -64,9 +64,9 @@ mcl --root does-not-need-to-exist --json release verify-rl-export \
 
 Verification checks the closed inventory, paths and regular files, canonical JSON, hashes,
 committed schemas, task identities, evidence references, license/restriction policy, receipt
-dates, component isolation, and family audit. It then replays all releases and byte-compares a
-fresh deterministic reprojection. It does not silently rerun a source release under a different
-platform than the release's registered verifier environment.
+dates, component isolation, and family audit. It then structurally reverifies all releases and
+byte-compares a fresh deterministic reprojection. It does not silently rerun a source release's
+platform-bound Lean replay under a different verifier environment.
 
 ## Output contracts
 
@@ -90,10 +90,10 @@ evidence. Input and target objects reject `chain_of_thought`, `private_chain_of_
 
 ## Leakage components
 
-MathOS hashes declared labels by dimension and adds exact derived keys. Sharing any key joins
-releases transitively. A component crossing split assignments is rejected; tasks are never
-reassigned row-by-row. The report lists every component, release, split, leakage key, and task ID,
-with zero accepted cross-split overlap.
+MathOS hashes declared labels by dimension and adds exact derived keys, including normalized
+nonempty import manifests. Sharing any key joins releases transitively. A component crossing
+split assignments is rejected; tasks are never reassigned row-by-row. The report lists every
+component, release, split, leakage key, and task ID, with zero accepted cross-split overlap.
 
 ## Task families and current limits
 

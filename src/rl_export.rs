@@ -429,6 +429,9 @@ fn derive_leakage_keys(
             RecordKind::Formalization => {
                 let payload: FormalizationPayload =
                     decode_value(&record.record.payload, "formalization")?;
+                if let Some(import_key) = derived_import_manifest_key(&payload)? {
+                    keys.insert(import_key);
+                }
                 keys.insert(format!(
                     "derived:equivalent-claim:{}@{}",
                     payload.claim_version.object_id, payload.claim_version.version_hash
@@ -481,6 +484,24 @@ fn derive_leakage_keys(
         }
     }
     Ok(keys)
+}
+
+fn derived_import_manifest_key(
+    formalization: &FormalizationPayload,
+) -> Result<Option<String>, AppError> {
+    if formalization.import_manifest.is_empty() {
+        return Ok(None);
+    }
+    let mut imports = formalization.import_manifest.clone();
+    imports.sort();
+    imports.dedup();
+    Ok(Some(format!(
+        "derived:import-manifest:{}",
+        value_hash(&json!({
+            "formal_system": formalization.formal_system,
+            "imports": imports,
+        }))?
+    )))
 }
 
 fn assign_components(releases: &mut [BoundRelease]) -> Result<Vec<ComponentSeed>, AppError> {
@@ -2385,6 +2406,37 @@ mod tests {
                 .expect_err("cross-split component blocked")
                 .code,
             "MCL_RL_SPLIT_LEAKAGE"
+        );
+    }
+
+    #[test]
+    fn import_manifest_leakage_identity_is_order_insensitive() {
+        let mut formalization = FormalizationPayload {
+            claim_version: ExactVersionReference {
+                object_id: uuid::Uuid::from_u128(20).to_string(),
+                version_hash: "a".repeat(64),
+            },
+            formal_system: crate::domain::schemas::FormalSystem::Lean4,
+            claim_polarity: None,
+            environment_hash: "b".repeat(64),
+            module_artifact_hash: "c".repeat(64),
+            declaration_name: "Fixture.theorem".to_owned(),
+            exact_theorem_type: "True".to_owned(),
+            declaration_hash: "d".repeat(64),
+            import_manifest: vec!["Mathlib.Data.Nat.Prime".to_owned(), "Mathlib".to_owned()],
+            formalization_notes: String::new(),
+            fidelity_evidence_references: Vec::new(),
+            verification_evidence_references: Vec::new(),
+        };
+        let first = derived_import_manifest_key(&formalization).expect("import key");
+        formalization.import_manifest.reverse();
+        formalization.import_manifest.push("Mathlib".to_owned());
+        let repeated = derived_import_manifest_key(&formalization).expect("repeated import key");
+        assert_eq!(first, repeated);
+        formalization.import_manifest.clear();
+        assert_eq!(
+            derived_import_manifest_key(&formalization).expect("empty imports"),
+            None
         );
     }
 

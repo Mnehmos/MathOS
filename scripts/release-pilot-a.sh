@@ -438,8 +438,8 @@ jq -e \
   .deterministic_reprojection_verified == true
 ' "$evidence_dir/corpus-export-verification.json" >/dev/null
 
-release_id="$(basename "$release_copy")"
-published_timestamp="$(jq -er '.created_at' "$release_copy/reports/publication-receipt.json")"
+release_id="$(basename "$release_output")"
+published_timestamp="$(jq -er '.created_at' "$release_output/reports/publication-receipt.json")"
 published_on="$(date --utc --date="@$published_timestamp" +%F)"
 publication_cutoff="$(date --utc --date="$published_on - 1 day" +%F)"
 jq -cnS \

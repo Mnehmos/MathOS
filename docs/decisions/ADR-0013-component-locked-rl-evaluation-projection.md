@@ -26,7 +26,7 @@ The signed publication receipt, not caller text, supplies the exact publication 
 The exporter first structurally verifies every release. The protected producer separately runs
 the release's platform-bound Lean replay immediately before projection while SQLite is hidden.
 The exporter then adds derived keys for shared exact records, source locators and content,
-claim/formalization identity, proof modules and
+claim/formalization identity, normalized nonempty import manifests, proof modules and
 declarations, typed dependency/equivalence/repair edges, and counterexample run/package lineage.
 Any releases sharing a declared or derived key are unioned into one leakage component. Every
 component must have exactly one split. Training dates must be at or before the plan cutoff;
