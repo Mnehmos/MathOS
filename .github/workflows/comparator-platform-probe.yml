@@ -1,0 +1,130 @@
+name: Comparator platform probe (non-authoritative)
+
+on:
+  push:
+    branches: [spike/63-comparator-platform]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Real landrun and systemd probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out probe source without credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install repository-pinned Lean
+        shell: bash
+        run: |
+          set -euo pipefail
+          elan_archive="${RUNNER_TEMP}/elan.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "${elan_archive}" \
+            https://github.com/leanprover/elan/releases/download/v4.2.3/elan-x86_64-unknown-linux-gnu.tar.gz
+          echo "df0b2b3a439961ffcbb3985214365ffe40f49bc871df04dff268c7d8e21ca8b2  ${elan_archive}" \
+            | sha256sum --check --strict
+          tar --extract --gzip --file "${elan_archive}" --directory "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/elan-init" -y --default-toolchain none --no-modify-path
+          echo "${HOME}/.elan/bin" >> "${GITHUB_PATH}"
+          "${HOME}/.elan/bin/elan" toolchain install "$(cat lean-toolchain)"
+      - name: Build exact Comparator tools and exercise the real sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe_root="${RUNNER_TEMP}/comparator-platform-probe"
+          tools_dir="${probe_root}/tools"
+          comparator_source="${probe_root}/comparator-source"
+          landrun_source="${probe_root}/landrun-source"
+          project_dir="${probe_root}/project"
+          mathos_toolchain="$(cat lean-toolchain)"
+          mkdir --parents "${tools_dir}" "${project_dir}"
+
+          git clone --no-checkout https://github.com/leanprover/comparator "${comparator_source}"
+          git -C "${comparator_source}" checkout --detach 68a064109f01c08f47c8edc9f51d6a2bbffaa188
+          [[ "$(git -C "${comparator_source}" rev-parse HEAD)" == "68a064109f01c08f47c8edc9f51d6a2bbffaa188" ]]
+          [[ "$(git -C "${comparator_source}" rev-parse 'HEAD^{tree}')" == "0bb408593d6e5f625db53b3be16e3f1cc91a7524" ]]
+          (
+            cd "${comparator_source}"
+            ELAN_TOOLCHAIN="${mathos_toolchain}" lake build lean4export comparator
+          )
+          lean4export_source="${comparator_source}/.lake/packages/lean4export"
+          [[ "$(git -C "${lean4export_source}" rev-parse HEAD)" == "af5aa64bb914c3c2c781f378088dbd38acf4f804" ]]
+          [[ "$(git -C "${lean4export_source}" rev-parse 'HEAD^{tree}')" == "5058a7945d24656600ca05917e3c8c174485bcf5" ]]
+          install --mode=0555 "${comparator_source}/.lake/build/bin/comparator" "${tools_dir}/comparator"
+          install --mode=0555 "${lean4export_source}/.lake/build/bin/lean4export" "${tools_dir}/lean4export"
+
+          git clone --no-checkout https://github.com/Zouuup/landrun "${landrun_source}"
+          git -C "${landrun_source}" checkout --detach 5ed4a3db3a4ad930d577215c6b9abaa19df7f99f
+          [[ "$(git -C "${landrun_source}" rev-parse HEAD)" == "5ed4a3db3a4ad930d577215c6b9abaa19df7f99f" ]]
+          [[ "$(git -C "${landrun_source}" rev-parse 'HEAD^{tree}')" == "890013a5099a92792cbacd2cfff91af3f13cec9c" ]]
+          (
+            cd "${landrun_source}"
+            go build -mod=readonly -trimpath -buildvcs=false -o "${tools_dir}/landrun" ./cmd/landrun
+          )
+          chmod 0555 "${tools_dir}/landrun"
+
+          [[ "$(id -u)" -ne 0 ]]
+          "${tools_dir}/landrun" --ro / --rw /dev --ldd --add-exec /usr/bin/true
+          systemctl --user show-environment >/dev/null
+
+          cp -- "${comparator_source}/tests/projects/simple_match/Challenge.lean" "${project_dir}/Challenge.lean"
+          cp -- "${comparator_source}/tests/projects/simple_match/Solution.lean" "${project_dir}/Solution.lean"
+          cp -- "${comparator_source}/tests/projects/simple_match/config.json" "${project_dir}/config.json"
+          printf '%s\n' \
+            'name = "mathos_comparator_probe"' \
+            'version = "0.1.0"' \
+            '' \
+            '[[lean_lib]]' \
+            'name = "Challenge"' \
+            '' \
+            '[[lean_lib]]' \
+            'name = "Solution"' \
+            > "${project_dir}/lakefile.toml"
+          printf '%s\n' "${mathos_toolchain}" > "${project_dir}/lean-toolchain"
+          [[ ! -e "${project_dir}/.lake" ]]
+          [[ -z "$(find "${project_dir}" -name '*.olean' -print -quit)" ]]
+
+          probe_unit="mathos-comparator-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          /usr/bin/systemd-run \
+            --user \
+            --quiet \
+            --wait \
+            --pipe \
+            --unit="${probe_unit}" \
+            --property=RestrictAddressFamilies=~AF_UNIX \
+            --property=NoNewPrivileges=yes \
+            --working-directory="${project_dir}" \
+            --setenv="PATH=${PATH}" \
+            --setenv="HOME=${HOME}" \
+            --setenv="COMPARATOR_LANDRUN=${tools_dir}/landrun" \
+            --setenv="COMPARATOR_LEAN4EXPORT=${tools_dir}/lean4export" \
+            -- \
+            bash -c 'printf "MATHOS_PROBE_UID=%s\n" "$(id -u)"; exec lake env "$1" config.json' \
+            bash "${tools_dir}/comparator" \
+            > "${probe_root}/comparator.stdout" \
+            2> "${probe_root}/comparator.stderr"
+          systemctl --user show "${probe_unit}.service" \
+            --property=User \
+            --property=NoNewPrivileges \
+            --property=RestrictAddressFamilies \
+            > "${probe_root}/systemd.properties"
+          cat "${probe_root}/comparator.stdout"
+          cat "${probe_root}/comparator.stderr" >&2
+          cat "${probe_root}/systemd.properties"
+          grep --fixed-strings --line-regexp 'Your solution is okay!' "${probe_root}/comparator.stdout"
+          grep --fixed-strings --line-regexp 'Lean default kernel accepts the solution' "${probe_root}/comparator.stdout"
+          grep --fixed-strings --line-regexp 'NoNewPrivileges=yes' "${probe_root}/systemd.properties"
+          grep --fixed-strings 'RestrictAddressFamilies=~AF_UNIX' "${probe_root}/systemd.properties"
+          printf '%s\n' '{"authoritative":false,"purpose":"platform_probe"}' > "${probe_root}/NON_AUTHORITY.json"
+      - name: Retain non-authoritative probe logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: comparator-platform-probe-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 7
+          path: ${{ runner.temp }}/comparator-platform-probe/
