@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/release/corpus-export-manifest/1",
+  "title": "MathOS MathCorpus and MCIP Export Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_release",
+    "curation",
+    "upstream",
+    "outputs",
+    "members"
+  ],
+  "properties": {
+    "schema_version": { "const": "corpus_export_manifest/1" },
+    "source_release": { "$ref": "#/$defs/source_release" },
+    "curation": { "$ref": "#/$defs/curation" },
+    "upstream": { "$ref": "#/$defs/upstream" },
+    "outputs": { "$ref": "#/$defs/outputs" },
+    "members": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": { "$ref": "#/$defs/member" }
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "exact_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": { "type": "string", "format": "uuid" },
+        "version_hash": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "source_release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "release_manifest_hash",
+        "release_profile",
+        "publication_receipt_hash",
+        "authority_evidence_id",
+        "authority_evidence_hash",
+        "fidelity_evidence_id",
+        "fidelity_evidence_hash",
+        "environment_hash",
+        "module_artifact_hash",
+        "declaration_name",
+        "source",
+        "claim",
+        "formalization"
+      ],
+      "properties": {
+        "release_manifest_hash": { "$ref": "#/$defs/hash" },
+        "release_profile": { "enum": ["private", "public"] },
+        "publication_receipt_hash": { "$ref": "#/$defs/hash" },
+        "authority_evidence_id": { "type": "string", "format": "uuid" },
+        "authority_evidence_hash": { "$ref": "#/$defs/hash" },
+        "fidelity_evidence_id": { "type": "string", "format": "uuid" },
+        "fidelity_evidence_hash": { "$ref": "#/$defs/hash" },
+        "environment_hash": { "$ref": "#/$defs/hash" },
+        "module_artifact_hash": { "$ref": "#/$defs/hash" },
+        "declaration_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "source": { "$ref": "#/$defs/exact_ref" },
+        "claim": { "$ref": "#/$defs/exact_ref" },
+        "formalization": { "$ref": "#/$defs/exact_ref" }
+      }
+    },
+    "curation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["packet_id", "domain", "level", "difficulty_bin", "policy"],
+      "properties": {
+        "packet_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+([._][a-z0-9]+)*\\.v[0-9]+$"
+        },
+        "domain": {
+          "enum": [
+            "arithmetic",
+            "algebra",
+            "number_theory",
+            "combinatorics",
+            "analysis",
+            "real_analysis",
+            "geometry",
+            "topology",
+            "logic",
+            "linear_algebra",
+            "abstract_algebra",
+            "set_theory",
+            "probability",
+            "frontier"
+          ]
+        },
+        "level": {
+          "enum": [
+            "L0_elementary",
+            "L1_proof_basics",
+            "L2_olympiad",
+            "L3_undergrad",
+            "L4_advanced_undergrad",
+            "L5_grad",
+            "L6_known_theorem",
+            "L7_frontier"
+          ]
+        },
+        "difficulty_bin": { "enum": ["D0", "D1", "D2", "D3", "D4", "D5"] },
+        "policy": { "enum": ["private_audit_only", "quarantined"] }
+      }
+    },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "commit_sha",
+        "tree_sha",
+        "license_expression",
+        "packet_schema_sha256",
+        "mcip_defs_schema_sha256",
+        "mcip_bundle_schema_sha256",
+        "mcip_packet_identity_schema_sha256",
+        "mcip_proof_variant_schema_sha256",
+        "mcip_dependency_manifest_schema_sha256"
+      ],
+      "properties": {
+        "repository": { "const": "Mnehmos/mathcorpus" },
+        "commit_sha": { "$ref": "#/$defs/git_sha" },
+        "tree_sha": { "$ref": "#/$defs/git_sha" },
+        "license_expression": { "const": "Apache-2.0" },
+        "packet_schema_sha256": { "$ref": "#/$defs/hash" },
+        "mcip_defs_schema_sha256": { "$ref": "#/$defs/hash" },
+        "mcip_bundle_schema_sha256": { "$ref": "#/$defs/hash" },
+        "mcip_packet_identity_schema_sha256": { "$ref": "#/$defs/hash" },
+        "mcip_proof_variant_schema_sha256": { "$ref": "#/$defs/hash" },
+        "mcip_dependency_manifest_schema_sha256": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_path",
+        "packet_sha256",
+        "mcip_bundle_path",
+        "mcip_bundle_sha256",
+        "module_path",
+        "module_sha256"
+      ],
+      "properties": {
+        "packet_path": { "const": "mathcorpus/packet.json" },
+        "packet_sha256": { "$ref": "#/$defs/hash" },
+        "mcip_bundle_path": { "const": "mcip/bundle.json" },
+        "mcip_bundle_sha256": { "$ref": "#/$defs/hash" },
+        "module_path": { "const": "lean/Submission.lean" },
+        "module_sha256": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "kind",
+        "content_hash",
+        "byte_size",
+        "license_expression",
+        "restriction"
+      ],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "kind": {
+          "enum": [
+            "mathcorpus_packet",
+            "mcip_bundle",
+            "lean_module",
+            "source_release_manifest",
+            "schema",
+            "license"
+          ]
+        },
+        "content_hash": { "$ref": "#/$defs/hash" },
+        "byte_size": { "type": "integer", "minimum": 0, "maximum": 16777216 },
+        "license_expression": { "type": ["string", "null"], "maxLength": 512 },
+        "restriction": { "enum": ["public", "restricted", "private"] }
+      }
+    }
+  }
+}

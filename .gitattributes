@@ -1,0 +1,6 @@
+# Shell entry points must remain executable as LF-delimited scripts on every checkout.
+*.sh text eol=lf
+
+# These vendored files are cryptographic inputs and must retain their upstream bytes.
+schemas/mathcorpus/upstream-*/* -text
+schemas/mcip/v1/upstream-*/* -text

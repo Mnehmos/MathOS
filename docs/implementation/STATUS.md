@@ -1,6 +1,6 @@
 # Implementation Status
 
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 
 ## Release truth
 
@@ -20,7 +20,9 @@ Issue [#46](https://github.com/Mnehmos/MathOS/issues/46) completed the repaired-
 
 Issue [#48](https://github.com/Mnehmos/MathOS/issues/48) completed the narrow Phase 5 pedagogy slice through PR #49. It defines the closed `learning_unit/1` canonical contract, exact current grounding and content/license policy, controlled immutable pedagogy review, typed link validation, deterministic bounded curriculum paths, and CLI/MCP parity. Its fresh-root test and separate preserved-ledger CLI playtest cover explanation, counterexample, misconception, exercise, and mastery-check units grounded in exact Pilot A source, repaired-claim, and Lean-formalization versions. Derived claim status remains unchanged across pedagogy review, so no mathematical authority is granted.
 
-Issue [#50](https://github.com/Mnehmos/MathOS/issues/50) is the current narrow Phase 6 slice. It adds the closed `release_manifest/1` contract, deterministic no-write preview and non-overwriting directory construction from one fully revalidated publication receipt plus one exact reviewed pedagogy path, explicit per-member licensing/restrictions, a public profile that fails closed, and database-independent structural and Lean replay. The required objects, logical and pedagogy edges, persisted authority and current fidelity evidence, artifacts, environments, licenses, replay, reports, and exports families are hash/size bound. The CLI verify path returns before configuration loading, requires the trusted manifest hash, rejects unsafe, substituted, or altered copied trees, reproduces record/reference and publication receipt bindings, and runs only a verifier-selected Lean command. Application coverage previews and builds the same hash across restart, blocks overwrite and public projection, hides SQLite, revalidates the bundle, and rejects extra files, substitution, and tampering. The protected Pilot A workflow constructs five privately eligible reviewed units, dry-runs and builds the repaired-proof release, copies it, hides the database, replays Lean from a nonexistent instance root, and retains the bundle and report. MathCorpus/MCIP, RL/evaluation export, leakage-aware splits, Comparator, remaining pilots, and full 1.0 acceptance remain unfinished.
+Issue [#50](https://github.com/Mnehmos/MathOS/issues/50) completed the first Phase 6 portable-release slice through PR #51 plus policy corrections #52 and #53. Merge `84987c70c01ce8f61db7af1346883571b7b34868`, tree `1868ef4c3e0e9321788c3685665fbc37486da3b7`, passed main CI run `29881189890` and protected publication run `29881189881`. The closed `release_manifest/1` contract, deterministic no-write preview, immutable directory build, explicit member licensing/restrictions, public fail-closed profile, and database-independent structural plus Lean replay are live. The retained protected artifact contains five reviewed training-ineligible units, all required release families, and an exact private release with manifest `0417d31249de47d49609913e79021b6a8ba9ec265105a057a29237337c30913d`; independent audit matched all 83 manifest members and replayed its authority, fidelity, receipt, environment, and repaired theorem bindings.
+
+Issue [#54](https://github.com/Mnehmos/MathOS/issues/54) is the current focused Phase 6b slice. It vendors the minimum byte-exact MathCorpus and MCIP v1 schemas at upstream commit `a0d08c9ace0dcc70a8bc281dcf29c560242075d3`, adds the closed `corpus_export_manifest/1` contract, and implements database-independent `release export` and `verify-export`. The exporter follows only exact frozen source, claim, formalization, receipt, authority, fidelity, environment, and module bindings. Private releases remain `private_audit_only`/`private_only`; public releases remain quarantined until leakage-aware splits and require explicit public source and module license authority. The verifier denies unpinned schema retrieval, checks canonical packet and MCIP hashes, rejects inventory/schema/path substitution, and requires byte-identical reprojection from an independently supplied frozen release. A Windows CLI playtest over the retained protected Pilot A release produced export manifest `33e6ccc24979e85c14688d755130ace9960f0e074342695e951ac9756c2c590b`; MathOS offline reprojection and upstream MathCorpus/MCIP hash validators all passed with zero findings. Protected merged-tree evidence is still required before #54 closes. RL/evaluation export, leakage-aware splits, Comparator, remaining pilots, and full 1.0 acceptance remain unfinished.
 
 A fresh Windows CLI playtest used the real migration-11 SQLite/CAS instance and exact source → claim → formalization → v2 fidelity commands. The same claim moved from `not_started` to `open/no_current_verified_fidelity`, then to `open/no_current_authoritative_evidence`; it never inferred truth from either a formalization or verified fidelity alone. Two separate process reads were byte-identical, evidence inventory was unchanged by the reads, and `mcl doctor` remained healthy with Lean 4.32.0 visible. The protected merged-tree artifact separately records `open/no_current_verified_fidelity` after formal authority and `proved` only after role-separated verified v2 fidelity.
 
@@ -236,21 +238,21 @@ These items establish only part of the product foundation and trace model. One e
 
 ## Next highest-priority criteria
 
-1. Complete issue #46: prove and publish authority plus fidelity for the repaired Pilot A claim without mutating or inheriting the disproved claim's history.
-2. Continue Pilot A pedagogy and export after the repaired proof has merged and passed independent protected-artifact audit.
-3. Continue the remaining section 30 criteria without treating this partial path as MathOS 1.0.
+1. Complete issue #54 through exact-head review, protected merged-tree corpus-export playtest, and independent retained-artifact audit.
+2. Implement leakage-aware RL/evaluation splits without promoting private, quarantined, benchmark, or held-out evidence.
+3. Continue the remaining pilots and section 30 criteria without treating this partial path as MathOS 1.0.
 
 ## Exact last validation commands
 
-Run from the repository root. The explicit local toolchain path is required only in this managed workspace:
+Run from the repository root:
 
 ```text
-PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo fmt --check
-PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo clippy --workspace --all-targets --all-features -- -D warnings
-PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo test --workspace --all-targets
-MCL_RUN_LEAN_INTEGRATION=1 PATH="$PWD/.toolchains/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH" RUSTUP_HOME="$PWD/.toolchains/rustup" CARGO_HOME="$PWD/.toolchains/cargo" cargo test --test lean_worker -- --nocapture
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+MCL_RUN_LEAN_INTEGRATION=1 cargo test --test lean_worker -- --nocapture
 PYTHONPATH=src PYTHONWARNINGS=error::ResourceWarning python -m unittest discover -s tests -v
-bash -n scripts/publication-candidate.sh scripts/publication-smoke.sh scripts/publication-attestation-verify.sh scripts/publication-ingest.sh
+bash -n scripts/release-pilot-a.sh
 go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color=false
 git diff --check
 ```
@@ -258,7 +260,8 @@ git diff --check
 Observed validation evidence for this update:
 
 - Home workstation: Windows 10.0.19045, PowerShell 5.1.19041.6456, Rust 1.97.1, Python 3.12.10, GitHub CLI 2.70.0, GNU Bash 5.2.37 through Git for Windows, and Lean 4.32.0 `x86_64-w64-windows-gnu`.
-- Formatting, warnings-denied Clippy across all targets and features, all 126 default Rust test cases, the opt-in real Lean 4.32 lifecycle, all 39 legacy Python regressions, Bash syntax for all four publication scripts, Actionlint 1.7.12, and patch whitespace validation pass for the authority-gate candidate.
+- Formatting, warnings-denied Clippy across all targets and features, 156 library tests, 17 CLI tests, four MCP tests, the opt-in real Lean 4.32 lifecycle, all 39 legacy Python regressions, Bash syntax for the modified Pilot A release script, Actionlint 1.7.12, and patch whitespace validation pass for the corpus-export candidate.
+- The retained Pilot A release projected twice to manifest `33e6ccc24979e85c14688d755130ace9960f0e074342695e951ac9756c2c590b` with 11 members and 101,695 bytes. Verification from a nonexistent instance root independently reprojected the exact source release and passed every inventory, hash, schema, policy, and binding check. The pinned upstream `validate_packets.py --check-hashes --warn-as-error` and `validate_mcip.py --check-hashes` commands reported zero errors and zero warnings.
 - The application-level authority fixture constructs the real source/claim/formalization, diagnostic and audit jobs/evidence, exact 25-role retained closure, parser-valid protected attestation output, stage, and receipt without fidelity evidence. Dry-run writes no evidence; persisted promotion creates the expected receipt-bound authoritative `evidence/2`; exact retry is identical; and missing staged CAS fails closed. A hands-on Windows CLI smoke applied migration 11, reported healthy `mcl health` and `mcl doctor`, exposed only the receipt-hash promotion surface, and rejected an unknown receipt as `MCL_PUBLICATION_RECEIPT_NOT_FOUND`.
 - CodeRabbit's final review found one uncovered fail-closed test family. Commit `761171fb093cecc4b2391ac53ef89c315ff1eeea` now tests rejected/failed classifications, each required protected-report control independently set false while classification remains passed, and a pre-authoritative report. Formatting, full Rust tests, warnings-denied Clippy, and all five required PR jobs passed on that exact head.
 - Post-merge main CI run `29726693096` and protected publication run `29726693055` both passed on `0ef8a132dfb99e63238325ac035de948e893f791`. The downloaded 72-file authority artifact and a separately downloaded ZIP passed the independent hash/semantic audit recorded above.
@@ -283,4 +286,4 @@ Observed validation evidence for this update:
 
 ## Release readiness
 
-Not ready. The release checklist is overwhelmingly open, all four mandatory pilots are incomplete in the specified architecture, later verifier, pedagogy, and release MCP families do not exist because their application capabilities do not yet exist, and no authoritative Lean evidence has been produced.
+Not ready. Protected Pilot A authority, fidelity, repair, pedagogy, portable-release, and local corpus-export evidence exist, but the merged-tree #54 artifact audit, leakage-aware RL/evaluation exports, Comparator, remaining pilots, later interfaces, and many section 30 criteria are still unfinished.

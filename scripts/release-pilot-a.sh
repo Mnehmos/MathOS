@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-  printf 'usage: %s <state-root> <proof-candidate> <proof-ingestion> <release-output>\n' "$0" >&2
+if [[ $# -ne 5 ]]; then
+  printf 'usage: %s <state-root> <proof-candidate> <proof-ingestion> <release-output> <corpus-output>\n' "$0" >&2
   exit 64
 fi
 
@@ -10,6 +10,7 @@ state_root="$1"
 candidate_dir="$2"
 ingestion_dir="$3"
 release_output="$4"
+corpus_output="$5"
 mcl_bin="${PUBLICATION_MCL_BIN:-target/debug/mcl}"
 content_file="fixtures/release/pilot-a-repaired-proof-learning-unit.txt"
 
@@ -27,12 +28,18 @@ done
   printf 'Pilot A release output already exists or is unsafe\n' >&2
   exit 66
 }
+[[ ! -e "$corpus_output" && ! -L "$corpus_output" ]] || {
+  printf 'Pilot A corpus export output already exists or is unsafe\n' >&2
+  exit 66
+}
 
 state_root="$(cd "$state_root" && pwd -P)"
 candidate_dir="$(cd "$candidate_dir" && pwd -P)"
 ingestion_dir="$(cd "$ingestion_dir" && pwd -P)"
 release_parent="$(cd "$(dirname "$release_output")" && pwd -P)"
 release_output="$release_parent/$(basename "$release_output")"
+corpus_parent="$(cd "$(dirname "$corpus_output")" && pwd -P)"
+corpus_output="$corpus_parent/$(basename "$corpus_output")"
 evidence_dir="$state_root/release-build-evidence"
 [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" ]] || {
   printf 'Pilot A release evidence output already exists or is unsafe\n' >&2
@@ -328,6 +335,101 @@ jq -e \
   .replay_succeeded == true and
   (.observed_lean_toolchain | contains("version 4.32.0"))
 ' "$evidence_dir/release-verification.json" >/dev/null
+
+"$mcl_bin" --root "$state_root/nonexistent-offline-root" --json release export \
+  --bundle-dir "$release_copy" \
+  --expected-manifest-hash "$manifest_hash" \
+  --packet-id mathos.number_theory.pilot_a_repair.v1 \
+  --domain number_theory \
+  --level L1_proof_basics \
+  --difficulty-bin D1 \
+  --output-dir "$corpus_output" \
+  --dry-run \
+  >"$evidence_dir/corpus-export-dry-run.json"
+corpus_preview_hash="$(
+  jq -er 'select(.dry_run == true and .policy == "private_audit_only") | .manifest_hash' \
+    "$evidence_dir/corpus-export-dry-run.json"
+)"
+[[ ! -e "$corpus_output" && ! -L "$corpus_output" ]] || {
+  printf 'corpus export dry-run wrote its output directory\n' >&2
+  exit 71
+}
+
+"$mcl_bin" --root "$state_root/nonexistent-offline-root" --json release export \
+  --bundle-dir "$release_copy" \
+  --expected-manifest-hash "$manifest_hash" \
+  --packet-id mathos.number_theory.pilot_a_repair.v1 \
+  --domain number_theory \
+  --level L1_proof_basics \
+  --difficulty-bin D1 \
+  --output-dir "$corpus_output" \
+  >"$evidence_dir/corpus-export-build.json"
+corpus_manifest_hash="$(sha256sum "$corpus_output/manifest.json" | cut -d ' ' -f 1)"
+[[ "$corpus_preview_hash" == "$corpus_manifest_hash" ]] || {
+  printf 'corpus export dry-run and build manifest identities differ\n' >&2
+  exit 71
+}
+jq -e \
+  --arg corpus_manifest_hash "$corpus_manifest_hash" \
+  --arg source_manifest_hash "$manifest_hash" '
+  .dry_run == false and
+  .manifest_hash == $corpus_manifest_hash and
+  .source_release_manifest_hash == $source_manifest_hash and
+  .policy == "private_audit_only" and
+  .member_count == 11 and
+  .total_member_bytes > 0
+' "$evidence_dir/corpus-export-build.json" >/dev/null
+jq -e '
+  .schema_version == "corpus_export_manifest/1" and
+  .source_release.release_profile == "private" and
+  .curation.policy == "private_audit_only" and
+  .curation.packet_id == "mathos.number_theory.pilot_a_repair.v1" and
+  .upstream.repository == "Mnehmos/mathcorpus" and
+  (.members | length) == 11
+' "$corpus_output/manifest.json" >/dev/null
+jq -e '
+  .training.eligibility == "private_audit_only" and
+  .training.split == "private_audit_only" and
+  .training.can_export_proof_body == false and
+  .trust.public_claim_class == "private_only" and
+  .hashes.private_artifact_bundle_sha256 != null
+' "$corpus_output/mathcorpus/packet.json" >/dev/null
+jq -e '
+  .mcip_version == "1.0.0" and
+  (.records | length) == 3 and
+  ([.records[].record_type] | sort) ==
+    (["dependency_manifest", "packet_identity", "proof_variant"] | sort) and
+  ([.records[].export_eligibility] | all(. == "private_only"))
+' "$corpus_output/mcip/bundle.json" >/dev/null
+[[ -z "$(find "$corpus_output" -type l -print -quit)" ]] || {
+  printf 'corpus export contains a symbolic link\n' >&2
+  exit 71
+}
+
+corpus_copy="$corpus_parent/$(basename "$corpus_output")-clean-copy"
+[[ ! -e "$corpus_copy" && ! -L "$corpus_copy" ]] || {
+  printf 'clean corpus export copy destination already exists\n' >&2
+  exit 66
+}
+cp -a -- "$corpus_output" "$corpus_copy"
+"$mcl_bin" --root "$state_root/nonexistent-offline-root" --json release verify-export \
+  --export-dir "$corpus_copy" \
+  --expected-manifest-hash "$corpus_manifest_hash" \
+  --source-bundle-dir "$release_copy" \
+  >"$evidence_dir/corpus-export-verification.json"
+jq -e \
+  --arg corpus_manifest_hash "$corpus_manifest_hash" \
+  --arg source_manifest_hash "$manifest_hash" '
+  .manifest_hash == $corpus_manifest_hash and
+  .source_release_manifest_hash == $source_manifest_hash and
+  .policy == "private_audit_only" and
+  .database_independent == true and
+  .inventory_verified == true and
+  .hashes_verified == true and
+  .schemas_verified == true and
+  .bindings_verified == true and
+  .deterministic_reprojection_verified == true
+' "$evidence_dir/corpus-export-verification.json" >/dev/null
 restore_database
 trap - EXIT
 
@@ -337,14 +439,19 @@ jq -cnS \
   --arg root_object_id "$root_object_id" \
   --arg root_version_hash "$root_version_hash" \
   --arg release_output "$release_output" \
+  --arg corpus_manifest_hash "$corpus_manifest_hash" \
+  --arg corpus_output "$corpus_output" \
   '{
-    schema_version: "pilot_a_release_playtest/1",
+    schema_version: "pilot_a_release_playtest/2",
     manifest_hash: $manifest_hash,
+    corpus_export_manifest_hash: $corpus_manifest_hash,
     publication_receipt_hash: $receipt_hash,
     pedagogy_root: {object_id: $root_object_id, version_hash: $root_version_hash},
     release_output: $release_output,
+    corpus_export_output: $corpus_output,
     database_hidden_during_verification: true,
     clean_copy_verified: true,
-    lean_replay_succeeded: true
+    lean_replay_succeeded: true,
+    corpus_export_reprojection_succeeded: true
   }' >"$evidence_dir/playtest-summary.json"
 cat "$evidence_dir/playtest-summary.json"

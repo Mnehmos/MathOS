@@ -3,6 +3,7 @@ pub mod artifacts;
 pub mod canonical;
 pub mod cli;
 pub mod config;
+pub mod corpus_export;
 pub mod domain;
 pub mod error;
 pub mod mcp;

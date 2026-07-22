@@ -1311,6 +1311,111 @@ fn release_verify_does_not_require_an_instance_root_or_configuration() {
 }
 
 #[test]
+fn corpus_export_does_not_require_an_instance_root_or_configuration() {
+    let parent = TempDir::new().expect("temporary parent");
+    let missing_root = parent.path().join("missing-instance");
+    let bundle = parent.path().join("empty-release");
+    let output_dir = parent.path().join("corpus-export");
+    fs::create_dir(&bundle).expect("empty release directory creates");
+
+    let output = mcl_at(
+        &missing_root,
+        &[
+            "release",
+            "export",
+            "--bundle-dir",
+            bundle.to_str().expect("bundle path is UTF-8"),
+            "--expected-manifest-hash",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--packet-id",
+            "mathos.number_theory.pilot_a_repair.v1",
+            "--domain",
+            "number_theory",
+            "--level",
+            "L1_proof_basics",
+            "--difficulty-bin",
+            "D1",
+            "--output-dir",
+            output_dir.to_str().expect("output path is UTF-8"),
+        ],
+    );
+
+    assert!(!output.status.success());
+    assert!(!missing_root.exists());
+    assert!(!output_dir.exists());
+    let error: Value = serde_json::from_slice(&output.stderr).expect("stderr is JSON");
+    assert_eq!(error["code"], "MCL_IO_ERROR");
+    assert_ne!(error["code"], "MCL_INSTANCE_NOT_INITIALIZED");
+}
+
+#[test]
+fn corpus_export_verification_is_database_independent() {
+    let parent = TempDir::new().expect("temporary parent");
+    let missing_root = parent.path().join("missing-instance");
+    let export = parent.path().join("empty-export");
+    let source = parent.path().join("empty-release");
+    fs::create_dir(&export).expect("empty export directory creates");
+    fs::create_dir(&source).expect("empty release directory creates");
+
+    let output = mcl_at(
+        &missing_root,
+        &[
+            "release",
+            "verify-export",
+            "--export-dir",
+            export.to_str().expect("export path is UTF-8"),
+            "--expected-manifest-hash",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--source-bundle-dir",
+            source.to_str().expect("source path is UTF-8"),
+        ],
+    );
+
+    assert!(!output.status.success());
+    assert!(!missing_root.exists());
+    let error: Value = serde_json::from_slice(&output.stderr).expect("stderr is JSON");
+    assert_eq!(error["code"], "MCL_IO_ERROR");
+    assert_ne!(error["code"], "MCL_INSTANCE_NOT_INITIALIZED");
+}
+
+#[test]
+fn corpus_export_rejects_unpinned_curation_before_writing() {
+    let parent = TempDir::new().expect("temporary parent");
+    let missing_root = parent.path().join("missing-instance");
+    let bundle = parent.path().join("empty-release");
+    let output_dir = parent.path().join("corpus-export");
+    fs::create_dir(&bundle).expect("empty release directory creates");
+
+    let output = mcl_at(
+        &missing_root,
+        &[
+            "release",
+            "export",
+            "--bundle-dir",
+            bundle.to_str().expect("bundle path is UTF-8"),
+            "--expected-manifest-hash",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--packet-id",
+            "mathos.logic.item.v1",
+            "--domain",
+            "invented_domain",
+            "--level",
+            "L1_proof_basics",
+            "--difficulty-bin",
+            "D1",
+            "--output-dir",
+            output_dir.to_str().expect("output path is UTF-8"),
+        ],
+    );
+
+    assert!(!output.status.success());
+    assert!(!missing_root.exists());
+    assert!(!output_dir.exists());
+    let error: Value = serde_json::from_slice(&output.stderr).expect("stderr is JSON");
+    assert_eq!(error["code"], "MCL_CORPUS_EXPORT_CURATION_INVALID");
+}
+
+#[test]
 fn dry_run_does_not_create_a_missing_root() {
     let parent = TempDir::new().expect("temporary parent");
     let missing = parent.path().join("missing");

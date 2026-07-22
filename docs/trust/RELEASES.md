@@ -42,6 +42,23 @@ Only after those checks pass does it replay `replay/Submission.lean`. The execut
 
 The returned `manifest_hash` is the SHA-256 of the exact canonical `manifest.json` bytes. It must remain identical after copying the bundle.
 
+## Project into MathCorpus and MCIP
+
+`mcl release export` is a deterministic child projection of a verified portable release. It
+requires the trusted source-release manifest hash plus explicit packet ID, domain, level, and
+difficulty. It does not open SQLite, contact MathCorpus, infer a leakage split, or grant proof,
+training, or publication authority.
+
+Private releases produce only `private_audit_only` packets and `private_only` MCIP records. Public
+releases remain `quarantined` and require explicit public redistribution, redaction, and license
+authority. `mcl release verify-export` requires a separately trusted export-manifest hash and an
+independently supplied frozen release, then checks the closed tree and pinned offline schemas and
+requires byte-identical deterministic reprojection.
+
+The full interface and output contract are documented in
+[MathCorpus and MCIP export](../implementation/CORPUS_EXPORT.md), with the trust decision in
+[ADR-0012](../decisions/ADR-0012-deterministic-offline-mathcorpus-mcip-projection.md).
+
 ## Trust boundary
 
 - A successful build means the exported directory matched canonical state at build time.
