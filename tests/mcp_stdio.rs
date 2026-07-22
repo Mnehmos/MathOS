@@ -275,7 +275,11 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
             "claim_status",
             "prepare_publication",
             "ingest_publication",
-            "promote_publication_authority"
+            "promote_publication_authority",
+            "stage_comparator_authority",
+            "ingest_comparator_authority",
+            "promote_comparator_authority",
+            "comparator_authority_status"
         ])
     );
     assert_eq!(
@@ -295,6 +299,56 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
         json!([
             "propose", "version", "get", "validate", "review", "link", "path"
         ])
+    );
+
+    let missing_comparator_receipt = server.call(
+        3121,
+        "verify",
+        json!({
+            "action": "promote_comparator_authority",
+            "comparator": {"comparator_receipt_hash": "6".repeat(64)},
+            "actor": "mcp-test",
+            "idempotency_key": "missing-comparator-authority-receipt"
+        }),
+    );
+    assert_eq!(missing_comparator_receipt["result"]["isError"], true);
+    assert_eq!(
+        missing_comparator_receipt["result"]["structuredContent"]["code"],
+        "MCL_COMPARATOR_RECEIPT_NOT_FOUND"
+    );
+    let comparator_legacy_override = server.call(
+        3122,
+        "verify",
+        json!({
+            "action": "promote_comparator_authority",
+            "formalization_object_id": "22222222-2222-4222-8222-222222222222",
+            "comparator": {"comparator_receipt_hash": "6".repeat(64)},
+            "actor": "mcp-test",
+            "idempotency_key": "forged-comparator-authority-subject"
+        }),
+    );
+    assert_eq!(comparator_legacy_override["result"]["isError"], true);
+    assert_eq!(
+        comparator_legacy_override["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_FORBIDDEN"
+    );
+    let comparator_nested_override = server.call(
+        3123,
+        "verify",
+        json!({
+            "action": "promote_comparator_authority",
+            "comparator": {
+                "comparator_receipt_hash": "6".repeat(64),
+                "evidence_id": "22222222-2222-4222-8222-222222222222"
+            },
+            "actor": "mcp-test",
+            "idempotency_key": "forged-comparator-authority-evidence"
+        }),
+    );
+    assert_eq!(comparator_nested_override["result"]["isError"], true);
+    assert_eq!(
+        comparator_nested_override["result"]["structuredContent"]["code"],
+        "MCL_MCP_FIELD_FORBIDDEN"
     );
 
     let incomplete_repair = server.call(31201, "counterexample", json!({"action": "repair"}));

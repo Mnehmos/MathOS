@@ -34,6 +34,12 @@ Issue [#60](https://github.com/Mnehmos/MathOS/issues/60) completed the Phase 6d 
 
 Artifact `8519152437`, `publication-boundary-2fe5d00992599a2c22a974c01ec0cdc4fbea286d`, is 478,926 archive bytes with GitHub SHA-256 `642edf93c509407efe953a4dda588fe3190bf7bc66204d03fe1387b9a7e31384`; it expands to 373 files and 895,683 bytes with no links or reparse points. Its exact five-file, 6,095-byte package binds source release `f268d9da8fa4e19a05ac32d1c85b14e9e427db326dc9a69553b1bb11d3366eff`, canonical plan `a9048a8ac02907993cd1114e3c06510524933c72b891c786d15d5beeb82c7088`, input fingerprint `aee3e4e65754205932caa8cca0937d017965bb7936d7d1cec86117e1d7225898`, and verification `beef8cd5d48d9cee07352f34366db5f34c77bc73b9c685b83ded490618960758`. Independent audit matched every package and source-member hash/size, canonical JSON and parsed YAML, the exact solution/release source, headline formalization/environment/module/declaration, and all fixed tool pins. Verification from a nonexistent instance root reproduced every byte without SQLite; both Lean files elaborated, with only the challenge's intentional `sorry` warning. The retained package remains `ready`, not Comparator-verified or authoritative.
 
+Issue [#63](https://github.com/Mnehmos/MathOS/issues/63) completed the Phase 6e protected execution boundary through PR [#64](https://github.com/Mnehmos/MathOS/pull/64). Reviewed head `45fc586a6e0b5bff9947f8f4bf2445ef4a28ca79` merged as `3a75ddc8bc5de685dc6425d6158791553be0ca40`, tree `2790160605ce48eff1da6f4667df5d8966ddc34d`. Exact-head CI `29898468563`, merged-tree CI `29898749801`, and protected publication run `29898749807` passed. Its fresh official Comparator job ran the exact same-run package under the pinned Lean 4.32, Comparator, lean4export, and real landrun toolchain with strict Landlock and systemd network controls.
+
+Artifact `8521103391`, `comparator-run-3a75ddc8bc5de685dc6425d6158791553be0ca40`, has Actions archive digest `sha256:f322f92281ea6cc70f70cdc657d32a2029f559328be50c434ef857e4714403ba`. Independent offline audit verified the exact 20-file bundle without SQLite or reparse points. Canonical report `42b29ecd69b222c26e1de47bed83f6e3e8df5910f35f1c2543a2d9ed72eb3198` accepted package verification `7a3adfa8e30085cbda8ca240ab8288909a088d7ae0f9880ba0cc5b410645cc52`; its attestation bundle is `a447696ceeb6e537c0bc6e5ebf81ab95d2e91006df57aa2bb632edc60d4cf0a5`. The official run exited zero with bounded 900-byte stdout, empty stderr, seven ordered unique success markers, UID 1001, strict Landlock ABI 5, `NoNewPrivileges=yes`, and active AF_UNIX and loopback TCP denial. The report remains structurally `authoritative: false`.
+
+Issue [#65](https://github.com/Mnehmos/MathOS/issues/65) is the active Phase 6f authority slice. Its implementation candidate preserves `evidence/1` and `evidence/2` bytes and adds a closed `evidence/3` `comparator_run` contract, immutable non-authoritative stage and attestation-receipt records, a committed policy pin, receipt-only promotion, live current/stale replay, independent Store/SQL/read-time gates, and CLI/MCP parity. The protected workflow now transfers only the canonical state needed by the separate Comparator job and is designed to retain a database-independent content-addressed authority closure. Exact-head CI, protected execution of the new gate, and independent downloaded-artifact audit are still required before #65 can close; no authoritative Comparator evidence is claimed yet.
+
 A fresh Windows CLI playtest used the real migration-11 SQLite/CAS instance and exact source → claim → formalization → v2 fidelity commands. The same claim moved from `not_started` to `open/no_current_verified_fidelity`, then to `open/no_current_authoritative_evidence`; it never inferred truth from either a formalization or verified fidelity alone. Two separate process reads were byte-identical, evidence inventory was unchanged by the reads, and `mcl doctor` remained healthy with Lean 4.32.0 visible. The protected merged-tree artifact separately records `open/no_current_verified_fidelity` after formal authority and `proved` only after role-separated verified v2 fidelity.
 
 Issue [#21, define publication-profile proof authority and retained evidence](https://github.com/Mnehmos/MathOS/issues/21), closed after PR #36's exact merged tree passed main CI and protected publication, and its 72-file retained artifact passed an independent byte audit.
@@ -248,8 +254,8 @@ These items establish only part of the product foundation and trace model. One e
 
 ## Next highest-priority criteria
 
-1. Implement the real Linux-sandboxed Comparator run and controlled evidence transition without trusting package readiness as a result.
-2. Continue the BH Pilot C lifecycle against the exact protected Comparator boundary.
+1. Complete issue #65 exact-head CI, protected receipt-bound promotion, and independent portable-artifact audit without trusting package or report fields.
+2. Continue the BH Pilot C lifecycle against the resulting exact protected Comparator authority boundary.
 3. Continue remaining pilots, migration, and section 30 criteria while preserving exact histories and negative attempts.
 
 ## Exact last validation commands
@@ -263,6 +269,8 @@ cargo test --workspace --all-targets
 MCL_RUN_LEAN_INTEGRATION=1 cargo test --test lean_worker -- --nocapture
 PYTHONPATH=src PYTHONWARNINGS=error::ResourceWarning python -m unittest discover -s tests -v
 bash -n scripts/release-pilot-a.sh
+bash -n scripts/comparator-authority-ingest.sh
+shellcheck --severity=warning scripts/comparator-authority-ingest.sh
 go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color=false
 git diff --check
 ```
@@ -270,7 +278,9 @@ git diff --check
 Observed validation evidence for this update:
 
 - Home workstation: Windows 10.0.19045, PowerShell 5.1.19041.6456, Rust 1.97.1, Python 3.12.10, GitHub CLI 2.70.0, GNU Bash 5.2.37 through Git for Windows, and Lean 4.32.0 `x86_64-w64-windows-gnu`.
-- Formatting, warnings-denied Clippy across all targets and features, 176 library tests, 19 CLI tests, four MCP tests, the opt-in real Lean 4.32 lifecycle, all 39 legacy Python regressions, Bash syntax for the modified Pilot A release script, Actionlint 1.7.12, and patch whitespace validation pass for the Comparator-package candidate.
+- Formatting, warnings-denied Clippy across all targets and features, 187 library tests, 20 CLI tests, four MCP tests, the opt-in real Lean 4.32 lifecycle, all 39 legacy Python regressions, Bash syntax and ShellCheck 0.11.0 for the Comparator authority script, Actionlint 1.7.12, and patch whitespace validation pass for the Phase 6f implementation candidate.
+- Comparator-specific local coverage preserves the committed evidence v1/v2 schemas and identities, matches every new committed schema and the policy hash, parses the exact protected Pilot A report/bundle/verifier fixture, applies migration 12 idempotently, and passes four Store authority tests covering exact retry, receipt uniqueness, immutable stage/receipt rows, direct-SQL closure/policy rejection, claim-status noninterference, current-head conflict, and read-time projection tampering. CLI and MCP tests expose the same four application actions, reject filesystem escape and caller-authored authority selectors, and fail closed for missing stages and receipts.
+- The new protected-main step is locally syntax- and workflow-valid but has not run on protected `main`. No Phase 6f receipt, `evidence/3` identity, currentness result, or portable retained-artifact hash is recorded until the implementation merges and that artifact is independently audited.
 - The retained Pilot A release projected twice to manifest `33e6ccc24979e85c14688d755130ace9960f0e074342695e951ac9756c2c590b` with 11 members and 101,695 bytes. Verification from a nonexistent instance root independently reprojected the exact source release and passed every inventory, hash, schema, policy, and binding check. The pinned upstream `validate_packets.py --check-hashes --warn-as-error` and `validate_mcip.py --check-hashes` commands reported zero errors and zero warnings.
 - The application-level authority fixture constructs the real source/claim/formalization, diagnostic and audit jobs/evidence, exact 25-role retained closure, parser-valid protected attestation output, stage, and receipt without fidelity evidence. Dry-run writes no evidence; persisted promotion creates the expected receipt-bound authoritative `evidence/2`; exact retry is identical; and missing staged CAS fails closed. A hands-on Windows CLI smoke applied migration 11, reported healthy `mcl health` and `mcl doctor`, exposed only the receipt-hash promotion surface, and rejected an unknown receipt as `MCL_PUBLICATION_RECEIPT_NOT_FOUND`.
 - CodeRabbit's final review found one uncovered fail-closed test family. Commit `761171fb093cecc4b2391ac53ef89c315ff1eeea` now tests rejected/failed classifications, each required protected-report control independently set false while classification remains passed, and a pre-authoritative report. Formatting, full Rust tests, warnings-denied Clippy, and all five required PR jobs passed on that exact head.
@@ -296,4 +306,4 @@ Observed validation evidence for this update:
 
 ## Release readiness
 
-Not ready. Protected Pilot A authority, fidelity, repair, pedagogy, portable-release, corpus-export, private held-out RL/evaluation, and Comparator-ready package evidence exist. Comparator execution, remaining pilots, migration, later interfaces, and many section 30 criteria are still unfinished.
+Not ready. Protected Pilot A authority, fidelity, repair, pedagogy, portable-release, corpus-export, private held-out RL/evaluation, Comparator-ready package, and official Comparator execution evidence exist. Controlled Comparator authority is still under validation; remaining pilots, migration, later interfaces, and many section 30 criteria are unfinished.

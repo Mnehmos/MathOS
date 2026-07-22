@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::canonical::value_hash;
+use crate::domain::comparator_authority::{
+    COMPARATOR_AUTHORITY_BINDING_SCHEMA_VERSION, COMPARATOR_AUTHORITY_EVIDENCE_SCHEMA_VERSION,
+    ComparatorAuthorityBinding,
+};
 use crate::domain::schemas::ExactVersionReference;
 use crate::error::AppError;
 
@@ -130,6 +134,8 @@ pub struct EvidencePayload {
     pub stale_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication_authority: Option<PublicationAuthorityBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparator_authority: Option<ComparatorAuthorityBinding>,
 }
 
 impl PublicationAuthorityBinding {
@@ -159,7 +165,8 @@ impl EvidencePayload {
     pub fn validate(&self) -> Result<(), AppError> {
         let is_v1 = self.schema_version == EVIDENCE_SCHEMA_VERSION;
         let is_v2 = self.schema_version == AUTHORITATIVE_EVIDENCE_SCHEMA_VERSION;
-        if (!is_v1 && !is_v2)
+        let is_v3 = self.schema_version == COMPARATOR_AUTHORITY_EVIDENCE_SCHEMA_VERSION;
+        if (!is_v1 && !is_v2 && !is_v3)
             || self.verifier_or_reviewer_identity.trim().is_empty()
             || self.verifier_or_reviewer_identity.len() > 256
             || self.artifact_hashes.len() > 256
@@ -210,7 +217,8 @@ impl EvidencePayload {
                     self.evidence_kind,
                     EvidenceKind::LeanKernelProof | EvidenceKind::LeanKernelRefutation
                 ) || self.authority_class == EvidenceAuthorityClass::Authoritative
-                    || self.publication_authority.is_some()))
+                    || self.publication_authority.is_some()
+                    || self.comparator_authority.is_some()))
             || (is_v2
                 && (!matches!(
                     self.evidence_kind,
@@ -223,7 +231,20 @@ impl EvidencePayload {
                     || self.supersedes_evidence_id.is_some()
                     || self.stale
                     || self.stale_reason.is_some()
-                    || self.publication_authority.is_none()))
+                    || self.publication_authority.is_none()
+                    || self.comparator_authority.is_some()))
+            || (is_v3
+                && (self.evidence_kind != EvidenceKind::ComparatorRun
+                    || self.result != EvidenceResult::Accepted
+                    || self.authority_class != EvidenceAuthorityClass::Authoritative
+                    || self.producing_run_id.is_some()
+                    || self.producing_job_id.is_some()
+                    || self.environment_hash.is_none()
+                    || self.supersedes_evidence_id.is_some()
+                    || self.stale
+                    || self.stale_reason.is_some()
+                    || self.publication_authority.is_some()
+                    || self.comparator_authority.is_none()))
         {
             return Err(AppError::new(
                 "MCL_EVIDENCE_INVALID",
@@ -233,6 +254,9 @@ impl EvidencePayload {
             ));
         }
         if let Some(binding) = &self.publication_authority {
+            binding.validate()?;
+        }
+        if let Some(binding) = &self.comparator_authority {
             binding.validate()?;
         }
         Ok(())
@@ -319,6 +343,54 @@ pub fn authoritative_evidence_schema() -> Value {
     })
 }
 
+pub fn comparator_authoritative_evidence_schema() -> Value {
+    let comparator_authority = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema_version", "ingestion_receipt_hash", "stage_hash", "report_artifact_hash", "attestation_bundle_artifact_hash", "raw_verification_hash", "policy_hash", "plan_artifact_hash", "source_release_manifest_hash", "package_verification_hash", "package_input_fingerprint", "source_commit_sha", "workflow_run_id", "workflow_run_attempt"],
+        "properties": {
+            "schema_version": {"const": COMPARATOR_AUTHORITY_BINDING_SCHEMA_VERSION},
+            "ingestion_receipt_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "stage_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "report_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "attestation_bundle_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "raw_verification_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "policy_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "plan_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "source_release_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "package_verification_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "package_input_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "workflow_run_id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+            "workflow_run_attempt": {"type": "integer", "minimum": 1}
+        }
+    });
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://mnehmos.ai/mathos/schemas/evidence/3",
+        "title": "MathOS Authoritative Comparator Evidence Payload v3",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema_version", "subject", "evidence_kind", "result", "authority_class", "producing_run_id", "producing_job_id", "artifact_hashes", "verifier_or_reviewer_identity", "environment_hash", "supersedes_evidence_id", "stale", "stale_reason", "comparator_authority"],
+        "properties": {
+            "schema_version": {"const": COMPARATOR_AUTHORITY_EVIDENCE_SCHEMA_VERSION},
+            "subject": {"type": "object", "additionalProperties": false, "required": ["object_id", "version_hash"], "properties": {"object_id": {"type": "string", "format": "uuid"}, "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+            "evidence_kind": {"const": "comparator_run"},
+            "result": {"const": "accepted"},
+            "authority_class": {"const": "authoritative"},
+            "producing_run_id": {"type": "null"},
+            "producing_job_id": {"type": "null"},
+            "artifact_hashes": {"type": "array", "maxItems": 256, "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+            "verifier_or_reviewer_identity": {"type": "string", "minLength": 1, "maxLength": 256},
+            "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "supersedes_evidence_id": {"type": "null"},
+            "stale": {"const": false},
+            "stale_reason": {"type": "null"},
+            "comparator_authority": comparator_authority
+        }
+    })
+}
+
 fn is_hash(value: &str) -> bool {
     value.len() == 64
         && value
@@ -363,6 +435,49 @@ mod tests {
             stale: false,
             stale_reason: None,
             publication_authority: Some(publication_authority_binding()),
+            comparator_authority: None,
+        }
+    }
+
+    fn comparator_authority_binding() -> ComparatorAuthorityBinding {
+        ComparatorAuthorityBinding {
+            schema_version: COMPARATOR_AUTHORITY_BINDING_SCHEMA_VERSION.to_owned(),
+            ingestion_receipt_hash: "1".repeat(64),
+            stage_hash: "2".repeat(64),
+            report_artifact_hash: "3".repeat(64),
+            attestation_bundle_artifact_hash: "4".repeat(64),
+            raw_verification_hash: "5".repeat(64),
+            policy_hash: "6".repeat(64),
+            plan_artifact_hash: "7".repeat(64),
+            source_release_manifest_hash: "8".repeat(64),
+            package_verification_hash: "9".repeat(64),
+            package_input_fingerprint: "a".repeat(64),
+            source_commit_sha: "b".repeat(40),
+            workflow_run_id: "1".to_owned(),
+            workflow_run_attempt: 1,
+        }
+    }
+
+    fn comparator_authoritative_payload() -> EvidencePayload {
+        EvidencePayload {
+            schema_version: COMPARATOR_AUTHORITY_EVIDENCE_SCHEMA_VERSION.to_owned(),
+            subject: ExactVersionReference {
+                object_id: uuid::Uuid::now_v7().to_string(),
+                version_hash: "c".repeat(64),
+            },
+            evidence_kind: EvidenceKind::ComparatorRun,
+            result: EvidenceResult::Accepted,
+            authority_class: EvidenceAuthorityClass::Authoritative,
+            producing_run_id: None,
+            producing_job_id: None,
+            artifact_hashes: vec!["d".repeat(64)],
+            verifier_or_reviewer_identity: "comparator-authority-policy:evidence-test".to_owned(),
+            environment_hash: Some("e".repeat(64)),
+            supersedes_evidence_id: None,
+            stale: false,
+            stale_reason: None,
+            publication_authority: None,
+            comparator_authority: Some(comparator_authority_binding()),
         }
     }
 
@@ -432,6 +547,34 @@ mod tests {
         let schema_binding = &committed["properties"]["publication_authority"];
         assert_eq!(schema_binding["required"].as_array().map(Vec::len), Some(9));
         assert_eq!(schema_binding["additionalProperties"], false);
+    }
+
+    #[test]
+    fn committed_comparator_schema_preserves_prior_versions_and_is_closed() {
+        let committed: Value = serde_json::from_str(include_str!(
+            "../../schemas/evidence/evidence-3.schema.json"
+        ))
+        .expect("committed Comparator evidence schema");
+        assert_eq!(committed, comparator_authoritative_evidence_schema());
+
+        let exact = comparator_authoritative_payload();
+        exact.validate().expect("Comparator authority validates");
+        exact
+            .evidence_hash()
+            .expect("Comparator authority has canonical identity");
+
+        let mut wrong_kind = exact.clone();
+        wrong_kind.evidence_kind = EvidenceKind::LeanKernelProof;
+        expect_evidence_invalid(&wrong_kind);
+        let mut self_authored = exact.clone();
+        self_authored.producing_run_id = Some(uuid::Uuid::now_v7().to_string());
+        expect_evidence_invalid(&self_authored);
+        let mut publication_bound = exact.clone();
+        publication_bound.publication_authority = Some(publication_authority_binding());
+        expect_evidence_invalid(&publication_bound);
+        let mut unbound = exact;
+        unbound.comparator_authority = None;
+        expect_evidence_invalid(&unbound);
     }
 
     #[test]
@@ -515,6 +658,25 @@ mod tests {
         let mut bound = payload;
         bound.publication_authority = Some(publication_authority_binding());
         expect_evidence_invalid(&bound);
+
+        let mut comparator_bound: EvidencePayload = serde_json::from_value(json!({
+            "schema_version": "evidence/1",
+            "subject": {"object_id": uuid::Uuid::now_v7(), "version_hash": "a".repeat(64)},
+            "evidence_kind": "comparator_run",
+            "result": "accepted",
+            "authority_class": "diagnostic",
+            "producing_run_id": uuid::Uuid::now_v7(),
+            "producing_job_id": null,
+            "artifact_hashes": ["b".repeat(64)],
+            "verifier_or_reviewer_identity": "local-comparator-diagnostic",
+            "environment_hash": null,
+            "supersedes_evidence_id": null,
+            "stale": false,
+            "stale_reason": null
+        }))
+        .expect("legacy Comparator diagnostic decodes");
+        comparator_bound.comparator_authority = Some(comparator_authority_binding());
+        expect_evidence_invalid(&comparator_bound);
     }
 
     #[test]

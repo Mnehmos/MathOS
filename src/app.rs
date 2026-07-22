@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::io::{Read, Write};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -12,6 +12,9 @@ use sha2::{Digest, Sha256};
 
 use crate::artifacts::ArtifactStore;
 use crate::canonical::{canonical_json, record_version_hash};
+use crate::comparator_authority::{
+    PreparedComparatorAuthorityStage, prepare_comparator_authority_stage, read_prepared_run_member,
+};
 use crate::config::ResolvedConfig;
 use crate::domain::schemas::{
     CLAIM_SCHEMA_VERSION, ClaimPayload, ExactVersionReference, FormalSystem,
@@ -23,25 +26,28 @@ use crate::domain::schemas::{
 use crate::domain::{
     ArtifactCreationSource, ArtifactMediaType, ArtifactMetadata, ArtifactRestriction,
     ArtifactSnapshot, CLAIM_REPAIR_EDGE_SCHEMA_VERSION, COUNTEREXAMPLE_PACKAGE_SCHEMA_VERSION,
-    ClaimRepairEdgePayload, CounterexampleCheckerBinding, CounterexamplePackage,
-    CounterexampleRepairRequest, CounterexampleRepairSnapshot, CounterexampleSearchProvenance,
-    CounterexampleSearchResult, EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest,
-    EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult,
-    EvidenceSnapshot, FidelityReviewHistoryEntry, FidelityReviewReport, FidelityStatus,
-    FidelityStatusSnapshot, FidelityVerdict, GraphTraversalHit, GraphTraversalRequest,
-    LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditReport, LeanAuditRequest,
-    ProposedRepairedClaim, PublicationAttestationVerification, PublicationAuthorityBinding,
-    PublicationClassification, PublicationIngestionReceiptSnapshot, PublicationOutcome,
-    PublicationReport, PublicationRequest, PublicationRetainedArtifactRole,
-    PublicationRetainedClosure, PublicationStage, PublicationStageArtifact,
-    PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot, ResearchStatus,
-    RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot, RunState,
-    TraversalDirection, VerifierExecutionClassification, VerifierExecutionReport,
+    ClaimRepairEdgePayload, ComparatorAttestationVerification, ComparatorAuthorityBinding,
+    ComparatorAuthorityCurrentness, ComparatorAuthorityStageSnapshot,
+    ComparatorAuthorityStaleReason, ComparatorAuthorityStatus, ComparatorIngestionReceiptSnapshot,
+    CounterexampleCheckerBinding, CounterexamplePackage, CounterexampleRepairRequest,
+    CounterexampleRepairSnapshot, CounterexampleSearchProvenance, CounterexampleSearchResult,
+    EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest, EnvironmentSnapshot,
+    EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult, EvidenceSnapshot,
+    FidelityReviewHistoryEntry, FidelityReviewReport, FidelityStatus, FidelityStatusSnapshot,
+    FidelityVerdict, GraphTraversalHit, GraphTraversalRequest, LeanAuditClassification,
+    LeanAuditJobSnapshot, LeanAuditReport, LeanAuditRequest, ProposedRepairedClaim,
+    PublicationAttestationVerification, PublicationAuthorityBinding, PublicationClassification,
+    PublicationIngestionReceiptSnapshot, PublicationOutcome, PublicationReport, PublicationRequest,
+    PublicationRetainedArtifactRole, PublicationRetainedClosure, PublicationStage,
+    PublicationStageArtifact, PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot,
+    ResearchStatus, RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
+    RunState, TraversalDirection, VerifierExecutionClassification, VerifierExecutionReport,
     VerifierJobRequest, VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
 use crate::store::{
-    ClaimStatusReadBasis, CounterexampleRepairCommit, PublicationAuthorityCommit, Store,
+    ClaimStatusReadBasis, ComparatorAuthorityCommit, CounterexampleRepairCommit,
+    PublicationAuthorityCommit, Store,
 };
 
 const DOCTOR_CANARY: &[u8] = b"mcl doctor artifact integrity canary v1";
@@ -237,6 +243,34 @@ pub struct PublicationAuthorityPromotionOutcome {
     pub evidence: Option<EvidenceSnapshot>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ComparatorAuthorityStageOutcome {
+    pub dry_run: bool,
+    pub proposed_stage_hash: String,
+    pub report_artifact_hash: String,
+    pub package_verification_hash: String,
+    pub attestation_bundle_artifact_hash: String,
+    pub stage: Option<ComparatorAuthorityStageSnapshot>,
+    pub authoritative: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ComparatorAuthorityIngestionOutcome {
+    pub dry_run: bool,
+    pub proposed_receipt_hash: String,
+    pub verification: ComparatorAttestationVerification,
+    pub receipt: Option<ComparatorIngestionReceiptSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ComparatorAuthorityPromotionOutcome {
+    pub dry_run: bool,
+    pub comparator_receipt_hash: String,
+    pub proposed_evidence_hash: String,
+    pub evidence_kind: EvidenceKind,
+    pub evidence: Option<EvidenceSnapshot>,
+}
+
 struct RevalidatedPublicationAuthority {
     receipt_hash: String,
     commit: PublicationAuthorityCommit,
@@ -248,6 +282,16 @@ struct RevalidatedPublicationAuthority {
     attestation_bundle: Vec<u8>,
     raw_verification: Vec<u8>,
     canonical_receipt: Vec<u8>,
+}
+
+struct RevalidatedComparatorAuthority {
+    receipt_hash: String,
+    commit: ComparatorAuthorityCommit,
+}
+
+struct MaterializedComparatorStage {
+    _workspace: tempfile::TempDir,
+    prepared: PreparedComparatorAuthorityStage,
 }
 
 #[derive(Debug, Serialize)]
@@ -856,6 +900,7 @@ impl Application {
             stale: false,
             stale_reason: None,
             publication_authority: None,
+            comparator_authority: None,
         };
         let proposed_evidence_hash = payload.evidence_hash()?;
         let evidence = if dry_run {
@@ -1063,6 +1108,7 @@ impl Application {
             stale: false,
             stale_reason: None,
             publication_authority: None,
+            comparator_authority: None,
         };
         let proposed_evidence_hash = payload.evidence_hash()?;
         let evidence = if dry_run {
@@ -2428,6 +2474,7 @@ impl Application {
             stale: false,
             stale_reason: None,
             publication_authority: None,
+            comparator_authority: None,
         };
         let payloads = [
             build(EvidenceKind::ProofClosureScan),
@@ -3262,6 +3309,545 @@ impl Application {
             evidence_kind,
             evidence,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn stage_comparator_authority(
+        &mut self,
+        run_dir: &Path,
+        expected_report_hash: &str,
+        expected_package_verification_hash: &str,
+        plan_path: &Path,
+        release_dir: &Path,
+        expected_release_manifest_hash: &str,
+        attestation_bundle_bytes: &[u8],
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<ComparatorAuthorityStageOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let prepared = prepare_comparator_authority_stage(
+            run_dir,
+            expected_report_hash,
+            expected_package_verification_hash,
+            plan_path,
+            release_dir,
+            expected_release_manifest_hash,
+            attestation_bundle_bytes,
+        )?;
+        self.validate_comparator_stage_against_current_store(&prepared)?;
+        let proposed_stage_hash = prepared.stage.stage_hash()?;
+        let stage_bytes =
+            canonical_json(&serde_json::to_value(&prepared.stage).map_err(|error| {
+                comparator_authority_error(
+                    "MCL_COMPARATOR_STAGE_INVALID",
+                    error.to_string(),
+                    "Report this deterministic Comparator stage serialization defect.",
+                )
+            })?)?;
+        let snapshot = if dry_run {
+            None
+        } else {
+            ensure_comparator_staged_hash(
+                &self.artifacts,
+                &prepared.plan_bytes,
+                &prepared.stage.plan_artifact_hash,
+                "Comparator plan",
+            )?;
+            ensure_comparator_staged_hash(
+                &self.artifacts,
+                &prepared.attestation_bundle_bytes,
+                &prepared.stage.attestation_bundle_artifact_hash,
+                "Comparator attestation bundle",
+            )?;
+            ensure_comparator_staged_hash(
+                &self.artifacts,
+                &prepared.policy_bytes,
+                &prepared.stage.policy_hash,
+                "Comparator authority policy",
+            )?;
+            for entry in &prepared.stage.artifacts {
+                let bytes = match entry.artifact_set {
+                    crate::domain::ComparatorAuthorityArtifactSet::RunBundle => {
+                        read_prepared_run_member(&prepared, &entry.path)?
+                    }
+                    crate::domain::ComparatorAuthorityArtifactSet::SourceRelease => prepared
+                        .release_files
+                        .get(&entry.path)
+                        .cloned()
+                        .ok_or_else(|| {
+                            comparator_authority_error(
+                                "MCL_COMPARATOR_STAGE_INPUT_CHANGED",
+                                format!("prepared source release lost member `{}`", entry.path),
+                                "Retry staging from an unchanged frozen release.",
+                            )
+                        })?,
+                };
+                ensure_comparator_staged_hash(
+                    &self.artifacts,
+                    &bytes,
+                    &entry.content_hash,
+                    &entry.path,
+                )?;
+            }
+            ensure_comparator_staged_hash(
+                &self.artifacts,
+                &stage_bytes,
+                &proposed_stage_hash,
+                "Comparator authority stage",
+            )?;
+            self.validate_comparator_stage_against_current_store(&prepared)?;
+            Some(self.store.register_comparator_authority_stage(
+                &prepared.stage,
+                actor,
+                idempotency_key,
+            )?)
+        };
+        Ok(ComparatorAuthorityStageOutcome {
+            dry_run,
+            proposed_stage_hash,
+            report_artifact_hash: prepared.stage.report_artifact_hash,
+            package_verification_hash: prepared.stage.package_verification_hash,
+            attestation_bundle_artifact_hash: prepared.stage.attestation_bundle_artifact_hash,
+            stage: snapshot,
+            authoritative: false,
+        })
+    }
+
+    pub fn ingest_comparator_authority(
+        &mut self,
+        report_artifact_hash: &str,
+        attestation_bundle_artifact_hash: &str,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<ComparatorAuthorityIngestionOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let stage = self.store.get_comparator_authority_stage(
+            report_artifact_hash,
+            attestation_bundle_artifact_hash,
+        )?;
+        let materialized = self.replay_comparator_stage(&stage)?;
+        self.validate_comparator_stage_against_current_store(&materialized.prepared)?;
+        let bundle_value: Value = serde_json::from_slice(
+            &materialized.prepared.attestation_bundle_bytes,
+        )
+        .map_err(|error| {
+            comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_BUNDLE_INVALID",
+                format!("staged Comparator bundle is invalid: {error}"),
+                "Quarantine the stage and restore the exact protected bundle.",
+            )
+        })?;
+        validate_sigstore_bundle_shape(&bundle_value).map_err(|error| {
+            comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_BUNDLE_INVALID",
+                error.message,
+                "Quarantine the stage and restore the exact protected bundle.",
+            )
+        })?;
+        let policy = crate::domain::committed_comparator_authority_policy()?;
+
+        if !dry_run {
+            let existing = match self.store.comparator_ingestion_idempotency_result(
+                &stage.stage_hash,
+                actor,
+                idempotency_key,
+            )? {
+                Some(existing) => Some(existing),
+                None => match self
+                    .store
+                    .get_comparator_ingestion_receipt_for_stage(&stage.stage_hash)
+                {
+                    Ok(existing) => Some(existing),
+                    Err(error) if error.code == "MCL_COMPARATOR_RECEIPT_NOT_FOUND" => None,
+                    Err(error) => return Err(error),
+                },
+            };
+            if let Some(existing) = existing {
+                let raw = self.read_comparator_cas_bytes(
+                    &existing.verification.raw_verification_hash,
+                    existing.raw_verification_byte_size,
+                    "raw Comparator attestation verification",
+                )?;
+                let canonical_receipt = self.read_comparator_cas_bytes(
+                    &existing.receipt_hash,
+                    existing.receipt_byte_size,
+                    "Comparator attestation receipt",
+                )?;
+                validate_persisted_comparator_receipt(
+                    &existing,
+                    &stage,
+                    &raw,
+                    &canonical_receipt,
+                    &bundle_value,
+                    &materialized.prepared.report,
+                    &policy,
+                )?;
+                let registered = self.store.register_comparator_ingestion_receipt(
+                    &stage.stage_hash,
+                    &existing.verification,
+                    existing.raw_verification_byte_size,
+                    existing.receipt_byte_size,
+                    actor,
+                    idempotency_key,
+                )?;
+                return Ok(ComparatorAuthorityIngestionOutcome {
+                    dry_run: false,
+                    proposed_receipt_hash: registered.receipt_hash.clone(),
+                    verification: registered.verification.clone(),
+                    receipt: Some(registered),
+                });
+            }
+        }
+
+        let resolved_verifier_path =
+            resolve_publication_verifier(&self.publication_verifier.gh_command)
+                .map_err(map_comparator_verifier_error)?;
+        let verifier_binary_sha256 = sha256_file(&resolved_verifier_path)?;
+        if verifier_binary_sha256 != policy.attestation_verifier_binary_sha256 {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_VERIFIER_PIN_MISMATCH",
+                "resolved gh verifier binary does not match the Comparator authority policy pin",
+                "Install the exact policy-pinned gh binary before controlled ingestion.",
+            ));
+        }
+        let verifier_workspace = tempfile::Builder::new()
+            .prefix("mcl-comparator-attestation-")
+            .tempdir_in(&self.workspace_root)
+            .map_err(|error| AppError::io("create Comparator attestation workspace", error))?;
+        let verifier_path =
+            verifier_workspace
+                .path()
+                .join(if cfg!(windows) { "gh.exe" } else { "gh" });
+        fs::copy(&resolved_verifier_path, &verifier_path)
+            .map_err(|error| AppError::io("isolate pinned Comparator verifier", error))?;
+        if sha256_file(&verifier_path)? != verifier_binary_sha256 {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_VERIFIER_PIN_MISMATCH",
+                "gh verifier changed while entering the private Comparator workspace",
+                "Quarantine the verifier host and retry on a clean protected runner.",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&verifier_path, fs::Permissions::from_mode(0o500))
+                .map_err(|error| AppError::io("lock isolated Comparator verifier", error))?;
+        }
+        #[cfg(windows)]
+        {
+            let mut permissions = fs::metadata(&verifier_path)
+                .map_err(|error| AppError::io("inspect isolated Comparator verifier", error))?
+                .permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&verifier_path, permissions)
+                .map_err(|error| AppError::io("lock isolated Comparator verifier", error))?;
+        }
+        let verifier_version = verify_publication_gh_version(
+            &verifier_path,
+            &policy.attestation_verifier_version,
+            verifier_workspace.path(),
+        )
+        .map_err(map_comparator_verifier_error)?;
+        let report_path = materialized.prepared.run_root.join("report.json");
+        let bundle_path = verifier_workspace.path().join("attestation.json");
+        write_private_comparator_file(
+            verifier_workspace.path(),
+            &bundle_path,
+            &materialized.prepared.attestation_bundle_bytes,
+            "Comparator attestation bundle",
+        )?;
+        let arguments = comparator_attestation_arguments(
+            &report_path,
+            &bundle_path,
+            &materialized.prepared.report,
+            &policy,
+        );
+        let capture = crate::verifier::run_bounded_external(
+            &verifier_path,
+            &arguments,
+            verifier_workspace.path(),
+            Duration::from_secs(self.publication_verifier.timeout_seconds),
+            self.publication_verifier.max_output_bytes as u64,
+            &[],
+            "MCL_COMPARATOR_AUTHORITY_VERIFIER_LAUNCH_FAILED",
+            "pinned Comparator attestation verifier",
+        )?;
+        if capture.timed_out
+            || capture.output_limit_exceeded
+            || capture.exit_code != Some(0)
+            || !capture.stderr.is_empty()
+        {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_ATTESTATION_REJECTED",
+                format!(
+                    "pinned gh verification failed (exit={:?}, timed_out={}, output_limit_exceeded={}, stderr_bytes={})",
+                    capture.exit_code,
+                    capture.timed_out,
+                    capture.output_limit_exceeded,
+                    capture.stderr.len()
+                ),
+                "Inspect the exact staged provenance; never bypass failed attestation verification.",
+            ));
+        }
+        if sha256_file(&verifier_path)? != verifier_binary_sha256 {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_VERIFIER_PIN_MISMATCH",
+                "gh verifier binary changed during Comparator attestation verification",
+                "Quarantine the verifier host and retry on a clean protected runner.",
+            ));
+        }
+        let parsed = crate::publication_attestation::validate_comparator_gh_attestation_output(
+            &capture.stdout,
+            &bundle_value,
+            &materialized.prepared.report,
+            &policy,
+        )?;
+        self.validate_comparator_stage_against_current_store(&materialized.prepared)?;
+        let raw_verification_hash = format!("{:x}", Sha256::digest(&capture.stdout));
+        let verification = ComparatorAttestationVerification {
+            schema_version: crate::domain::COMPARATOR_ATTESTATION_VERIFICATION_SCHEMA_VERSION
+                .to_owned(),
+            stage_hash: stage.stage_hash.clone(),
+            report_artifact_hash: stage.stage.report_artifact_hash.clone(),
+            attestation_bundle_hash: stage.stage.attestation_bundle_artifact_hash.clone(),
+            raw_verification_hash: raw_verification_hash.clone(),
+            verifier_name: "gh".to_owned(),
+            verifier_version,
+            verifier_binary_sha256,
+            repository: policy.repository.clone(),
+            signer_workflow: format!("{}/{}", policy.repository, policy.workflow_path),
+            certificate_identity: format!(
+                "https://github.com/{}/{}@{}",
+                policy.repository, policy.workflow_path, policy.required_source_ref
+            ),
+            source_ref: policy.required_source_ref.clone(),
+            source_commit_sha: stage.stage.source_commit_sha.clone(),
+            workflow_run_id: stage.stage.workflow_run_id.clone(),
+            workflow_run_attempt: stage.stage.workflow_run_attempt,
+            predicate_type: policy.attestation_predicate_type.clone(),
+            self_hosted_runners_denied: true,
+            verified_attestation_count: parsed.verified_attestation_count,
+            verified_timestamp_count: parsed.verified_timestamp_count,
+            authoritative: false,
+        };
+        verification.validate(&stage, &policy)?;
+        let receipt_bytes = verification.receipt_bytes()?;
+        let proposed_receipt_hash = format!("{:x}", Sha256::digest(&receipt_bytes));
+        let receipt = if dry_run {
+            None
+        } else {
+            ensure_comparator_staged_hash(
+                &self.artifacts,
+                &capture.stdout,
+                &raw_verification_hash,
+                "raw Comparator attestation verification",
+            )?;
+            ensure_comparator_staged_hash(
+                &self.artifacts,
+                &receipt_bytes,
+                &proposed_receipt_hash,
+                "Comparator attestation receipt",
+            )?;
+            Some(self.store.register_comparator_ingestion_receipt(
+                &stage.stage_hash,
+                &verification,
+                capture.stdout.len() as u64,
+                receipt_bytes.len() as u64,
+                actor,
+                idempotency_key,
+            )?)
+        };
+        Ok(ComparatorAuthorityIngestionOutcome {
+            dry_run,
+            proposed_receipt_hash,
+            verification,
+            receipt,
+        })
+    }
+
+    pub fn promote_comparator_authority(
+        &mut self,
+        comparator_receipt_hash: &str,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<ComparatorAuthorityPromotionOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        let validated = self.revalidate_comparator_authority_receipt(comparator_receipt_hash)?;
+        let proposed_payload = validated.commit.evidence_payload()?;
+        let proposed_evidence_hash = proposed_payload.evidence_hash()?;
+        let evidence_kind = proposed_payload.evidence_kind;
+        let evidence = if dry_run {
+            None
+        } else {
+            Some(self.store.create_comparator_authority_evidence(
+                &validated.commit,
+                actor,
+                idempotency_key,
+            )?)
+        };
+        Ok(ComparatorAuthorityPromotionOutcome {
+            dry_run,
+            comparator_receipt_hash: validated.receipt_hash,
+            proposed_evidence_hash,
+            evidence_kind,
+            evidence,
+        })
+    }
+
+    pub fn comparator_authority_status(
+        &mut self,
+        evidence_id: &str,
+    ) -> Result<ComparatorAuthorityStatus, AppError> {
+        let evidence = self.get_evidence(evidence_id)?;
+        let binding = evidence
+            .payload
+            .comparator_authority
+            .clone()
+            .ok_or_else(|| {
+                comparator_authority_error(
+                    "MCL_COMPARATOR_AUTHORITY_EVIDENCE_REQUIRED",
+                    "requested evidence is not receipt-bound Comparator authority evidence",
+                    "Use an evidence/3 identity returned by Comparator authority promotion.",
+                )
+            })?;
+        let receipt = self
+            .store
+            .get_comparator_ingestion_receipt(&binding.ingestion_receipt_hash)?;
+        let stage = self
+            .store
+            .get_comparator_authority_stage_by_hash(&binding.stage_hash)?;
+        let materialized = self.replay_comparator_stage(&stage)?;
+        let bundle: Value = serde_json::from_slice(&materialized.prepared.attestation_bundle_bytes)
+            .map_err(|error| {
+                comparator_authority_error(
+                    "MCL_COMPARATOR_AUTHORITY_INTEGRITY_FAILED",
+                    error.to_string(),
+                    "Quarantine the evidence and restore its exact receipt-bound closure.",
+                )
+            })?;
+        let raw = self.read_comparator_cas_bytes(
+            &receipt.verification.raw_verification_hash,
+            receipt.raw_verification_byte_size,
+            "raw Comparator attestation verification",
+        )?;
+        let receipt_bytes = self.read_comparator_cas_bytes(
+            &receipt.receipt_hash,
+            receipt.receipt_byte_size,
+            "Comparator attestation receipt",
+        )?;
+        let policy = crate::domain::committed_comparator_authority_policy()?;
+        validate_persisted_comparator_receipt(
+            &receipt,
+            &stage,
+            &raw,
+            &receipt_bytes,
+            &bundle,
+            &materialized.prepared.report,
+            &policy,
+        )?;
+        let expected_binding = ComparatorAuthorityBinding {
+            schema_version: crate::domain::COMPARATOR_AUTHORITY_BINDING_SCHEMA_VERSION.to_owned(),
+            ingestion_receipt_hash: receipt.receipt_hash.clone(),
+            stage_hash: stage.stage_hash.clone(),
+            report_artifact_hash: stage.stage.report_artifact_hash.clone(),
+            attestation_bundle_artifact_hash: stage.stage.attestation_bundle_artifact_hash.clone(),
+            raw_verification_hash: receipt.verification.raw_verification_hash.clone(),
+            policy_hash: stage.stage.policy_hash.clone(),
+            plan_artifact_hash: stage.stage.plan_artifact_hash.clone(),
+            source_release_manifest_hash: stage.stage.source_release_manifest_hash.clone(),
+            package_verification_hash: stage.stage.package_verification_hash.clone(),
+            package_input_fingerprint: stage.stage.package_input_fingerprint.clone(),
+            source_commit_sha: stage.stage.source_commit_sha.clone(),
+            workflow_run_id: stage.stage.workflow_run_id.clone(),
+            workflow_run_attempt: stage.stage.workflow_run_attempt,
+        };
+        if binding != expected_binding
+            || evidence.payload.subject != stage.stage.source_formalization
+            || evidence.payload.environment_hash.as_deref()
+                != Some(
+                    materialized
+                        .prepared
+                        .release_manifest
+                        .publication
+                        .environment_hash
+                        .as_str(),
+                )
+            || evidence.payload.artifact_hashes
+                != comparator_authority_artifact_hashes(&stage, &receipt)
+        {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_INTEGRITY_FAILED",
+                "Comparator evidence does not reproduce its complete staged receipt closure",
+                "Quarantine the evidence and restore its exact receipt-bound closure.",
+            ));
+        }
+
+        let stale_reason =
+            match self.validate_comparator_stage_against_current_store(&materialized.prepared) {
+                Ok(()) => None,
+                Err(error) => match error.code {
+                    "MCL_COMPARATOR_AUTHORITY_FORMALIZATION_STALE" => {
+                        Some(ComparatorAuthorityStaleReason::FormalizationNotCurrent)
+                    }
+                    "MCL_COMPARATOR_AUTHORITY_PUBLICATION_STALE" => {
+                        Some(ComparatorAuthorityStaleReason::PublicationAuthorityNotCurrent)
+                    }
+                    "MCL_COMPARATOR_AUTHORITY_FIDELITY_STALE" => {
+                        Some(ComparatorAuthorityStaleReason::FidelityNotCurrent)
+                    }
+                    "MCL_COMPARATOR_AUTHORITY_RELEASE_BINDING_CHANGED" => {
+                        Some(ComparatorAuthorityStaleReason::ReleaseBindingChanged)
+                    }
+                    "MCL_COMPARATOR_AUTHORITY_POLICY_CHANGED" => {
+                        Some(ComparatorAuthorityStaleReason::PolicyChanged)
+                    }
+                    _ => return Err(error),
+                },
+            };
+        if stale_reason.is_none() {
+            let expected_payload = ComparatorAuthorityCommit {
+                subject: stage.stage.source_formalization.clone(),
+                environment_hash: materialized
+                    .prepared
+                    .release_manifest
+                    .publication
+                    .environment_hash
+                    .clone(),
+                binding: expected_binding,
+                artifact_hashes: comparator_authority_artifact_hashes(&stage, &receipt),
+                release_publication: materialized.prepared.release_manifest.publication.clone(),
+            }
+            .evidence_payload()?;
+            if evidence.payload != expected_payload
+                || evidence.evidence_hash != expected_payload.evidence_hash()?
+            {
+                return Err(comparator_authority_error(
+                    "MCL_COMPARATOR_AUTHORITY_INTEGRITY_FAILED",
+                    "current Comparator evidence differs from its fully replayed authority derivation",
+                    "Quarantine the evidence and restore its exact receipt-bound closure.",
+                ));
+            }
+        }
+        let stale_reasons = stale_reason.into_iter().collect::<Vec<_>>();
+        let status = ComparatorAuthorityStatus {
+            schema_version: crate::domain::COMPARATOR_AUTHORITY_STATUS_SCHEMA_VERSION.to_owned(),
+            evidence_id: evidence.evidence_id,
+            evidence_hash: evidence.evidence_hash,
+            subject: evidence.payload.subject,
+            ingestion_receipt_hash: binding.ingestion_receipt_hash,
+            currentness: if stale_reasons.is_empty() {
+                ComparatorAuthorityCurrentness::Current
+            } else {
+                ComparatorAuthorityCurrentness::Stale
+            },
+            stale_reasons,
+            authoritative: true,
+        };
+        status.validate()?;
+        Ok(status)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4136,6 +4722,359 @@ impl Application {
             bytes_by_role.insert(staged.role, bytes);
         }
         Ok(RetainedPublicationFiles { bytes_by_role })
+    }
+
+    fn replay_comparator_stage(
+        &self,
+        stage: &ComparatorAuthorityStageSnapshot,
+    ) -> Result<MaterializedComparatorStage, AppError> {
+        stage.stage.validate()?;
+        if stage.stage.stage_hash()? != stage.stage_hash {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_STAGE_INTEGRITY_FAILED",
+                "Comparator stage identity does not reproduce its canonical content",
+                "Quarantine the stage and restore a verified backup.",
+            ));
+        }
+        let canonical_stage =
+            canonical_json(&serde_json::to_value(&stage.stage).map_err(|error| {
+                comparator_authority_error(
+                    "MCL_COMPARATOR_STAGE_INTEGRITY_FAILED",
+                    error.to_string(),
+                    "Quarantine the stage and restore a verified backup.",
+                )
+            })?)?;
+        let stored_stage = self.artifacts.read(&stage.stage_hash).map_err(|error| {
+            comparator_cas_error("Comparator authority stage", &stage.stage_hash, error)
+        })?;
+        if stored_stage != canonical_stage {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_STAGE_INTEGRITY_FAILED",
+                "Comparator stage CAS bytes differ from its immutable database registration",
+                "Quarantine the stage and restore the exact canonical stage bytes.",
+            ));
+        }
+
+        let workspace = tempfile::Builder::new()
+            .prefix("mcl-comparator-stage-replay-")
+            .tempdir_in(&self.workspace_root)
+            .map_err(|error| AppError::io("create Comparator stage replay workspace", error))?;
+        let run_root = workspace.path().join("run");
+        let release_root = workspace.path().join("release");
+        fs::create_dir(&run_root)
+            .map_err(|error| AppError::io("create Comparator replay run root", error))?;
+        fs::create_dir(&release_root)
+            .map_err(|error| AppError::io("create Comparator replay release root", error))?;
+        for entry in &stage.stage.artifacts {
+            let bytes =
+                self.read_comparator_cas_bytes(&entry.content_hash, entry.byte_size, &entry.path)?;
+            let root = match entry.artifact_set {
+                crate::domain::ComparatorAuthorityArtifactSet::RunBundle => &run_root,
+                crate::domain::ComparatorAuthorityArtifactSet::SourceRelease => &release_root,
+            };
+            let destination = safe_comparator_materialization_path(root, &entry.path)?;
+            write_private_comparator_file(root, &destination, &bytes, &entry.path)?;
+        }
+        let plan_bytes = self.read_comparator_cas_bytes(
+            &stage.stage.plan_artifact_hash,
+            stage.stage.plan_byte_size,
+            "Comparator plan",
+        )?;
+        let bundle_bytes = self.read_comparator_cas_bytes(
+            &stage.stage.attestation_bundle_artifact_hash,
+            stage.stage.attestation_bundle_byte_size,
+            "Comparator attestation bundle",
+        )?;
+        let policy = crate::domain::committed_comparator_authority_policy()?;
+        let policy_bytes = canonical_json(&serde_json::to_value(&policy).map_err(|error| {
+            comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_POLICY_INVALID",
+                error.to_string(),
+                "Restore the exact committed Comparator authority policy.",
+            )
+        })?)?;
+        let stored_policy = self
+            .artifacts
+            .read(&stage.stage.policy_hash)
+            .map_err(|error| {
+                comparator_cas_error(
+                    "Comparator authority policy",
+                    &stage.stage.policy_hash,
+                    error,
+                )
+            })?;
+        if stored_policy != policy_bytes || policy.policy_hash()? != stage.stage.policy_hash {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_POLICY_CHANGED",
+                "staged Comparator policy differs from the current committed policy",
+                "Restage and rerun under the reviewed current policy.",
+            ));
+        }
+        let plan_path = workspace.path().join("plan.json");
+        write_private_comparator_file(
+            workspace.path(),
+            &plan_path,
+            &plan_bytes,
+            "Comparator plan",
+        )?;
+        let bundle_path = workspace.path().join("attestation.json");
+        write_private_comparator_file(
+            workspace.path(),
+            &bundle_path,
+            &bundle_bytes,
+            "Comparator attestation bundle",
+        )?;
+        let prepared = prepare_comparator_authority_stage(
+            &run_root,
+            &stage.stage.report_artifact_hash,
+            &stage.stage.package_verification_hash,
+            &plan_path,
+            &release_root,
+            &stage.stage.source_release_manifest_hash,
+            &bundle_bytes,
+        )?;
+        if prepared.stage != stage.stage {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_STAGE_INTEGRITY_FAILED",
+                "full CAS replay derived a different Comparator stage",
+                "Quarantine the altered closure and restore the exact protected stage.",
+            ));
+        }
+        Ok(MaterializedComparatorStage {
+            _workspace: workspace,
+            prepared,
+        })
+    }
+
+    fn read_comparator_cas_bytes(
+        &self,
+        hash: &str,
+        expected_size: u64,
+        label: &str,
+    ) -> Result<Vec<u8>, AppError> {
+        let bytes = self
+            .artifacts
+            .read(hash)
+            .map_err(|error| comparator_cas_error(label, hash, error))?;
+        if bytes.len() as u64 != expected_size {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_CAS_INTEGRITY_FAILED",
+                format!("{label} size disagrees with immutable stage registration"),
+                "Quarantine the stage and restore the exact CAS member.",
+            ));
+        }
+        Ok(bytes)
+    }
+
+    fn validate_comparator_stage_against_current_store(
+        &mut self,
+        prepared: &PreparedComparatorAuthorityStage,
+    ) -> Result<(), AppError> {
+        let publication = &prepared.release_manifest.publication;
+        if prepared.stage.source_formalization != publication.subject
+            || prepared.plan.formalization != publication.subject
+            || prepared.package_verification.source_formalization != publication.subject
+            || prepared.package_verification.declaration_name != publication.declaration_name
+            || prepared.report.package.declaration_name != publication.declaration_name
+        {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_RELEASE_BINDING_CHANGED",
+                "Comparator plan, package, report, and release do not name one exact publication formalization",
+                "Rebuild the plan and Comparator package from the exact current release.",
+            ));
+        }
+        let current = self.store.get_record(&publication.subject.object_id)?;
+        if current.kind != RecordKind::Formalization
+            || current.version_hash != publication.subject.version_hash
+        {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_FORMALIZATION_STALE",
+                "Comparator evidence subject is no longer the current formalization head",
+                "Rebuild the release and rerun Comparator from the current formalization.",
+            ));
+        }
+        let record = self
+            .store
+            .get_record_version(&publication.subject.version_hash)?;
+        if record.object_id != publication.subject.object_id
+            || record.kind != RecordKind::Formalization
+        {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_FORMALIZATION_STALE",
+                "Comparator release subject is not the exact canonical formalization",
+                "Rebuild the release from the current formalization.",
+            ));
+        }
+        let formalization = decode_formalization(&record.payload)?;
+        if formalization.environment_hash != publication.environment_hash
+            || formalization.module_artifact_hash != publication.module_artifact_hash
+            || formalization.declaration_name != publication.declaration_name
+        {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_RELEASE_BINDING_CHANGED",
+                "Comparator release publication no longer matches the exact formalization environment, module, and declaration",
+                "Rebuild the release and Comparator package from current canonical state.",
+            ));
+        }
+
+        let validated_publication = self
+            .revalidate_publication_authority_receipt(&publication.ingestion_receipt_hash)
+            .map_err(|error| {
+                comparator_authority_error(
+                    "MCL_COMPARATOR_AUTHORITY_PUBLICATION_STALE",
+                    error.message,
+                    "Restore current publication authority or rerun Comparator from a new release.",
+                )
+            })?;
+        let binding = &validated_publication.commit.binding;
+        if validated_publication.receipt_hash != publication.ingestion_receipt_hash
+            || validated_publication.stage.stage_hash != publication.stage_hash
+            || validated_publication.stage.stage.report_artifact_hash
+                != publication.report_artifact_hash
+            || validated_publication
+                .stage
+                .stage
+                .retained_closure_artifact_hash
+                != publication.retained_closure_artifact_hash
+            || validated_publication
+                .stage
+                .stage
+                .attestation_bundle_artifact_hash
+                != publication.attestation_bundle_artifact_hash
+            || validated_publication
+                .receipt
+                .verification
+                .raw_verification_hash
+                != publication.raw_verification_hash
+            || binding.publication_request_hash != publication.request_hash
+            || binding.publication_policy_hash != publication.policy_hash
+            || validated_publication.commit.subject != publication.subject
+            || validated_publication.commit.outcome != publication.outcome
+            || validated_publication.commit.environment_hash != publication.environment_hash
+        {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_PUBLICATION_STALE",
+                "Comparator release publication projections differ from the fully replayed authority receipt",
+                "Rebuild the release and Comparator run from current publication authority.",
+            ));
+        }
+        let authority = self.get_evidence(&publication.authority_evidence_id)?;
+        let replayed_authority = self
+            .revalidate_publication_authority_evidence(&authority)
+            .map_err(|error| {
+                comparator_authority_error(
+                    "MCL_COMPARATOR_AUTHORITY_PUBLICATION_STALE",
+                    error.message,
+                    "Restore current publication authority or rerun Comparator from a new release.",
+                )
+            })?;
+        if authority.evidence_hash != publication.authority_evidence_hash
+            || replayed_authority != validated_publication.commit
+        {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_PUBLICATION_STALE",
+                "Comparator release authority evidence is not the exact replayed publication witness",
+                "Rebuild the release and Comparator run from current publication authority.",
+            ));
+        }
+        let fidelity = self.fidelity_status(&publication.subject)?;
+        let fidelity_entry = fidelity
+            .history
+            .iter()
+            .find(|entry| entry.evidence.evidence_id == publication.fidelity_evidence_id);
+        if fidelity.status != FidelityStatus::Verified
+            || fidelity.head_evidence_id.as_deref()
+                != Some(publication.fidelity_evidence_id.as_str())
+            || fidelity_entry.is_none_or(|entry| {
+                entry.evidence.evidence_hash != publication.fidelity_evidence_hash
+                    || entry.report_artifact_hash != publication.fidelity_report_artifact_hash
+            })
+        {
+            return Err(comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_FIDELITY_STALE",
+                "Comparator release fidelity witness is not the exact current verified head",
+                "Complete current fidelity review, rebuild the release, and rerun Comparator.",
+            ));
+        }
+        Ok(())
+    }
+
+    fn revalidate_comparator_authority_receipt(
+        &mut self,
+        comparator_receipt_hash: &str,
+    ) -> Result<RevalidatedComparatorAuthority, AppError> {
+        let receipt = self
+            .store
+            .get_comparator_ingestion_receipt(comparator_receipt_hash)?;
+        let stage = self
+            .store
+            .get_comparator_authority_stage_by_hash(&receipt.stage_hash)?;
+        let materialized = self.replay_comparator_stage(&stage)?;
+        self.validate_comparator_stage_against_current_store(&materialized.prepared)?;
+        let bundle_value: Value = serde_json::from_slice(
+            &materialized.prepared.attestation_bundle_bytes,
+        )
+        .map_err(|error| {
+            comparator_authority_error(
+                "MCL_COMPARATOR_AUTHORITY_BUNDLE_INVALID",
+                error.to_string(),
+                "Restore the exact staged Comparator attestation bundle.",
+            )
+        })?;
+        let raw = self.read_comparator_cas_bytes(
+            &receipt.verification.raw_verification_hash,
+            receipt.raw_verification_byte_size,
+            "raw Comparator attestation verification",
+        )?;
+        let canonical_receipt = self.read_comparator_cas_bytes(
+            &receipt.receipt_hash,
+            receipt.receipt_byte_size,
+            "Comparator attestation receipt",
+        )?;
+        let policy = crate::domain::committed_comparator_authority_policy()?;
+        validate_persisted_comparator_receipt(
+            &receipt,
+            &stage,
+            &raw,
+            &canonical_receipt,
+            &bundle_value,
+            &materialized.prepared.report,
+            &policy,
+        )?;
+        let binding = ComparatorAuthorityBinding {
+            schema_version: crate::domain::COMPARATOR_AUTHORITY_BINDING_SCHEMA_VERSION.to_owned(),
+            ingestion_receipt_hash: receipt.receipt_hash.clone(),
+            stage_hash: stage.stage_hash.clone(),
+            report_artifact_hash: stage.stage.report_artifact_hash.clone(),
+            attestation_bundle_artifact_hash: stage.stage.attestation_bundle_artifact_hash.clone(),
+            raw_verification_hash: receipt.verification.raw_verification_hash.clone(),
+            policy_hash: stage.stage.policy_hash.clone(),
+            plan_artifact_hash: stage.stage.plan_artifact_hash.clone(),
+            source_release_manifest_hash: stage.stage.source_release_manifest_hash.clone(),
+            package_verification_hash: stage.stage.package_verification_hash.clone(),
+            package_input_fingerprint: stage.stage.package_input_fingerprint.clone(),
+            source_commit_sha: stage.stage.source_commit_sha.clone(),
+            workflow_run_id: stage.stage.workflow_run_id.clone(),
+            workflow_run_attempt: stage.stage.workflow_run_attempt,
+        };
+        binding.validate()?;
+        let artifact_hashes = comparator_authority_artifact_hashes(&stage, &receipt);
+        let commit = ComparatorAuthorityCommit {
+            subject: stage.stage.source_formalization.clone(),
+            environment_hash: materialized
+                .prepared
+                .release_manifest
+                .publication
+                .environment_hash
+                .clone(),
+            binding,
+            artifact_hashes,
+            release_publication: materialized.prepared.release_manifest.publication.clone(),
+        };
+        Ok(RevalidatedComparatorAuthority {
+            receipt_hash: receipt.receipt_hash.clone(),
+            commit,
+        })
     }
 
     pub fn work_one_verifier_job(
@@ -6821,6 +7760,123 @@ fn ensure_staged_hash(
     Ok(())
 }
 
+fn comparator_authority_error(
+    code: &'static str,
+    message: impl Into<String>,
+    corrective_action: &'static str,
+) -> AppError {
+    AppError::new(code, message, false, corrective_action)
+}
+
+fn comparator_cas_error(label: &str, hash: &str, error: AppError) -> AppError {
+    comparator_authority_error(
+        "MCL_COMPARATOR_AUTHORITY_CAS_INTEGRITY_FAILED",
+        format!(
+            "{label} CAS member {hash} is missing or corrupt: {}",
+            error.message
+        ),
+        "Quarantine the stage and restore the exact retained CAS closure.",
+    )
+}
+
+fn map_comparator_verifier_error(error: AppError) -> AppError {
+    comparator_authority_error(
+        "MCL_COMPARATOR_AUTHORITY_VERIFIER_REJECTED",
+        error.message,
+        "Install and configure only the exact policy-pinned gh verifier.",
+    )
+}
+
+fn ensure_comparator_staged_hash(
+    artifacts: &ArtifactStore,
+    bytes: &[u8],
+    expected_hash: &str,
+    label: &str,
+) -> Result<(), AppError> {
+    let observed = artifacts.put(bytes)?;
+    if observed != expected_hash {
+        return Err(comparator_authority_error(
+            "MCL_COMPARATOR_STAGE_HASH_MISMATCH",
+            format!("staged {label} hashed to {observed}, expected {expected_hash}"),
+            "Quarantine the input and restage the exact protected closure.",
+        ));
+    }
+    Ok(())
+}
+
+fn safe_comparator_materialization_path(root: &Path, relative: &str) -> Result<PathBuf, AppError> {
+    let path = Path::new(relative);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(comparator_authority_error(
+            "MCL_COMPARATOR_AUTHORITY_PATH_UNSAFE",
+            format!("unsafe Comparator stage member path `{relative}`"),
+            "Restore the exact closed stage with normalized relative paths.",
+        ));
+    }
+    Ok(root.join(path))
+}
+
+fn write_private_comparator_file(
+    root: &Path,
+    destination: &Path,
+    bytes: &[u8],
+    label: &str,
+) -> Result<(), AppError> {
+    if !destination.starts_with(root) {
+        return Err(comparator_authority_error(
+            "MCL_COMPARATOR_AUTHORITY_PATH_UNSAFE",
+            format!("{label} materialization escapes its private root"),
+            "Restore the exact normalized Comparator stage.",
+        ));
+    }
+    let parent = destination.parent().ok_or_else(|| {
+        comparator_authority_error(
+            "MCL_COMPARATOR_AUTHORITY_PATH_UNSAFE",
+            format!("{label} has no private parent directory"),
+            "Restore the exact normalized Comparator stage.",
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|error| AppError::io("create Comparator materialization parent", error))?;
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(destination)
+        .map_err(|error| AppError::io("create Comparator materialized member", error))?;
+    file.write_all(bytes)
+        .map_err(|error| AppError::io("write Comparator materialized member", error))?;
+    file.sync_all()
+        .map_err(|error| AppError::io("sync Comparator materialized member", error))?;
+    Ok(())
+}
+
+fn comparator_authority_artifact_hashes(
+    stage: &ComparatorAuthorityStageSnapshot,
+    receipt: &ComparatorIngestionReceiptSnapshot,
+) -> Vec<String> {
+    let mut hashes = stage
+        .stage
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.content_hash.clone())
+        .collect::<Vec<_>>();
+    hashes.extend([
+        stage.stage_hash.clone(),
+        stage.stage.plan_artifact_hash.clone(),
+        stage.stage.attestation_bundle_artifact_hash.clone(),
+        stage.stage.policy_hash.clone(),
+        receipt.verification.raw_verification_hash.clone(),
+        receipt.receipt_hash.clone(),
+    ]);
+    hashes.sort_unstable();
+    hashes.dedup();
+    hashes
+}
+
 fn validate_sigstore_bundle_shape(bundle: &Value) -> Result<(), AppError> {
     let Some(object) = bundle.as_object() else {
         return Err(publication_ingestion_error(
@@ -6884,6 +7940,40 @@ fn publication_attestation_arguments(
     ]
 }
 
+fn comparator_attestation_arguments(
+    report_path: &Path,
+    bundle_path: &Path,
+    report: &crate::domain::ComparatorRunReport,
+    policy: &crate::domain::ComparatorAuthorityPolicy,
+) -> Vec<OsString> {
+    let certificate_identity = format!(
+        "https://github.com/{}/{}@{}",
+        policy.repository, policy.workflow_path, policy.required_source_ref
+    );
+    vec![
+        OsString::from("attestation"),
+        OsString::from("verify"),
+        report_path.as_os_str().to_owned(),
+        OsString::from("--repo"),
+        OsString::from(&policy.repository),
+        OsString::from("--bundle"),
+        bundle_path.as_os_str().to_owned(),
+        OsString::from("--cert-identity"),
+        OsString::from(certificate_identity),
+        OsString::from("--source-ref"),
+        OsString::from(&policy.required_source_ref),
+        OsString::from("--source-digest"),
+        OsString::from(&report.workflow.source_commit_sha),
+        OsString::from("--signer-digest"),
+        OsString::from(&report.workflow.source_commit_sha),
+        OsString::from("--predicate-type"),
+        OsString::from(&policy.attestation_predicate_type),
+        OsString::from("--deny-self-hosted-runners"),
+        OsString::from("--format"),
+        OsString::from("json"),
+    ]
+}
+
 fn validate_persisted_publication_receipt(
     receipt: &PublicationIngestionReceiptSnapshot,
     raw_verification: &[u8],
@@ -6917,6 +8007,39 @@ fn validate_persisted_publication_receipt(
         return Err(publication_ingestion_error(
             "MCL_PUBLICATION_RECEIPT_INVALID",
             "persisted publication receipt CAS closure is incomplete, altered, or disagrees with the closed verifier output",
+            "Quarantine the receipt and restore the exact raw verification and canonical receipt bytes.",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_persisted_comparator_receipt(
+    receipt: &ComparatorIngestionReceiptSnapshot,
+    stage: &ComparatorAuthorityStageSnapshot,
+    raw_verification: &[u8],
+    stored_receipt: &[u8],
+    bundle: &Value,
+    report: &crate::domain::ComparatorRunReport,
+    policy: &crate::domain::ComparatorAuthorityPolicy,
+) -> Result<(), AppError> {
+    receipt.verification.validate(stage, policy)?;
+    let parsed = crate::publication_attestation::validate_comparator_gh_attestation_output(
+        raw_verification,
+        bundle,
+        report,
+        policy,
+    )?;
+    let receipt_bytes = receipt.verification.receipt_bytes()?;
+    if parsed.verified_attestation_count != receipt.verification.verified_attestation_count
+        || parsed.verified_timestamp_count != receipt.verification.verified_timestamp_count
+        || raw_verification.len() as u64 != receipt.raw_verification_byte_size
+        || stored_receipt != receipt_bytes
+        || format!("{:x}", Sha256::digest(&receipt_bytes)) != receipt.receipt_hash
+    {
+        return Err(comparator_authority_error(
+            "MCL_COMPARATOR_RECEIPT_INVALID",
+            "persisted Comparator receipt closure is incomplete, altered, or disagrees with the closed verifier output",
             "Quarantine the receipt and restore the exact raw verification and canonical receipt bytes.",
         ));
     }

@@ -43,14 +43,18 @@ and requires byte-identical reprojection. It opens no database and performs no n
 ## Status language
 
 - `ready`: the five files and their frozen-source bindings verify.
-- `Comparator-verified`: reserved for a later successful official Linux sandboxed Comparator run
-  on this exact package and toolchain.
-- `stale`: a later status layer must use when any bound challenge, solution, dependency manifest,
-  theorem source, configuration, or tool pin differs.
+- `Comparator-verified`: an exact official Linux sandboxed Comparator run has accepted this package
+  and toolchain. Its report remains non-authoritative.
+- `current` or `stale`: the separate controlled authority layer derives whether the promoted
+  receipt-bound evidence still matches every canonical input.
 
 The v1 package record can encode only `ready`, `comparator_verified: false`, and
 `authoritative: false`. A normal Lean build, offline reprojection, fake-landrun, or a green badge is
 not Comparator verification.
+
+The separate [controlled Comparator authority](COMPARATOR_AUTHORITY.md) workflow stages and
+attests an exact accepted report, then derives `evidence/3` only from its immutable receipt. Package
+readiness and the report's `comparator_verified` field cannot self-promote.
 
 The trust decision is recorded in
 [ADR-0014](../decisions/ADR-0014-deterministic-comparator-ready-package-boundary.md).

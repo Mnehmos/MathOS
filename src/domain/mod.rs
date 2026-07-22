@@ -9,6 +9,7 @@ use crate::error::AppError;
 pub mod artifact;
 pub mod audit;
 pub mod comparator;
+pub mod comparator_authority;
 pub mod comparator_run;
 pub mod corpus;
 pub mod counterexample;
@@ -38,6 +39,19 @@ pub use comparator::{
     ComparatorToolPins, LANDRUN_REPOSITORY, LEAN4EXPORT_REPOSITORY, MAX_COMPARATOR_FILE_BYTES,
     MAX_COMPARATOR_SOURCE_BYTES, comparator_package_plan_schema,
     comparator_package_verification_schema,
+};
+pub use comparator_authority::{
+    COMPARATOR_ATTESTATION_VERIFICATION_SCHEMA_VERSION,
+    COMPARATOR_AUTHORITY_BINDING_SCHEMA_VERSION, COMPARATOR_AUTHORITY_EVIDENCE_SCHEMA_VERSION,
+    COMPARATOR_AUTHORITY_POLICY_SCHEMA_VERSION, COMPARATOR_AUTHORITY_RUN_PATHS,
+    COMPARATOR_AUTHORITY_STAGE_SCHEMA_VERSION, COMPARATOR_AUTHORITY_STATUS_SCHEMA_VERSION,
+    ComparatorAttestationVerification, ComparatorAuthorityArtifactSet, ComparatorAuthorityBinding,
+    ComparatorAuthorityCurrentness, ComparatorAuthorityPolicy, ComparatorAuthorityStage,
+    ComparatorAuthorityStageArtifact, ComparatorAuthorityStageSnapshot,
+    ComparatorAuthorityStaleReason, ComparatorAuthorityStatus, ComparatorAuthorityToolPolicy,
+    ComparatorIngestionReceiptSnapshot, committed_comparator_authority_policy,
+    comparator_attestation_verification_schema, comparator_authority_policy_schema,
+    comparator_authority_stage_schema, comparator_authority_status_schema,
 };
 pub use comparator_run::{
     COMPARATOR_RUN_COMMAND_PROFILE, COMPARATOR_RUN_COMPARATOR_COMMIT,
@@ -74,7 +88,7 @@ pub use environment::{
 };
 pub use evidence::{
     EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult, EvidenceSnapshot,
-    PublicationAuthorityBinding,
+    PublicationAuthorityBinding, comparator_authoritative_evidence_schema,
 };
 pub use fidelity::{
     AmbiguityDisposition, DefinitionMapping, FidelityReviewHistoryEntry, FidelityReviewLevel,
