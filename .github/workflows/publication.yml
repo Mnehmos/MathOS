@@ -182,15 +182,16 @@ jobs:
             "${REPAIRED_PROOF_BUNDLE_PATH}" \
             "${RUNNER_TEMP}/publication-candidate/repaired-proof-ingestion" \
             "${RUNNER_TEMP}/publication-candidate"
-      - name: Build and replay the private Pilot A portable release without SQLite
+      - name: Build, replay, and corpus-export private Pilot A without SQLite
         shell: bash
         run: |
           bash scripts/release-pilot-a.sh \
             "${RUNNER_TEMP}/publication-candidate" \
             "${RUNNER_TEMP}/publication-candidate/repaired-proof-candidate" \
             "${RUNNER_TEMP}/publication-candidate/repaired-proof-ingestion" \
-            "${RUNNER_TEMP}/pilot-a-portable-release"
-      - name: Retain smoke, both candidate closures, release, diagnostics, and Sigstore bundles
+            "${RUNNER_TEMP}/pilot-a-portable-release" \
+            "${RUNNER_TEMP}/pilot-a-mathcorpus-mcip-export"
+      - name: Retain smoke, candidate closures, release, corpus export, diagnostics, and Sigstore bundles
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -217,3 +218,4 @@ jobs:
             ${{ steps.attest_repaired_proof.outputs.bundle-path }}
             ${{ runner.temp }}/publication-candidate/release-build-evidence/
             ${{ runner.temp }}/pilot-a-portable-release/
+            ${{ runner.temp }}/pilot-a-mathcorpus-mcip-export/

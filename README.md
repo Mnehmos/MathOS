@@ -37,6 +37,7 @@ See:
 - [Implementation status](docs/implementation/STATUS.md)
 - [Real blockers](docs/implementation/BLOCKERS.md)
 - [Release checklist](docs/implementation/RELEASE_CHECKLIST.md)
+- [MathCorpus and MCIP export](docs/implementation/CORPUS_EXPORT.md)
 - [Architecture decisions](docs/decisions/)
 
 The implementation agent must continue until the complete specification passes. A pilot, demo, schema, or partially working command is not completion.

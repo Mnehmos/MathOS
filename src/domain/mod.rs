@@ -8,6 +8,7 @@ use crate::error::AppError;
 
 pub mod artifact;
 pub mod audit;
+pub mod corpus;
 pub mod counterexample;
 pub mod environment;
 pub mod evidence;
@@ -25,6 +26,12 @@ pub use artifact::{
 pub use audit::{
     LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditPolicy, LeanAuditReport,
     LeanAuditRequest,
+};
+pub use corpus::{
+    CORPUS_EXPORT_MANIFEST_SCHEMA_VERSION, CorpusExportCuration, CorpusExportManifest,
+    CorpusExportMember, CorpusExportMemberKind, CorpusExportOutputBinding, CorpusExportPolicy,
+    CorpusExportSourceBinding, CorpusExportUpstreamBinding, MathCorpusDifficultyBin,
+    MathCorpusDomain, MathCorpusLevel, corpus_export_manifest_schema,
 };
 pub use counterexample::{
     CLAIM_REPAIR_EDGE_SCHEMA_VERSION, COUNTEREXAMPLE_PACKAGE_SCHEMA_VERSION,

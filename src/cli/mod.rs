@@ -567,6 +567,10 @@ enum ReleaseAction {
     Build(ReleaseBuildOptions),
     /// Verify and replay a copied bundle without opening the MathOS database.
     Verify(ReleaseVerifyOptions),
+    /// Project a frozen release into canonical MathCorpus and MCIP artifacts offline.
+    Export(ReleaseExportOptions),
+    /// Verify a copied MathCorpus/MCIP export by deterministic offline reprojection.
+    VerifyExport(ReleaseVerifyExportOptions),
 }
 
 #[derive(Debug, Args)]
@@ -609,6 +613,45 @@ struct ReleaseVerifyOptions {
 
     #[arg(long)]
     expected_manifest_hash: String,
+}
+
+#[derive(Debug, Args)]
+struct ReleaseExportOptions {
+    #[arg(long)]
+    bundle_dir: PathBuf,
+
+    #[arg(long)]
+    expected_manifest_hash: String,
+
+    #[arg(long)]
+    packet_id: String,
+
+    #[arg(long)]
+    domain: String,
+
+    #[arg(long)]
+    level: String,
+
+    #[arg(long)]
+    difficulty_bin: String,
+
+    #[arg(long)]
+    output_dir: PathBuf,
+
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct ReleaseVerifyExportOptions {
+    #[arg(long)]
+    export_dir: PathBuf,
+
+    #[arg(long)]
+    expected_manifest_hash: String,
+
+    #[arg(long)]
+    source_bundle_dir: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -736,18 +779,48 @@ struct RunSubmitOptions {
 
 impl Cli {
     pub fn execute(self) -> Result<CliOutcome, AppError> {
-        if let Command::Release(ReleaseOptions {
-            action: ReleaseAction::Verify(options),
-        }) = &self.command
-        {
-            return Ok(CliOutcome {
-                value: to_value(Application::verify_release(
-                    &options.bundle_dir,
-                    &options.expected_manifest_hash,
-                )?)
-                .expect("release verification report is serializable"),
-                success: true,
-            });
+        if let Command::Release(ReleaseOptions { action }) = &self.command {
+            let value = match action {
+                ReleaseAction::Verify(options) => Some(
+                    to_value(Application::verify_release(
+                        &options.bundle_dir,
+                        &options.expected_manifest_hash,
+                    )?)
+                    .expect("release verification report is serializable"),
+                ),
+                ReleaseAction::Export(options) => Some(
+                    to_value(crate::corpus_export::export_release(
+                        crate::corpus_export::CorpusExportRequest {
+                            bundle_dir: &options.bundle_dir,
+                            expected_manifest_hash: &options.expected_manifest_hash,
+                            packet_id: &options.packet_id,
+                            domain: crate::domain::MathCorpusDomain::from_str(&options.domain)?,
+                            level: crate::domain::MathCorpusLevel::from_str(&options.level)?,
+                            difficulty_bin: crate::domain::MathCorpusDifficultyBin::from_str(
+                                &options.difficulty_bin,
+                            )?,
+                            output_dir: &options.output_dir,
+                            dry_run: options.dry_run,
+                        },
+                    )?)
+                    .expect("corpus export outcome is serializable"),
+                ),
+                ReleaseAction::VerifyExport(options) => Some(
+                    to_value(crate::corpus_export::verify_export(
+                        &options.export_dir,
+                        &options.expected_manifest_hash,
+                        &options.source_bundle_dir,
+                    )?)
+                    .expect("corpus export verification report is serializable"),
+                ),
+                ReleaseAction::Build(_) => None,
+            };
+            if let Some(value) = value {
+                return Ok(CliOutcome {
+                    value,
+                    success: true,
+                });
+            }
         }
         if !root_exists(&self.root)
             && matches!(&self.command, Command::Init(options) if options.dry_run)
@@ -1507,6 +1580,27 @@ fn execute_release(
             &options.expected_manifest_hash,
         )?)
         .expect("release verification report is serializable"),
+        ReleaseAction::Export(options) => to_value(crate::corpus_export::export_release(
+            crate::corpus_export::CorpusExportRequest {
+                bundle_dir: &options.bundle_dir,
+                expected_manifest_hash: &options.expected_manifest_hash,
+                packet_id: &options.packet_id,
+                domain: crate::domain::MathCorpusDomain::from_str(&options.domain)?,
+                level: crate::domain::MathCorpusLevel::from_str(&options.level)?,
+                difficulty_bin: crate::domain::MathCorpusDifficultyBin::from_str(
+                    &options.difficulty_bin,
+                )?,
+                output_dir: &options.output_dir,
+                dry_run: options.dry_run,
+            },
+        )?)
+        .expect("corpus export outcome is serializable"),
+        ReleaseAction::VerifyExport(options) => to_value(crate::corpus_export::verify_export(
+            &options.export_dir,
+            &options.expected_manifest_hash,
+            &options.source_bundle_dir,
+        )?)
+        .expect("corpus export verification report is serializable"),
     };
     Ok(CliOutcome {
         value,
