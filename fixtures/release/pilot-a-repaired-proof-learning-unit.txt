@@ -1,0 +1,6 @@
+Pilot A preserves two distinct results: the original statement is refuted by the
+boundary prime 2, while the repaired statement excludes 2 and has its own exact
+Lean proof. A learner must keep the source, original claim, repaired claim,
+formalization, counterexample package, and publication receipt identities
+separate. Proof of the repair never erases or transfers authority from the
+original refutation.

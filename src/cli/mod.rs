@@ -71,6 +71,8 @@ enum Command {
     Formalization(EntityOptions),
     /// Propose, validate, review, link, or traverse canonical learning units.
     Pedagogy(PedagogyOptions),
+    /// Build or independently verify a portable receipt-bound release directory.
+    Release(ReleaseOptions),
     /// Search the current canonical record heads through SQLite FTS5.
     Search(SearchOptions),
     /// Create or retrieve exact version-bound graph edges.
@@ -554,6 +556,62 @@ struct PedagogyPathOptions {
 }
 
 #[derive(Debug, Args)]
+struct ReleaseOptions {
+    #[command(subcommand)]
+    action: ReleaseAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum ReleaseAction {
+    /// Build one new deterministic directory from an authoritative receipt and reviewed path.
+    Build(ReleaseBuildOptions),
+    /// Verify and replay a copied bundle without opening the MathOS database.
+    Verify(ReleaseVerifyOptions),
+}
+
+#[derive(Debug, Args)]
+struct ReleaseBuildOptions {
+    #[arg(long)]
+    publication_receipt_hash: String,
+
+    #[arg(long)]
+    pedagogy_root_object_id: String,
+
+    #[arg(long)]
+    pedagogy_root_version_hash: String,
+
+    #[arg(long, default_value = "prerequisites")]
+    mode: String,
+
+    #[arg(long)]
+    include_soft: bool,
+
+    #[arg(long, default_value_t = 8)]
+    max_depth: u32,
+
+    #[arg(long, default_value_t = 100)]
+    limit: usize,
+
+    #[arg(long, default_value = "private")]
+    profile: String,
+
+    #[arg(long)]
+    output_dir: PathBuf,
+
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct ReleaseVerifyOptions {
+    #[arg(long)]
+    bundle_dir: PathBuf,
+
+    #[arg(long)]
+    expected_manifest_hash: String,
+}
+
+#[derive(Debug, Args)]
 struct SearchOptions {
     #[arg(long)]
     query: String,
@@ -678,6 +736,19 @@ struct RunSubmitOptions {
 
 impl Cli {
     pub fn execute(self) -> Result<CliOutcome, AppError> {
+        if let Command::Release(ReleaseOptions {
+            action: ReleaseAction::Verify(options),
+        }) = &self.command
+        {
+            return Ok(CliOutcome {
+                value: to_value(Application::verify_release(
+                    &options.bundle_dir,
+                    &options.expected_manifest_hash,
+                )?)
+                .expect("release verification report is serializable"),
+                success: true,
+            });
+        }
         if !root_exists(&self.root)
             && matches!(&self.command, Command::Init(options) if options.dry_run)
         {
@@ -776,6 +847,7 @@ impl Cli {
                 execute_entity(&config, RecordKind::Formalization, options)
             }
             Command::Pedagogy(options) => execute_pedagogy(&config, options),
+            Command::Release(options) => execute_release(&config, options),
             Command::Search(options) => {
                 let application = Application::open(&config)?;
                 Ok(CliOutcome {
@@ -1405,6 +1477,54 @@ fn execute_pedagogy(
         value,
         success: true,
     })
+}
+
+fn execute_release(
+    config: &ResolvedConfig,
+    options: ReleaseOptions,
+) -> Result<CliOutcome, AppError> {
+    let value = match options.action {
+        ReleaseAction::Build(options) => {
+            let mut application = Application::open(config)?;
+            to_value(application.build_release(
+                &options.publication_receipt_hash,
+                &ExactVersionReference {
+                    object_id: options.pedagogy_root_object_id,
+                    version_hash: options.pedagogy_root_version_hash,
+                },
+                parse_pedagogy_path_mode(&options.mode)?,
+                options.include_soft,
+                options.max_depth,
+                options.limit,
+                parse_release_profile(&options.profile)?,
+                &options.output_dir,
+                options.dry_run,
+            )?)
+            .expect("release build outcome is serializable")
+        }
+        ReleaseAction::Verify(options) => to_value(Application::verify_release(
+            &options.bundle_dir,
+            &options.expected_manifest_hash,
+        )?)
+        .expect("release verification report is serializable"),
+    };
+    Ok(CliOutcome {
+        value,
+        success: true,
+    })
+}
+
+fn parse_release_profile(value: &str) -> Result<crate::domain::ReleaseProfile, AppError> {
+    match value {
+        "private" => Ok(crate::domain::ReleaseProfile::Private),
+        "public" => Ok(crate::domain::ReleaseProfile::Public),
+        _ => Err(AppError::new(
+            "MCL_RELEASE_PROFILE_INVALID",
+            format!("unknown release profile `{value}`"),
+            false,
+            "Use `private` or `public`.",
+        )),
+    }
 }
 
 fn parse_learning_unit_review_state(value: &str) -> Result<LearningUnitReviewState, AppError> {

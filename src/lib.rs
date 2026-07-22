@@ -7,5 +7,6 @@ pub mod domain;
 pub mod error;
 pub mod mcp;
 mod publication_attestation;
+pub mod release;
 mod store;
 pub mod verifier;

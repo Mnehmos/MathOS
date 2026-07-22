@@ -145,8 +145,30 @@ pub fn execute_lean(
     module_file_name: &str,
     environment: &EnvironmentManifest,
 ) -> Result<LeanProcessResult, AppError> {
+    execute_lean_with_profile(command, workspace, module_file_name, environment, false)
+}
+
+/// Replays an already-authoritative publication artifact without promoting new authority.
+/// The executable and arguments remain verifier-controlled; only the publication-profile
+/// isolation precondition is relaxed because release replay is an integrity check.
+pub fn execute_release_lean(
+    command: &str,
+    workspace: &Path,
+    module_file_name: &str,
+    environment: &EnvironmentManifest,
+) -> Result<LeanProcessResult, AppError> {
+    execute_lean_with_profile(command, workspace, module_file_name, environment, true)
+}
+
+fn execute_lean_with_profile(
+    command: &str,
+    workspace: &Path,
+    module_file_name: &str,
+    environment: &EnvironmentManifest,
+    allow_publication_replay: bool,
+) -> Result<LeanProcessResult, AppError> {
     environment.validate()?;
-    if environment.trust_profile == TrustProfile::Publication {
+    if environment.trust_profile == TrustProfile::Publication && !allow_publication_replay {
         return Err(AppError::new(
             "MCL_PUBLICATION_ISOLATION_UNAVAILABLE",
             "publication-profile process isolation is not implemented by the local worker",
