@@ -315,12 +315,15 @@ jobs:
         shell: bash
         env:
           COMPARATOR_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          COMPARATOR_PACKAGE_HASH: ${{ needs.boundary.outputs.comparator_package_hash }}
+          COMPARATOR_RELEASE_HASH: ${{ needs.boundary.outputs.comparator_release_hash }}
+          COMPARATOR_PLAN_HASH: ${{ needs.boundary.outputs.comparator_plan_hash }}
         run: |
           bash scripts/comparator-protected-run.sh \
             "${RUNNER_TEMP}/publication-boundary" \
-            "${{ needs.boundary.outputs.comparator_package_hash }}" \
-            "${{ needs.boundary.outputs.comparator_release_hash }}" \
-            "${{ needs.boundary.outputs.comparator_plan_hash }}" \
+            "${COMPARATOR_PACKAGE_HASH}" \
+            "${COMPARATOR_RELEASE_HASH}" \
+            "${COMPARATOR_PLAN_HASH}" \
             "${RUNNER_TEMP}/comparator-run"
       - name: Attest the exact canonical Comparator report
         id: attest_comparator
