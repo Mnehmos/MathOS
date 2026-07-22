@@ -9,6 +9,7 @@ use crate::error::AppError;
 pub mod artifact;
 pub mod audit;
 pub mod comparator;
+pub mod comparator_run;
 pub mod corpus;
 pub mod counterexample;
 pub mod environment;
@@ -37,6 +38,20 @@ pub use comparator::{
     ComparatorToolPins, LANDRUN_REPOSITORY, LEAN4EXPORT_REPOSITORY, MAX_COMPARATOR_FILE_BYTES,
     MAX_COMPARATOR_SOURCE_BYTES, comparator_package_plan_schema,
     comparator_package_verification_schema,
+};
+pub use comparator_run::{
+    COMPARATOR_RUN_COMMAND_PROFILE, COMPARATOR_RUN_COMPARATOR_COMMIT,
+    COMPARATOR_RUN_COMPARATOR_TREE, COMPARATOR_RUN_JOB, COMPARATOR_RUN_LANDRUN_COMMIT,
+    COMPARATOR_RUN_LANDRUN_TREE, COMPARATOR_RUN_LEAN_TOOLCHAIN, COMPARATOR_RUN_LEAN4EXPORT_COMMIT,
+    COMPARATOR_RUN_LEAN4EXPORT_TREE, COMPARATOR_RUN_PROJECT_NAME,
+    COMPARATOR_RUN_REPORT_SCHEMA_VERSION, COMPARATOR_RUN_REPOSITORY, COMPARATOR_RUN_REPOSITORY_ID,
+    COMPARATOR_RUN_SOURCE_REF, COMPARATOR_RUN_WORKFLOW_PATH, COMPARATOR_RUN_WORKFLOW_REF,
+    ComparatorRunClassification, ComparatorRunExecutionBinding, ComparatorRunFileBinding,
+    ComparatorRunHarnessBinding, ComparatorRunPackageBinding, ComparatorRunPredicates,
+    ComparatorRunReport, ComparatorRunSandboxBinding, ComparatorRunToolBinding,
+    ComparatorRunWorkflowBinding, MAX_ACCEPTED_COMPARATOR_STDERR_BYTES,
+    MAX_ACCEPTED_COMPARATOR_STDOUT_BYTES, MAX_COMPARATOR_RUN_BINARY_BYTES,
+    MAX_COMPARATOR_RUN_TEXT_BYTES,
 };
 pub use corpus::{
     CORPUS_EXPORT_MANIFEST_SCHEMA_VERSION, CorpusExportCuration, CorpusExportManifest,

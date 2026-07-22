@@ -18,6 +18,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      comparator_package_hash: ${{ steps.comparator_bindings.outputs.comparator_package_hash }}
+      comparator_release_hash: ${{ steps.comparator_bindings.outputs.comparator_release_hash }}
+      comparator_plan_hash: ${{ steps.comparator_bindings.outputs.comparator_plan_hash }}
     permissions:
       contents: read
       id-token: write
@@ -193,6 +197,17 @@ jobs:
             "${RUNNER_TEMP}/pilot-a-mathcorpus-mcip-export" \
             "${RUNNER_TEMP}/pilot-a-rl-evaluation-export" \
             "${RUNNER_TEMP}/pilot-a-comparator-package"
+      - name: Bind exact same-run Comparator inputs for the fresh job
+        id: comparator_bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_hash="$(sha256sum "${RUNNER_TEMP}/pilot-a-comparator-package/verification.json" | cut -d ' ' -f 1)"
+          release_hash="$(sha256sum "${RUNNER_TEMP}/pilot-a-portable-release/manifest.json" | cut -d ' ' -f 1)"
+          plan_hash="$(sha256sum "${RUNNER_TEMP}/publication-candidate/release-build-evidence/comparator-package-plan.json" | cut -d ' ' -f 1)"
+          printf 'comparator_package_hash=%s\n' "$package_hash" >> "${GITHUB_OUTPUT}"
+          printf 'comparator_release_hash=%s\n' "$release_hash" >> "${GITHUB_OUTPUT}"
+          printf 'comparator_plan_hash=%s\n' "$plan_hash" >> "${GITHUB_OUTPUT}"
       - name: Retain smoke, candidate closures, release, exports, Comparator package, diagnostics, and Sigstore bundles
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -223,3 +238,113 @@ jobs:
             ${{ runner.temp }}/pilot-a-mathcorpus-mcip-export/
             ${{ runner.temp }}/pilot-a-rl-evaluation-export/
             ${{ runner.temp }}/pilot-a-comparator-package/
+
+  comparator:
+    name: Protected official Comparator execution
+    needs: boundary
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Check out exact source without credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Require protected GitHub-hosted main context
+        shell: bash
+        env:
+          COMPARATOR_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF_PROTECTED:-}" == "true" \
+            && "${GITHUB_REF}" == "refs/heads/main" \
+            && "${COMPARATOR_RUNNER_ENVIRONMENT}" == "github-hosted" ]] || {
+            echo "official Comparator execution requires protected main on a GitHub-hosted runner" >&2
+            exit 65
+          }
+      - name: Install repository-pinned Lean
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/elan.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "${archive}" \
+            https://github.com/leanprover/elan/releases/download/v4.2.3/elan-x86_64-unknown-linux-gnu.tar.gz
+          echo "df0b2b3a439961ffcbb3985214365ffe40f49bc871df04dff268c7d8e21ca8b2  ${archive}" \
+            | sha256sum --check --strict
+          tar --extract --gzip --file "${archive}" --directory "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/elan-init" -y --default-toolchain none --no-modify-path
+          echo "${HOME}/.elan/bin" >> "${GITHUB_PATH}"
+          "${HOME}/.elan/bin/elan" toolchain install "$(cat lean-toolchain)"
+      - name: Build the reviewed offline verifier
+        shell: bash
+        run: cargo build --locked --bin mcl
+      - name: Download the exact successful same-run boundary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: publication-boundary-${{ github.sha }}
+          path: ${{ runner.temp }}/publication-boundary
+      - name: Install pinned attestation verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="2.96.0"
+          archive="${RUNNER_TEMP}/gh_${version}_linux_amd64.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "${archive}" \
+            "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_linux_amd64.tar.gz"
+          echo "83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60  ${archive}" \
+            | sha256sum --check --strict
+          tar --extract --gzip --no-same-owner --file "${archive}" --directory "${RUNNER_TEMP}"
+          gh_bin="${RUNNER_TEMP}/gh_${version}_linux_amd64/bin/gh"
+          echo "56b8bbbb27b066ecb33dbef9a256dc9d1314adaeff0908a752feba6c34053b40  ${gh_bin}" \
+            | sha256sum --check --strict
+          echo "${RUNNER_TEMP}/gh_${version}_linux_amd64/bin" >> "${GITHUB_PATH}"
+      - name: Reproject and run the official Comparator in the fresh protected job
+        shell: bash
+        env:
+          COMPARATOR_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          bash scripts/comparator-protected-run.sh \
+            "${RUNNER_TEMP}/publication-boundary" \
+            "${{ needs.boundary.outputs.comparator_package_hash }}" \
+            "${{ needs.boundary.outputs.comparator_release_hash }}" \
+            "${{ needs.boundary.outputs.comparator_plan_hash }}" \
+            "${RUNNER_TEMP}/comparator-run"
+      - name: Attest the exact canonical Comparator report
+        id: attest_comparator
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
+        with:
+          subject-path: ${{ runner.temp }}/comparator-run/bundle/report.json
+      - name: Verify the exact protected Comparator attestation
+        shell: bash
+        env:
+          PUBLICATION_GH_BIN: ${{ runner.temp }}/gh_2.96.0_linux_amd64/bin/gh
+          COMPARATOR_BUNDLE_PATH: ${{ steps.attest_comparator.outputs.bundle-path }}
+        run: |
+          scripts/publication-attestation-verify.sh \
+            "${RUNNER_TEMP}/comparator-run/bundle/report.json" \
+            "${COMPARATOR_BUNDLE_PATH}" \
+            "${RUNNER_TEMP}/comparator-run-attestation-verification"
+      - name: Retain the package, report, binaries, raw logs, verifier result, and attestation
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: comparator-run-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+          path: |
+            ${{ runner.temp }}/comparator-run/bundle/
+            ${{ runner.temp }}/comparator-run/offline-verification.json
+            ${{ runner.temp }}/comparator-run/report.sha256
+            ${{ runner.temp }}/comparator-run/work/lake-manifest-init.stdout
+            ${{ runner.temp }}/comparator-run/work/lake-manifest-init.stderr
+            ${{ runner.temp }}/comparator-run-attestation-verification/
+            ${{ steps.attest_comparator.outputs.bundle-path }}
