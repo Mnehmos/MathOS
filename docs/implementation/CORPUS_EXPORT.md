@@ -94,10 +94,12 @@ identities are intentionally distinct and both are verified.
 | `private` | `private_audit_only` | `private_only` | `private` |
 | `public` | `quarantined` | `quarantined` | `public`, with explicit source and module licenses |
 
-A private release is never promoted to a training split. A public release still remains
-quarantined because leakage-aware split assignment is a separate unfinished 1.0 capability.
-Public projection additionally requires source redistribution `allowed`, redaction `public`,
-and an explicit source and module license. Missing authority fails closed.
+A private release is never promoted to a training split. A public release remains quarantined in
+this corpus packet because the corpus exporter does not assign leakage-aware splits. The separate
+`rl_export_plan/1` projection must bind a verified public release to an eligible component-locked
+split; it does not retroactively change this packet's curation policy. Public projection also
+requires source redistribution `allowed`, redaction `public`, and an explicit source and module
+license. Missing authority fails closed.
 
 MCIP records are child evidence. They mirror a frozen kernel-verification result but cannot
 promote packet trust or replace the MathOS release, receipt, authority, or fidelity records.
@@ -108,4 +110,5 @@ The exporter emits the evidence MathOS can substantiate without guessing: `Packe
 canonical `ProofVariant`, and a `DependencyManifest`. It does not invent proof-search
 episodes, tactic counts, model identity, retrieval candidates, literature review, novelty,
 RL transitions, empirical difficulty, or leakage-aware train/validation/test assignments.
-Those remain separate tracked 1.0 work.
+Split assignment belongs to the separate RL/evaluation export; the other absent records remain
+tracked 1.0 work.
