@@ -312,7 +312,7 @@ fn init_creates_real_storage_and_health_passes() {
         String::from_utf8_lossy(&initialized.stderr)
     );
     let value = parse_stdout(&initialized);
-    assert_eq!(value["migration_version"], 11);
+    assert_eq!(value["migration_version"], 12);
     assert_eq!(value["journal_mode"], "wal");
     assert!(root.path().join("mcl.toml").is_file());
     assert!(root.path().join(".mcl/state.sqlite3").is_file());
@@ -2186,6 +2186,113 @@ fn publication_candidate_cli_bounds_workflow_json_inputs() {
     let error: Value =
         serde_json::from_slice(&missing_receipt.stderr).expect("authority error JSON");
     assert_eq!(error["code"], "MCL_PUBLICATION_RECEIPT_NOT_FOUND");
+}
+
+#[test]
+fn comparator_authority_cli_is_path_bounded_and_receipt_only() {
+    let root = TempDir::new().expect("temporary root");
+    assert!(
+        mcl(
+            &root,
+            &[
+                "init",
+                "--actor",
+                "comparator-authority-test",
+                "--idempotency-key",
+                "comparator-authority-init",
+            ],
+        )
+        .status
+        .success()
+    );
+
+    let promotion_help = mcl(&root, &["verify", "promote-comparator-authority", "--help"]);
+    assert!(promotion_help.status.success());
+    let promotion_help = String::from_utf8(promotion_help.stdout).expect("promotion help is UTF-8");
+    assert!(promotion_help.contains("--comparator-receipt-hash"));
+    for forbidden in [
+        "--subject",
+        "--result",
+        "--authority-class",
+        "--environment",
+        "--artifact",
+        "--binding",
+    ] {
+        assert!(
+            !promotion_help.contains(forbidden),
+            "Comparator promotion exposed {forbidden}"
+        );
+    }
+
+    let outside = TempDir::new().expect("outside Comparator root");
+    let outside_run = outside.path().join("run");
+    fs::create_dir(&outside_run).expect("outside run directory");
+    let unsafe_stage = mcl_owned(
+        &root,
+        &[
+            "verify".to_owned(),
+            "stage-comparator-authority".to_owned(),
+            "--run-dir".to_owned(),
+            outside_run.to_string_lossy().into_owned(),
+            "--expected-report-hash".to_owned(),
+            "1".repeat(64),
+            "--expected-package-verification-hash".to_owned(),
+            "2".repeat(64),
+            "--plan-file".to_owned(),
+            "plan.json".to_owned(),
+            "--release-dir".to_owned(),
+            "release".to_owned(),
+            "--expected-release-manifest-hash".to_owned(),
+            "3".repeat(64),
+            "--attestation-bundle-file".to_owned(),
+            "attestation.json".to_owned(),
+            "--actor".to_owned(),
+            "comparator-authority-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "unsafe-comparator-stage".to_owned(),
+        ],
+    );
+    assert!(!unsafe_stage.status.success());
+    let error: Value =
+        serde_json::from_slice(&unsafe_stage.stderr).expect("unsafe stage error JSON");
+    assert_eq!(error["code"], "MCL_COMPARATOR_AUTHORITY_PATH_UNSAFE");
+
+    let unstaged = mcl(
+        &root,
+        &[
+            "verify",
+            "ingest-comparator-authority",
+            "--report-artifact-hash",
+            &"4".repeat(64),
+            "--attestation-bundle-artifact-hash",
+            &"5".repeat(64),
+            "--actor",
+            "comparator-authority-test",
+            "--idempotency-key",
+            "unstaged-comparator-ingestion",
+        ],
+    );
+    assert!(!unstaged.status.success());
+    let error: Value = serde_json::from_slice(&unstaged.stderr).expect("ingestion error JSON");
+    assert_eq!(error["code"], "MCL_COMPARATOR_STAGE_NOT_FOUND");
+
+    let missing_receipt = mcl(
+        &root,
+        &[
+            "verify",
+            "promote-comparator-authority",
+            "--comparator-receipt-hash",
+            &"6".repeat(64),
+            "--actor",
+            "comparator-authority-test",
+            "--idempotency-key",
+            "missing-comparator-authority-receipt",
+        ],
+    );
+    assert!(!missing_receipt.status.success());
+    let error: Value =
+        serde_json::from_slice(&missing_receipt.stderr).expect("authority error JSON");
+    assert_eq!(error["code"], "MCL_COMPARATOR_RECEIPT_NOT_FOUND");
 }
 
 #[test]

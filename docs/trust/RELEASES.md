@@ -72,6 +72,12 @@ full interface and status vocabulary are documented in
 [Comparator-ready packages](COMPARATOR_PACKAGES.md), with the trust decision in
 [ADR-0014](../decisions/ADR-0014-deterministic-comparator-ready-package-boundary.md).
 
+After an exact protected official run, MathOS uses a separate stage, constrained attestation
+receipt, and receipt-only promotion path. See
+[controlled Comparator authority](COMPARATOR_AUTHORITY.md) and
+[ADR-0016](../decisions/ADR-0016-controlled-comparator-evidence-authority.md). Neither a release,
+package, run report, workflow result, nor attestation alone grants authority.
+
 ## Trust boundary
 
 - A successful build means the exported directory matched canonical state at build time.

@@ -3,7 +3,10 @@ use std::collections::BTreeSet;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::domain::{PublicationPolicy, PublicationReport};
+use crate::canonical::value_hash;
+use crate::domain::{
+    ComparatorAuthorityPolicy, ComparatorRunReport, PublicationPolicy, PublicationReport,
+};
 use crate::error::AppError;
 
 const MAX_RAW_OUTPUT_BYTES: usize = 1_048_576;
@@ -20,6 +23,20 @@ const REKOR_URI: &str = "https://rekor.sigstore.dev";
 pub(crate) struct ParsedGhAttestation {
     pub verified_attestation_count: u32,
     pub verified_timestamp_count: u32,
+}
+
+struct AttestationExpectation<'a> {
+    report_hash: String,
+    subject_name: &'a str,
+    repository: &'a str,
+    repository_id: String,
+    repository_owner_id: String,
+    workflow_path: &'a str,
+    source_ref: &'a str,
+    source_commit_sha: &'a str,
+    workflow_run_id: String,
+    workflow_run_attempt: u32,
+    predicate_type: &'a str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -231,6 +248,63 @@ pub(crate) fn validate_gh_attestation_output(
 ) -> Result<ParsedGhAttestation, AppError> {
     report.validate_candidate(policy)?;
 
+    validate_expected_gh_attestation_output(
+        raw,
+        bundle,
+        &AttestationExpectation {
+            report_hash: report.report_hash(policy)?,
+            subject_name: "publication-report.json",
+            repository: &policy.repository,
+            repository_id: policy.repository_id.to_string(),
+            repository_owner_id: policy.repository_owner_id.to_string(),
+            workflow_path: &policy.workflow_path,
+            source_ref: &policy.required_source_ref,
+            source_commit_sha: &report.request.source_commit_sha,
+            workflow_run_id: report.workflow_run_id.to_string(),
+            workflow_run_attempt: report.workflow_run_attempt,
+            predicate_type: &policy.attestation_predicate_type,
+        },
+    )
+}
+
+pub(crate) fn validate_comparator_gh_attestation_output(
+    raw: &[u8],
+    bundle: &Value,
+    report: &ComparatorRunReport,
+    policy: &ComparatorAuthorityPolicy,
+) -> Result<ParsedGhAttestation, AppError> {
+    report.validate()?;
+    policy.validate()?;
+    let report_hash = value_hash(&serde_json::to_value(report).map_err(|error| {
+        comparator_attestation_error(format!(
+            "Comparator report cannot be serialized canonically: {error}"
+        ))
+    })?)?;
+    validate_expected_gh_attestation_output(
+        raw,
+        bundle,
+        &AttestationExpectation {
+            report_hash,
+            subject_name: "report.json",
+            repository: &policy.repository,
+            repository_id: policy.repository_id.clone(),
+            repository_owner_id: policy.repository_owner_id.clone(),
+            workflow_path: &policy.workflow_path,
+            source_ref: &policy.required_source_ref,
+            source_commit_sha: &report.workflow.source_commit_sha,
+            workflow_run_id: report.workflow.run_id.clone(),
+            workflow_run_attempt: report.workflow.run_attempt,
+            predicate_type: &policy.attestation_predicate_type,
+        },
+    )
+    .map_err(|error| comparator_attestation_error(error.message))
+}
+
+fn validate_expected_gh_attestation_output(
+    raw: &[u8],
+    bundle: &Value,
+    expected: &AttestationExpectation<'_>,
+) -> Result<ParsedGhAttestation, AppError> {
     require(
         !raw.is_empty() && raw.len() <= MAX_RAW_OUTPUT_BYTES,
         "GitHub attestation verifier output is empty or exceeds the reviewed byte bound",
@@ -270,9 +344,8 @@ pub(crate) fn validate_gh_attestation_output(
         "GitHub attestation verifier output did not originate from the controlled local bundle",
     )?;
 
-    let expected_report_hash = report.report_hash(policy)?;
-    let repository_url = format!("https://github.com/{}", policy.repository);
-    let owner = policy
+    let repository_url = format!("https://github.com/{}", expected.repository);
+    let owner = expected
         .repository
         .split_once('/')
         .map(|(owner, _)| owner)
@@ -282,15 +355,13 @@ pub(crate) fn validate_gh_attestation_output(
     let owner_url = format!("https://github.com/{owner}");
     let certificate_identity = format!(
         "{repository_url}/{}@{}",
-        policy.workflow_path, policy.required_source_ref
+        expected.workflow_path, expected.source_ref
     );
     let run_invocation_uri = format!(
         "{repository_url}/actions/runs/{}/attempts/{}",
-        report.workflow_run_id, report.workflow_run_attempt
+        expected.workflow_run_id, expected.workflow_run_attempt
     );
-    let dependency_uri = format!("git+{repository_url}@{}", policy.required_source_ref);
-    let repository_identifier = policy.repository_id.to_string();
-    let repository_owner_identifier = policy.repository_owner_id.to_string();
+    let dependency_uri = format!("git+{repository_url}@{}", expected.source_ref);
     let verification = result.verification_result;
 
     require(
@@ -307,12 +378,12 @@ pub(crate) fn validate_gh_attestation_output(
     require(
         certificate.subject_alternative_name == certificate_identity
             && certificate.issuer == GITHUB_OIDC_ISSUER
-            && certificate.github_workflow_repository == policy.repository
-            && certificate.github_workflow_ref == policy.required_source_ref
+            && certificate.github_workflow_repository == expected.repository
+            && certificate.github_workflow_ref == expected.source_ref
             && certificate.build_signer_uri == certificate_identity
             && certificate.runner_environment == "github-hosted"
             && certificate.source_repository_uri == repository_url
-            && certificate.source_repository_ref == policy.required_source_ref
+            && certificate.source_repository_ref == expected.source_ref
             && certificate.source_repository_owner_uri == owner_url
             && certificate.build_config_uri == certificate_identity
             && certificate.run_invocation_uri == run_invocation_uri
@@ -320,15 +391,15 @@ pub(crate) fn validate_gh_attestation_output(
         "verified certificate does not bind the exact repository, workflow, ref, runner, and run",
     )?;
     require(
-        certificate.github_workflow_sha == report.request.source_commit_sha
-            && certificate.build_signer_digest == report.request.source_commit_sha
-            && certificate.source_repository_digest == report.request.source_commit_sha
-            && certificate.build_config_digest == report.request.source_commit_sha,
+        certificate.github_workflow_sha == expected.source_commit_sha
+            && certificate.build_signer_digest == expected.source_commit_sha
+            && certificate.source_repository_digest == expected.source_commit_sha
+            && certificate.build_config_digest == expected.source_commit_sha,
         "verified certificate does not bind every source and workflow digest to the report commit",
     )?;
     require(
-        certificate.source_repository_identifier == repository_identifier
-            && certificate.source_repository_owner_identifier == repository_owner_identifier,
+        certificate.source_repository_identifier == expected.repository_id
+            && certificate.source_repository_owner_identifier == expected.repository_owner_id,
         "verified certificate does not bind the policy-pinned immutable repository and owner identifiers",
     )?;
     require(
@@ -352,7 +423,7 @@ pub(crate) fn validate_gh_attestation_output(
     let statement = &verification.statement;
     require(
         statement.statement_type == IN_TOTO_STATEMENT_TYPE
-            && statement.predicate_type == policy.attestation_predicate_type,
+            && statement.predicate_type == expected.predicate_type,
         "verified statement has an unexpected type or predicate type",
     )?;
     require(
@@ -361,8 +432,8 @@ pub(crate) fn validate_gh_attestation_output(
     )?;
     let subject = &statement.subject[0];
     require(
-        subject.name == "publication-report.json" && subject.digest.sha256 == expected_report_hash,
-        "verified statement subject does not bind the exact publication report",
+        subject.name == expected.subject_name && subject.digest.sha256 == expected.report_hash,
+        "verified statement subject does not bind the exact expected report",
     )?;
 
     let build = &statement.predicate.build_definition;
@@ -372,8 +443,8 @@ pub(crate) fn validate_gh_attestation_output(
     )?;
     let workflow = &build.external_parameters.workflow;
     require(
-        workflow.path == policy.workflow_path
-            && workflow.source_ref == policy.required_source_ref
+        workflow.path == expected.workflow_path
+            && workflow.source_ref == expected.source_ref
             && workflow.repository == repository_url,
         "verified statement workflow parameters do not match publication policy",
     )?;
@@ -392,7 +463,7 @@ pub(crate) fn validate_gh_attestation_output(
     let dependency = &build.resolved_dependencies[0];
     require(
         dependency.uri == dependency_uri
-            && dependency.digest.git_commit == report.request.source_commit_sha,
+            && dependency.digest.git_commit == expected.source_commit_sha,
         "verified statement dependency does not bind the exact source ref and commit",
     )?;
     require(
@@ -464,6 +535,15 @@ fn attestation_error(message: impl Into<String>) -> AppError {
     )
 }
 
+fn comparator_attestation_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_COMPARATOR_ATTESTATION_INVALID",
+        message,
+        false,
+        "Re-run the pinned GitHub attestation verifier over the exact staged Comparator report and bundle.",
+    )
+}
+
 fn is_bounded_text(value: &str, maximum_bytes: usize) -> bool {
     !value.is_empty() && value.len() <= maximum_bytes && !value.chars().any(char::is_control)
 }
@@ -519,9 +599,32 @@ mod tests {
     use crate::domain::publication::committed_publication_policy;
     use crate::domain::schemas::ExactVersionReference;
     use crate::domain::{
-        PublicationClassification, PublicationOutcome, PublicationRequest,
-        PublicationRunnerEnvironment,
+        ComparatorRunReport, PublicationClassification, PublicationOutcome, PublicationRequest,
+        PublicationRunnerEnvironment, committed_comparator_authority_policy,
     };
+
+    #[test]
+    fn exact_protected_pilot_a_comparator_attestation_satisfies_the_closed_parser() {
+        let report: ComparatorRunReport = serde_json::from_slice(include_bytes!(
+            "../fixtures/comparator/authority/pilot-a-report.json"
+        ))
+        .expect("protected Comparator report parses");
+        let bundle: Value = serde_json::from_slice(include_bytes!(
+            "../fixtures/comparator/authority/pilot-a-attestation.json"
+        ))
+        .expect("protected Comparator bundle parses");
+        let parsed = validate_comparator_gh_attestation_output(
+            include_bytes!(
+                "../fixtures/comparator/authority/pilot-a-attestation-verification-raw.json"
+            ),
+            &bundle,
+            &report,
+            &committed_comparator_authority_policy().expect("Comparator policy"),
+        )
+        .expect("protected Comparator attestation qualifies");
+        assert_eq!(parsed.verified_attestation_count, 1);
+        assert_eq!(parsed.verified_timestamp_count, 1);
+    }
 
     fn report_and_policy() -> (PublicationReport, PublicationPolicy) {
         let policy = committed_publication_policy().expect("committed policy");

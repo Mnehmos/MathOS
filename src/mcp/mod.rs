@@ -1,4 +1,6 @@
+use std::fs;
 use std::future::ready;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use rmcp::{
@@ -274,6 +276,8 @@ pub struct VerifyRequest {
     #[serde(default, deserialize_with = "deserialize_present_optional")]
     publication_receipt_hash: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_present_optional")]
+    comparator: Option<Option<ComparatorAuthorityMcpInput>>,
+    #[serde(default, deserialize_with = "deserialize_present_optional")]
     actor: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_present_optional")]
     idempotency_key: Option<Option<String>>,
@@ -290,6 +294,37 @@ pub enum VerifyAction {
     PreparePublication,
     IngestPublication,
     PromotePublicationAuthority,
+    StageComparatorAuthority,
+    IngestComparatorAuthority,
+    PromoteComparatorAuthority,
+    ComparatorAuthorityStatus,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ComparatorAuthorityMcpInput {
+    #[serde(default)]
+    run_dir: Option<String>,
+    #[serde(default)]
+    expected_report_hash: Option<String>,
+    #[serde(default)]
+    expected_package_verification_hash: Option<String>,
+    #[serde(default)]
+    plan_file: Option<String>,
+    #[serde(default)]
+    release_dir: Option<String>,
+    #[serde(default)]
+    expected_release_manifest_hash: Option<String>,
+    #[serde(default)]
+    attestation_bundle_file: Option<String>,
+    #[serde(default)]
+    report_artifact_hash: Option<String>,
+    #[serde(default)]
+    attestation_bundle_artifact_hash: Option<String>,
+    #[serde(default)]
+    comparator_receipt_hash: Option<String>,
+    #[serde(default)]
+    evidence_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -354,7 +389,7 @@ impl MathOsMcp {
                 "pedagogy_actions": ["propose", "version", "get", "validate", "review", "link", "path"],
                 "research_actions": ["start", "observe", "submit"],
                 "counterexample_actions": ["repair", "get"],
-                "verify_actions": ["review_fidelity", "fidelity_status", "claim_status", "prepare_publication", "ingest_publication", "promote_publication_authority"],
+                "verify_actions": ["review_fidelity", "fidelity_status", "claim_status", "prepare_publication", "ingest_publication", "promote_publication_authority", "stage_comparator_authority", "ingest_comparator_authority", "promote_comparator_authority", "comparator_authority_status"],
                 "mutations": true,
                 "authoritative_verification": true,
                 "claim_research_status": "derived_read_only",
@@ -429,7 +464,7 @@ impl MathOsMcp {
     }
 
     #[tool(
-        description = "Create role-separated statement-fidelity evidence from a closed fidelity_review_request/1 or fidelity_review_request/2 object, read its derived status, derive one exact claim version's research status, prepare and ingest non-authoritative publication records, or promote one fully replayed receipt to exact formalization proof/refutation authority. Closed actions: review_fidelity, fidelity_status, claim_status, prepare_publication, ingest_publication, promote_publication_authority. claim_status accepts exact claim identity only and never stores or accepts a verdict."
+        description = "Create or read controlled fidelity, publication, and Comparator evidence through closed application gates. Fidelity review accepts one closed fidelity_review_request/1 or fidelity_review_request/2 object. Closed actions: review_fidelity, fidelity_status, claim_status, prepare_publication, ingest_publication, promote_publication_authority, stage_comparator_authority, ingest_comparator_authority, promote_comparator_authority, comparator_authority_status. Comparator promotion accepts only a receipt plus mutation attribution; subject, result, authority, environment, and artifacts are application-derived."
     )]
     fn verify(&self, Parameters(request): Parameters<VerifyRequest>) -> CallToolResult {
         result_to_tool(self.execute_verify(request))
@@ -852,6 +887,7 @@ impl MathOsMcp {
         let mut application = self.application()?;
         match request.action {
             VerifyAction::ReviewFidelity => {
+                reject_present(request.comparator, "comparator", "review_fidelity")?;
                 reject_present(
                     request.claim_object_id,
                     "claim_object_id",
@@ -941,6 +977,7 @@ impl MathOsMcp {
                 .map_err(serialization_error)
             }
             VerifyAction::FidelityStatus => {
+                reject_present(request.comparator, "comparator", "fidelity_status")?;
                 reject_present(request.dry_run, "dry_run", "fidelity_status")?;
                 reject_present(
                     request.claim_object_id,
@@ -1015,6 +1052,7 @@ impl MathOsMcp {
                 to_value(application.fidelity_status(&formalization)?).map_err(serialization_error)
             }
             VerifyAction::ClaimStatus => {
+                reject_present(request.comparator, "comparator", "claim_status")?;
                 reject_present(request.request, "request", "claim_status")?;
                 reject_present(
                     request.formalization_object_id,
@@ -1081,6 +1119,7 @@ impl MathOsMcp {
                 to_value(application.claim_research_status(&claim)?).map_err(serialization_error)
             }
             VerifyAction::PreparePublication => {
+                reject_present(request.comparator, "comparator", "prepare_publication")?;
                 reject_present(
                     request.claim_object_id,
                     "claim_object_id",
@@ -1170,6 +1209,7 @@ impl MathOsMcp {
                 .map_err(serialization_error)
             }
             VerifyAction::IngestPublication => {
+                reject_present(request.comparator, "comparator", "ingest_publication")?;
                 reject_present(
                     request.claim_object_id,
                     "claim_object_id",
@@ -1249,6 +1289,11 @@ impl MathOsMcp {
             }
             VerifyAction::PromotePublicationAuthority => {
                 reject_present(
+                    request.comparator,
+                    "comparator",
+                    "promote_publication_authority",
+                )?;
+                reject_present(
                     request.claim_object_id,
                     "claim_object_id",
                     "promote_publication_authority",
@@ -1326,6 +1371,200 @@ impl MathOsMcp {
                     &idempotency_key,
                     mutation_dry_run(request.dry_run, "promote_publication_authority")?,
                 )?)
+                .map_err(serialization_error)
+            }
+            VerifyAction::StageComparatorAuthority => {
+                reject_legacy_verify_fields(&request, "stage_comparator_authority")?;
+                let input = required_comparator_input(
+                    request.comparator.flatten(),
+                    "stage_comparator_authority",
+                )?;
+                reject_comparator_input_fields(
+                    &input,
+                    &[
+                        "run_dir",
+                        "expected_report_hash",
+                        "expected_package_verification_hash",
+                        "plan_file",
+                        "release_dir",
+                        "expected_release_manifest_hash",
+                        "attestation_bundle_file",
+                    ],
+                    "stage_comparator_authority",
+                )?;
+                let run_dir = resolve_mcp_comparator_input(
+                    &self.config,
+                    &required(
+                        input.run_dir,
+                        "comparator.run_dir",
+                        "stage_comparator_authority",
+                    )?,
+                    true,
+                    "Comparator run directory",
+                )?;
+                let plan_file = resolve_mcp_comparator_input(
+                    &self.config,
+                    &required(
+                        input.plan_file,
+                        "comparator.plan_file",
+                        "stage_comparator_authority",
+                    )?,
+                    false,
+                    "Comparator plan",
+                )?;
+                let release_dir = resolve_mcp_comparator_input(
+                    &self.config,
+                    &required(
+                        input.release_dir,
+                        "comparator.release_dir",
+                        "stage_comparator_authority",
+                    )?,
+                    true,
+                    "Comparator source release",
+                )?;
+                let bundle_file = resolve_mcp_comparator_input(
+                    &self.config,
+                    &required(
+                        input.attestation_bundle_file,
+                        "comparator.attestation_bundle_file",
+                        "stage_comparator_authority",
+                    )?,
+                    false,
+                    "Comparator attestation bundle",
+                )?;
+                let bundle = fs::read(bundle_file).map_err(|error| {
+                    AppError::io("read MCP Comparator attestation bundle", error)
+                })?;
+                let actor = required(
+                    request.actor.flatten(),
+                    "actor",
+                    "stage_comparator_authority",
+                )?;
+                let idempotency_key = required(
+                    request.idempotency_key.flatten(),
+                    "idempotency_key",
+                    "stage_comparator_authority",
+                )?;
+                to_value(application.stage_comparator_authority(
+                    &run_dir,
+                    &required(
+                        input.expected_report_hash,
+                        "comparator.expected_report_hash",
+                        "stage_comparator_authority",
+                    )?,
+                    &required(
+                        input.expected_package_verification_hash,
+                        "comparator.expected_package_verification_hash",
+                        "stage_comparator_authority",
+                    )?,
+                    &plan_file,
+                    &release_dir,
+                    &required(
+                        input.expected_release_manifest_hash,
+                        "comparator.expected_release_manifest_hash",
+                        "stage_comparator_authority",
+                    )?,
+                    &bundle,
+                    &actor,
+                    &idempotency_key,
+                    mutation_dry_run(request.dry_run, "stage_comparator_authority")?,
+                )?)
+                .map_err(serialization_error)
+            }
+            VerifyAction::IngestComparatorAuthority => {
+                reject_legacy_verify_fields(&request, "ingest_comparator_authority")?;
+                let input = required_comparator_input(
+                    request.comparator.flatten(),
+                    "ingest_comparator_authority",
+                )?;
+                reject_comparator_input_fields(
+                    &input,
+                    &["report_artifact_hash", "attestation_bundle_artifact_hash"],
+                    "ingest_comparator_authority",
+                )?;
+                let actor = required(
+                    request.actor.flatten(),
+                    "actor",
+                    "ingest_comparator_authority",
+                )?;
+                let idempotency_key = required(
+                    request.idempotency_key.flatten(),
+                    "idempotency_key",
+                    "ingest_comparator_authority",
+                )?;
+                to_value(application.ingest_comparator_authority(
+                    &required(
+                        input.report_artifact_hash,
+                        "comparator.report_artifact_hash",
+                        "ingest_comparator_authority",
+                    )?,
+                    &required(
+                        input.attestation_bundle_artifact_hash,
+                        "comparator.attestation_bundle_artifact_hash",
+                        "ingest_comparator_authority",
+                    )?,
+                    &actor,
+                    &idempotency_key,
+                    mutation_dry_run(request.dry_run, "ingest_comparator_authority")?,
+                )?)
+                .map_err(serialization_error)
+            }
+            VerifyAction::PromoteComparatorAuthority => {
+                reject_legacy_verify_fields(&request, "promote_comparator_authority")?;
+                let input = required_comparator_input(
+                    request.comparator.flatten(),
+                    "promote_comparator_authority",
+                )?;
+                reject_comparator_input_fields(
+                    &input,
+                    &["comparator_receipt_hash"],
+                    "promote_comparator_authority",
+                )?;
+                let actor = required(
+                    request.actor.flatten(),
+                    "actor",
+                    "promote_comparator_authority",
+                )?;
+                let idempotency_key = required(
+                    request.idempotency_key.flatten(),
+                    "idempotency_key",
+                    "promote_comparator_authority",
+                )?;
+                to_value(application.promote_comparator_authority(
+                    &required(
+                        input.comparator_receipt_hash,
+                        "comparator.comparator_receipt_hash",
+                        "promote_comparator_authority",
+                    )?,
+                    &actor,
+                    &idempotency_key,
+                    mutation_dry_run(request.dry_run, "promote_comparator_authority")?,
+                )?)
+                .map_err(serialization_error)
+            }
+            VerifyAction::ComparatorAuthorityStatus => {
+                reject_legacy_verify_fields(&request, "comparator_authority_status")?;
+                reject_present(request.actor, "actor", "comparator_authority_status")?;
+                reject_present(
+                    request.idempotency_key,
+                    "idempotency_key",
+                    "comparator_authority_status",
+                )?;
+                reject_present(request.dry_run, "dry_run", "comparator_authority_status")?;
+                let input = required_comparator_input(
+                    request.comparator.flatten(),
+                    "comparator_authority_status",
+                )?;
+                reject_comparator_input_fields(
+                    &input,
+                    &["evidence_id"],
+                    "comparator_authority_status",
+                )?;
+                to_value(application.comparator_authority_status(&required(
+                    input.evidence_id,
+                    "comparator.evidence_id",
+                    "comparator_authority_status",
+                )?)?)
                 .map_err(serialization_error)
             }
         }
@@ -1463,6 +1702,154 @@ fn reject_present<T>(value: Option<T>, field: &str, action: &str) -> Result<(), 
         ));
     }
     Ok(())
+}
+
+fn required_comparator_input(
+    value: Option<ComparatorAuthorityMcpInput>,
+    action: &str,
+) -> Result<ComparatorAuthorityMcpInput, AppError> {
+    value.ok_or_else(|| missing_field("comparator", action, "verify"))
+}
+
+fn reject_legacy_verify_fields(request: &VerifyRequest, action: &str) -> Result<(), AppError> {
+    let present = [
+        ("request", request.request.is_some()),
+        ("claim_object_id", request.claim_object_id.is_some()),
+        ("claim_version_hash", request.claim_version_hash.is_some()),
+        (
+            "formalization_object_id",
+            request.formalization_object_id.is_some(),
+        ),
+        (
+            "formalization_version_hash",
+            request.formalization_version_hash.is_some(),
+        ),
+        ("outcome", request.outcome.is_some()),
+        (
+            "diagnostic_evidence_id",
+            request.diagnostic_evidence_id.is_some(),
+        ),
+        (
+            "proof_closure_evidence_id",
+            request.proof_closure_evidence_id.is_some(),
+        ),
+        (
+            "axiom_audit_evidence_id",
+            request.axiom_audit_evidence_id.is_some(),
+        ),
+        ("source_commit_sha", request.source_commit_sha.is_some()),
+        ("source_tree_sha", request.source_tree_sha.is_some()),
+        (
+            "report_artifact_hash",
+            request.report_artifact_hash.is_some(),
+        ),
+        (
+            "attestation_bundle_artifact_hash",
+            request.attestation_bundle_artifact_hash.is_some(),
+        ),
+        (
+            "publication_receipt_hash",
+            request.publication_receipt_hash.is_some(),
+        ),
+    ];
+    if let Some((field, _)) = present.into_iter().find(|(_, present)| *present) {
+        return Err(AppError::new(
+            "MCL_MCP_FIELD_FORBIDDEN",
+            format!("action `{action}` does not accept legacy verify field `{field}`"),
+            false,
+            format!("Remove `{field}` and use only the closed `comparator` object."),
+        ));
+    }
+    Ok(())
+}
+
+fn reject_comparator_input_fields(
+    input: &ComparatorAuthorityMcpInput,
+    allowed: &[&str],
+    action: &str,
+) -> Result<(), AppError> {
+    let present = [
+        ("run_dir", input.run_dir.is_some()),
+        ("expected_report_hash", input.expected_report_hash.is_some()),
+        (
+            "expected_package_verification_hash",
+            input.expected_package_verification_hash.is_some(),
+        ),
+        ("plan_file", input.plan_file.is_some()),
+        ("release_dir", input.release_dir.is_some()),
+        (
+            "expected_release_manifest_hash",
+            input.expected_release_manifest_hash.is_some(),
+        ),
+        (
+            "attestation_bundle_file",
+            input.attestation_bundle_file.is_some(),
+        ),
+        ("report_artifact_hash", input.report_artifact_hash.is_some()),
+        (
+            "attestation_bundle_artifact_hash",
+            input.attestation_bundle_artifact_hash.is_some(),
+        ),
+        (
+            "comparator_receipt_hash",
+            input.comparator_receipt_hash.is_some(),
+        ),
+        ("evidence_id", input.evidence_id.is_some()),
+    ];
+    if let Some((field, _)) = present
+        .into_iter()
+        .find(|(field, present)| *present && !allowed.contains(field))
+    {
+        return Err(AppError::new(
+            "MCL_MCP_FIELD_FORBIDDEN",
+            format!("action `{action}` does not accept `comparator.{field}`"),
+            false,
+            format!("Remove `comparator.{field}` from the `{action}` action."),
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_mcp_comparator_input(
+    config: &ResolvedConfig,
+    requested: &str,
+    directory: bool,
+    label: &str,
+) -> Result<PathBuf, AppError> {
+    let requested = Path::new(requested);
+    let path = if requested.is_absolute() {
+        requested.to_owned()
+    } else {
+        config.root.join(requested)
+    };
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|error| AppError::io("inspect MCP Comparator authority input", error))?;
+    if metadata.file_type().is_symlink()
+        || (directory && !metadata.is_dir())
+        || (!directory && !metadata.is_file())
+    {
+        return Err(AppError::new(
+            "MCL_COMPARATOR_AUTHORITY_PATH_UNSAFE",
+            format!(
+                "{label} must be a real {}",
+                if directory { "directory" } else { "file" }
+            ),
+            false,
+            "Place exact protected inputs under the initialized instance root without links.",
+        ));
+    }
+    let path = path
+        .canonicalize()
+        .map_err(|error| AppError::io("canonicalize MCP Comparator authority input", error))?;
+    if !path.starts_with(&config.root) {
+        return Err(AppError::new(
+            "MCL_COMPARATOR_AUTHORITY_PATH_UNSAFE",
+            format!("{label} {} escapes the instance root", path.display()),
+            false,
+            "Place exact protected inputs under the initialized instance root.",
+        ));
+    }
+    Ok(path)
 }
 
 fn reject_pedagogy_fields(
