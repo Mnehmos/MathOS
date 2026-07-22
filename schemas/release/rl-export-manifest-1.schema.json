@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/release/rl-export-manifest/1",
+  "title": "MathOS RL Export Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "plan_hash", "publication_cutoff", "source_releases", "leakage_report_sha256", "task_count", "component_count", "members"],
+  "properties": {
+    "schema_version": {"const": "rl_export_manifest/1"},
+    "plan_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "publication_cutoff": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "source_releases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["release_id", "release_manifest_hash", "release_profile", "split", "published_on", "leakage_component_id"],
+        "properties": {
+          "release_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
+          "release_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "release_profile": {"enum": ["private", "public"]},
+          "split": {"enum": ["train", "validation", "public_test", "held_out_evaluation"]},
+          "published_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+          "leakage_component_id": {"type": "string", "pattern": "^rl_component_[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "leakage_report_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "task_count": {"type": "integer", "minimum": 0, "maximum": 8192},
+    "component_count": {"type": "integer", "minimum": 1, "maximum": 64},
+    "members": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8192,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "kind", "content_hash", "byte_size", "license_expression", "restriction"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "kind": {"enum": ["plan", "leakage_report", "task", "artifact", "source_release_manifest", "source_member", "schema"]},
+          "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "byte_size": {"type": "integer", "minimum": 0, "maximum": 268435456},
+          "license_expression": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+          "restriction": {"enum": ["public", "restricted", "private"]}
+        }
+      }
+    }
+  }
+}

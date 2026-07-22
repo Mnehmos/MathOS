@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/release/rl-leakage-report/1",
+  "title": "MathOS RL Leakage Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "plan_hash", "components", "task_families", "cross_split_overlap_count", "temporal_policy_verified"],
+  "properties": {
+    "schema_version": {"const": "rl_leakage_report/1"},
+    "plan_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["component_id", "split", "release_ids", "leakage_keys", "task_ids"],
+        "properties": {
+          "component_id": {"type": "string", "pattern": "^rl_component_[0-9a-f]{64}$"},
+          "split": {"enum": ["train", "validation", "public_test", "held_out_evaluation"]},
+          "release_ids": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}},
+          "leakage_keys": {"type": "array", "minItems": 1, "maxItems": 8192, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+          "task_ids": {"type": "array", "maxItems": 8192, "uniqueItems": true, "items": {"type": "string", "pattern": "^rl_task_[0-9a-f]{64}$"}}
+        }
+      }
+    },
+    "task_families": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["family", "emitted_task_count", "skip_reason"],
+        "properties": {
+          "family": {"enum": ["formalization", "fidelity_selection", "counterexample", "statement_repair", "declaration_retrieval", "decomposition", "proof_generation", "proof_repair", "generalization", "explanation", "curriculum_ordering", "frontier_selection"]},
+          "emitted_task_count": {"type": "integer", "minimum": 0},
+          "skip_reason": {"type": ["string", "null"], "minLength": 1, "maxLength": 256}
+        }
+      }
+    },
+    "cross_split_overlap_count": {"const": 0},
+    "temporal_policy_verified": {"const": true}
+  }
+}

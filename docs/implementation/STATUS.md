@@ -26,6 +26,8 @@ Issue [#54](https://github.com/Mnehmos/MathOS/issues/54) completed the focused P
 
 Artifact `8516235885`, `publication-boundary-e977d7eb69bfc262510c276912ba5584f3514a44`, is 417,954 archive bytes with GitHub SHA-256 `55b4342eb03d19941d73086b6c44aae5083c834f824205a6138c7ddcdfe7d1d4`; it expands to 325 files and 770,532 bytes. Independent audit matched all 12 corpus-directory files, all 11 manifest member hashes and sizes, found no symbolic links, and confirmed byte-identical copied source manifest and Lean module. Source release `7b002ffe0fcaeecd0fe745dcedd135442b7372985a0fac5b9ffbe03af4c691b1` reprojected exactly to corpus manifest `4cb348d8a446f800d74865909c8fff66b310c5cd0fbe6fb00f6830d0961ed705`, packet `690d7f8a18fad1fee415b5d6ad4efeaf154a2a7dc366b892967230d49db6c69d`, 11 members, and 101,695 member bytes. The retained preview, build, verification, and playtest summary agree; MathOS offline verification and the pinned upstream packet and MCIP hash validators reported zero findings. RL/evaluation export, leakage-aware splits, Comparator, remaining pilots, and full 1.0 acceptance remain unfinished.
 
+Issue [#57](https://github.com/Mnehmos/MathOS/issues/57) tracks the active Phase 6c implementation. The branch defines closed RL plan/task/leakage-report/export-manifest contracts, receipt-derived temporal policy, component-level split isolation from required declarations plus exact release relationships, private-held-out/public-split policy, evidence-backed task projection, and database-independent deterministic verification after the existing explicit release-replay gate. This criterion remains unfinished until the exact reviewed head, merged tree, protected Pilot A export, and independently downloaded artifact pass; unsupported-by-evidence task families, Comparator, remaining pilots, and full 1.0 acceptance also remain open.
+
 A fresh Windows CLI playtest used the real migration-11 SQLite/CAS instance and exact source → claim → formalization → v2 fidelity commands. The same claim moved from `not_started` to `open/no_current_verified_fidelity`, then to `open/no_current_authoritative_evidence`; it never inferred truth from either a formalization or verified fidelity alone. Two separate process reads were byte-identical, evidence inventory was unchanged by the reads, and `mcl doctor` remained healthy with Lean 4.32.0 visible. The protected merged-tree artifact separately records `open/no_current_verified_fidelity` after formal authority and `proved` only after role-separated verified v2 fidelity.
 
 Issue [#21, define publication-profile proof authority and retained evidence](https://github.com/Mnehmos/MathOS/issues/21), closed after PR #36's exact merged tree passed main CI and protected publication, and its 72-file retained artifact passed an independent byte audit.
@@ -240,7 +242,7 @@ These items establish only part of the product foundation and trace model. One e
 
 ## Next highest-priority criteria
 
-1. Implement leakage-aware RL/evaluation splits without promoting private, quarantined, benchmark, or held-out evidence.
+1. Complete review, protected execution, and independent artifact audit for issue #57's leakage-aware RL/evaluation export without promoting private or held-out evidence.
 2. Define the Comparator package boundary from frozen evidence without granting authority.
 3. Continue the remaining pilots and section 30 criteria without treating this partial path as MathOS 1.0.
 
@@ -288,4 +290,4 @@ Observed validation evidence for this update:
 
 ## Release readiness
 
-Not ready. Protected Pilot A authority, fidelity, repair, pedagogy, portable-release, and corpus-export evidence exist, but leakage-aware RL/evaluation exports, Comparator, remaining pilots, later interfaces, and many section 30 criteria are still unfinished.
+Not ready. Protected Pilot A authority, fidelity, repair, pedagogy, portable-release, and corpus-export evidence exist. Phase 6c RL/evaluation implementation is under review and not yet protected/audited; Comparator, remaining pilots, later interfaces, and many section 30 criteria are also unfinished.

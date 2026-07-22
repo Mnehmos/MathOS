@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/release/rl-task/1",
+  "title": "MathOS RL Task v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "family", "split", "leakage_component_id", "input", "target", "evidence", "trust", "policy"],
+  "properties": {
+    "schema_version": {"const": "rl_task/1"},
+    "task_id": {"type": "string", "pattern": "^rl_task_[0-9a-f]{64}$"},
+    "family": {"enum": ["formalization", "fidelity_selection", "counterexample", "statement_repair", "declaration_retrieval", "decomposition", "proof_generation", "proof_repair", "generalization", "explanation", "curriculum_ordering", "frontier_selection"]},
+    "split": {"enum": ["train", "validation", "public_test", "held_out_evaluation"]},
+    "leakage_component_id": {"type": "string", "pattern": "^rl_component_[0-9a-f]{64}$"},
+    "input": {"type": "object"},
+    "target": {"type": "object"},
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "content_hash"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_release_id", "source_release_manifest_hash", "publication_receipt_hash", "authority_evidence_ids", "fidelity_evidence_ids", "kernel_verified"],
+      "properties": {
+        "source_release_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
+        "source_release_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "publication_receipt_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "authority_evidence_ids": {"type": "array", "minItems": 1, "maxItems": 256, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}},
+        "fidelity_evidence_ids": {"type": "array", "minItems": 1, "maxItems": 256, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}},
+        "kernel_verified": {"const": true}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["restriction", "license_expressions", "license_complete"],
+      "properties": {
+        "restriction": {"enum": ["public", "restricted", "private"]},
+        "license_expressions": {"type": "array", "maxItems": 128, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+        "license_complete": {"type": "boolean"}
+      }
+    }
+  }
+}
