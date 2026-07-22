@@ -1379,6 +1379,82 @@ fn corpus_export_verification_is_database_independent() {
 }
 
 #[test]
+fn rl_export_and_verification_do_not_require_an_instance_root_or_configuration() {
+    let parent = TempDir::new().expect("temporary parent");
+    let missing_root = parent.path().join("missing-instance");
+    let source_root = parent.path().join("source-releases");
+    let export_dir = parent.path().join("rl-export");
+    let output_dir = parent.path().join("new-rl-export");
+    let plan_path = parent.path().join("plan.json");
+    fs::create_dir(&source_root).expect("source root creates");
+    fs::create_dir(&export_dir).expect("empty export creates");
+    fs::write(
+        &plan_path,
+        serde_json::to_vec(&json!({
+            "schema_version": "rl_export_plan/1",
+            "publication_cutoff": "2026-07-21",
+            "releases": [{
+                "release_id": "fixture",
+                "expected_manifest_hash": "a".repeat(64),
+                "split": "held_out_evaluation",
+                "published_on": "2026-07-22",
+                "benchmark_identity": "fixture-benchmark",
+                "leakage_labels": {
+                    "theorem_dependency_components": ["fixture-dependency"],
+                    "equivalent_formalizations": ["fixture-equivalence"],
+                    "shared_sources": ["fixture-source"],
+                    "certificate_families": ["fixture-certificate"],
+                    "proof_variants": ["fixture-proof"]
+                }
+            }]
+        }))
+        .expect("plan JSON"),
+    )
+    .expect("plan writes");
+
+    let export = mcl_at(
+        &missing_root,
+        &[
+            "release",
+            "export-rl",
+            "--plan",
+            plan_path.to_str().expect("plan path is UTF-8"),
+            "--source-root",
+            source_root.to_str().expect("source root is UTF-8"),
+            "--output-dir",
+            output_dir.to_str().expect("output path is UTF-8"),
+        ],
+    );
+    assert!(!export.status.success());
+    assert!(!missing_root.exists());
+    assert!(!output_dir.exists());
+    let export_error: Value = serde_json::from_slice(&export.stderr).expect("export error JSON");
+    assert_eq!(export_error["code"], "MCL_IO_ERROR");
+    assert_ne!(export_error["code"], "MCL_INSTANCE_NOT_INITIALIZED");
+
+    let verify = mcl_at(
+        &missing_root,
+        &[
+            "release",
+            "verify-rl-export",
+            "--export-dir",
+            export_dir.to_str().expect("export path is UTF-8"),
+            "--expected-manifest-hash",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--plan",
+            plan_path.to_str().expect("plan path is UTF-8"),
+            "--source-root",
+            source_root.to_str().expect("source root is UTF-8"),
+        ],
+    );
+    assert!(!verify.status.success());
+    assert!(!missing_root.exists());
+    let verify_error: Value = serde_json::from_slice(&verify.stderr).expect("verify error JSON");
+    assert_eq!(verify_error["code"], "MCL_IO_ERROR");
+    assert_ne!(verify_error["code"], "MCL_INSTANCE_NOT_INITIALIZED");
+}
+
+#[test]
 fn corpus_export_rejects_unpinned_curation_before_writing() {
     let parent = TempDir::new().expect("temporary parent");
     let missing_root = parent.path().join("missing-instance");

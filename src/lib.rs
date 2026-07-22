@@ -9,5 +9,6 @@ pub mod error;
 pub mod mcp;
 mod publication_attestation;
 pub mod release;
+pub mod rl_export;
 mod store;
 pub mod verifier;

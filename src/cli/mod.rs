@@ -571,6 +571,10 @@ enum ReleaseAction {
     Export(ReleaseExportOptions),
     /// Verify a copied MathCorpus/MCIP export by deterministic offline reprojection.
     VerifyExport(ReleaseVerifyExportOptions),
+    /// Project a leakage-declared frozen-release cohort into RL/evaluation tasks offline.
+    ExportRl(ReleaseExportRlOptions),
+    /// Verify an RL/evaluation export by deterministic offline cohort reprojection.
+    VerifyRlExport(ReleaseVerifyRlExportOptions),
 }
 
 #[derive(Debug, Args)]
@@ -652,6 +656,36 @@ struct ReleaseVerifyExportOptions {
 
     #[arg(long)]
     source_bundle_dir: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct ReleaseExportRlOptions {
+    #[arg(long)]
+    plan: PathBuf,
+
+    #[arg(long)]
+    source_root: PathBuf,
+
+    #[arg(long)]
+    output_dir: PathBuf,
+
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct ReleaseVerifyRlExportOptions {
+    #[arg(long)]
+    export_dir: PathBuf,
+
+    #[arg(long)]
+    expected_manifest_hash: String,
+
+    #[arg(long)]
+    plan: PathBuf,
+
+    #[arg(long)]
+    source_root: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -812,6 +846,26 @@ impl Cli {
                         &options.source_bundle_dir,
                     )?)
                     .expect("corpus export verification report is serializable"),
+                ),
+                ReleaseAction::ExportRl(options) => Some(
+                    to_value(crate::rl_export::export_rl(
+                        crate::rl_export::RlExportRequest {
+                            plan_path: &options.plan,
+                            source_root: &options.source_root,
+                            output_dir: &options.output_dir,
+                            dry_run: options.dry_run,
+                        },
+                    )?)
+                    .expect("RL export outcome is serializable"),
+                ),
+                ReleaseAction::VerifyRlExport(options) => Some(
+                    to_value(crate::rl_export::verify_rl_export(
+                        &options.export_dir,
+                        &options.expected_manifest_hash,
+                        &options.plan,
+                        &options.source_root,
+                    )?)
+                    .expect("RL export verification report is serializable"),
                 ),
                 ReleaseAction::Build(_) => None,
             };
@@ -1601,6 +1655,22 @@ fn execute_release(
             &options.source_bundle_dir,
         )?)
         .expect("corpus export verification report is serializable"),
+        ReleaseAction::ExportRl(options) => to_value(crate::rl_export::export_rl(
+            crate::rl_export::RlExportRequest {
+                plan_path: &options.plan,
+                source_root: &options.source_root,
+                output_dir: &options.output_dir,
+                dry_run: options.dry_run,
+            },
+        )?)
+        .expect("RL export outcome is serializable"),
+        ReleaseAction::VerifyRlExport(options) => to_value(crate::rl_export::verify_rl_export(
+            &options.export_dir,
+            &options.expected_manifest_hash,
+            &options.plan,
+            &options.source_root,
+        )?)
+        .expect("RL export verification report is serializable"),
     };
     Ok(CliOutcome {
         value,

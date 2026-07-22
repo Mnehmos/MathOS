@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/release/rl-export-plan/1",
+  "title": "MathOS RL Export Plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "publication_cutoff", "releases"],
+  "properties": {
+    "schema_version": {"const": "rl_export_plan/1"},
+    "publication_cutoff": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "releases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/release"}
+    }
+  },
+  "$defs": {
+    "label": {"type": "string", "minLength": 1, "maxLength": 256},
+    "labels": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/label"}
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["release_id", "expected_manifest_hash", "split", "published_on", "benchmark_identity", "leakage_labels"],
+      "properties": {
+        "release_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
+        "expected_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "split": {"enum": ["train", "validation", "public_test", "held_out_evaluation"]},
+        "published_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "benchmark_identity": {"$ref": "#/$defs/label"},
+        "leakage_labels": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["theorem_dependency_components", "equivalent_formalizations", "shared_sources", "certificate_families", "proof_variants"],
+          "properties": {
+            "theorem_dependency_components": {"$ref": "#/$defs/labels"},
+            "equivalent_formalizations": {"$ref": "#/$defs/labels"},
+            "shared_sources": {"$ref": "#/$defs/labels"},
+            "certificate_families": {"$ref": "#/$defs/labels"},
+            "proof_variants": {"$ref": "#/$defs/labels"}
+          }
+        }
+      }
+    }
+  }
+}

@@ -16,6 +16,7 @@ pub mod fidelity;
 pub mod publication;
 pub mod release;
 pub mod research_status;
+pub mod rl;
 pub mod schemas;
 pub mod verifier;
 
@@ -72,6 +73,14 @@ pub use research_status::{
     ClaimResearchStatusNonqualification, ClaimResearchStatusNonqualificationReason,
     ClaimResearchStatusSnapshot, ClaimResearchStatusWitness, ClaimResearchStatusWitnessKind,
     ResearchStatus,
+};
+pub use rl::{
+    MAX_RL_MEMBER_BYTES, MAX_RL_MEMBERS, MAX_RL_RELEASES, MAX_RL_TOTAL_BYTES,
+    RL_EXPORT_MANIFEST_SCHEMA_VERSION, RL_EXPORT_PLAN_SCHEMA_VERSION,
+    RL_LEAKAGE_REPORT_SCHEMA_VERSION, RL_TASK_SCHEMA_VERSION, RlExportManifest, RlExportMember,
+    RlExportMemberKind, RlExportPlan, RlExportSourceBinding, RlLeakageComponent, RlLeakageLabels,
+    RlLeakageReport, RlPlanRelease, RlSplit, RlTask, RlTaskEvidenceReference, RlTaskFamily,
+    RlTaskFamilySummary, RlTaskPolicy, RlTaskTrust,
 };
 pub use verifier::{
     VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,

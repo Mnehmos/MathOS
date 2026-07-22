@@ -4,3 +4,6 @@
 # These vendored files are cryptographic inputs and must retain their upstream bytes.
 schemas/mathcorpus/upstream-*/* -text
 schemas/mcip/v1/upstream-*/* -text
+
+# RL export embeds these schemas as deterministic member bytes on every platform.
+schemas/release/rl-*.schema.json text eol=lf

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 5 ]]; then
-  printf 'usage: %s <state-root> <proof-candidate> <proof-ingestion> <release-output> <corpus-output>\n' "$0" >&2
+if [[ $# -ne 6 ]]; then
+  printf 'usage: %s <state-root> <proof-candidate> <proof-ingestion> <release-output> <corpus-output> <rl-output>\n' "$0" >&2
   exit 64
 fi
 
@@ -11,6 +11,7 @@ candidate_dir="$2"
 ingestion_dir="$3"
 release_output="$4"
 corpus_output="$5"
+rl_output="$6"
 mcl_bin="${PUBLICATION_MCL_BIN:-target/debug/mcl}"
 content_file="fixtures/release/pilot-a-repaired-proof-learning-unit.txt"
 
@@ -32,6 +33,10 @@ done
   printf 'Pilot A corpus export output already exists or is unsafe\n' >&2
   exit 66
 }
+[[ ! -e "$rl_output" && ! -L "$rl_output" ]] || {
+  printf 'Pilot A RL export output already exists or is unsafe\n' >&2
+  exit 66
+}
 
 state_root="$(cd "$state_root" && pwd -P)"
 candidate_dir="$(cd "$candidate_dir" && pwd -P)"
@@ -40,6 +45,8 @@ release_parent="$(cd "$(dirname "$release_output")" && pwd -P)"
 release_output="$release_parent/$(basename "$release_output")"
 corpus_parent="$(cd "$(dirname "$corpus_output")" && pwd -P)"
 corpus_output="$corpus_parent/$(basename "$corpus_output")"
+rl_parent="$(cd "$(dirname "$rl_output")" && pwd -P)"
+rl_output="$rl_parent/$(basename "$rl_output")"
 evidence_dir="$state_root/release-build-evidence"
 [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" ]] || {
   printf 'Pilot A release evidence output already exists or is unsafe\n' >&2
@@ -430,6 +437,130 @@ jq -e \
   .bindings_verified == true and
   .deterministic_reprojection_verified == true
 ' "$evidence_dir/corpus-export-verification.json" >/dev/null
+
+release_id="$(basename "$release_output")"
+published_timestamp="$(jq -er '.created_at' "$release_output/reports/publication-receipt.json")"
+published_on="$(date --utc --date="@$published_timestamp" +%F)"
+publication_cutoff="$(date --utc --date="$published_on - 1 day" +%F)"
+jq -cnS \
+  --arg release_id "$release_id" \
+  --arg manifest_hash "$manifest_hash" \
+  --arg published_on "$published_on" \
+  --arg publication_cutoff "$publication_cutoff" '
+  {
+    schema_version: "rl_export_plan/1",
+    publication_cutoff: $publication_cutoff,
+    releases: [{
+      release_id: $release_id,
+      expected_manifest_hash: $manifest_hash,
+      split: "held_out_evaluation",
+      published_on: $published_on,
+      benchmark_identity: "mathos-pilot-a-prime-parity",
+      leakage_labels: {
+        theorem_dependency_components: ["pilot-a-prime-parity"],
+        equivalent_formalizations: ["pilot-a-prime-parity-refutation-repair"],
+        shared_sources: ["pilot-a-protected-source"],
+        certificate_families: ["pilot-a-refutation-repair-certificate"],
+        proof_variants: ["pilot-a-refutation-repair-module"]
+      }
+    }]
+  }' >"$evidence_dir/rl-export-plan.json"
+
+"$mcl_bin" --root "$state_root/nonexistent-offline-root" --json release export-rl \
+  --plan "$evidence_dir/rl-export-plan.json" \
+  --source-root "$release_parent" \
+  --output-dir "$rl_output" \
+  --dry-run \
+  >"$evidence_dir/rl-export-dry-run.json"
+rl_preview_hash="$(
+  jq -er '
+    select(
+      .dry_run == true and
+      .source_release_count == 1 and
+      .component_count == 1 and
+      .task_count == 10
+    ) | .manifest_hash
+  ' "$evidence_dir/rl-export-dry-run.json"
+)"
+[[ ! -e "$rl_output" && ! -L "$rl_output" ]] || {
+  printf 'RL export dry-run wrote its output directory\n' >&2
+  exit 71
+}
+
+"$mcl_bin" --root "$state_root/nonexistent-offline-root" --json release export-rl \
+  --plan "$evidence_dir/rl-export-plan.json" \
+  --source-root "$release_parent" \
+  --output-dir "$rl_output" \
+  >"$evidence_dir/rl-export-build.json"
+rl_manifest_hash="$(sha256sum "$rl_output/manifest.json" | cut -d ' ' -f 1)"
+[[ "$rl_preview_hash" == "$rl_manifest_hash" ]] || {
+  printf 'RL export dry-run and build manifest identities differ\n' >&2
+  exit 71
+}
+jq -e \
+  --arg manifest_hash "$rl_manifest_hash" \
+  --arg source_manifest_hash "$manifest_hash" '
+  .dry_run == false and
+  .manifest_hash == $manifest_hash and
+  .source_release_count == 1 and
+  .component_count == 1 and
+  .task_count == 10 and
+  .member_count > 10 and
+  .total_member_bytes > 0
+' "$evidence_dir/rl-export-build.json" >/dev/null
+jq -e \
+  --arg source_manifest_hash "$manifest_hash" '
+  .schema_version == "rl_export_manifest/1" and
+  .task_count == 10 and
+  .component_count == 1 and
+  (.source_releases | length) == 1 and
+  .source_releases[0].release_manifest_hash == $source_manifest_hash and
+  .source_releases[0].release_profile == "private" and
+  .source_releases[0].split == "held_out_evaluation" and
+  ([.members[] | select(.kind == "task") | .restriction] | all(. == "private"))
+' "$rl_output/manifest.json" >/dev/null
+jq -e '
+  .cross_split_overlap_count == 0 and
+  .temporal_policy_verified == true and
+  (.components | length) == 1 and
+  .components[0].split == "held_out_evaluation" and
+  (.components[0].task_ids | length) == 10 and
+  ([.task_families[] | select(.emitted_task_count > 0) | .family] | sort) ==
+    (["counterexample", "declaration_retrieval", "fidelity_selection", "formalization", "proof_generation", "statement_repair"] | sort) and
+  ([.task_families[] | select(.emitted_task_count == 0) | .skip_reason] | all(type == "string"))
+' "$rl_output/leakage/report.json" >/dev/null
+[[ -z "$(find "$rl_output" -type l -print -quit)" ]] || {
+  printf 'RL export contains a symbolic link\n' >&2
+  exit 71
+}
+
+rl_copy="$rl_parent/$(basename "$rl_output")-clean-copy"
+[[ ! -e "$rl_copy" && ! -L "$rl_copy" ]] || {
+  printf 'clean RL export copy destination already exists\n' >&2
+  exit 66
+}
+cp -a -- "$rl_output" "$rl_copy"
+"$mcl_bin" --root "$state_root/nonexistent-offline-root" --json release verify-rl-export \
+  --export-dir "$rl_copy" \
+  --expected-manifest-hash "$rl_manifest_hash" \
+  --plan "$evidence_dir/rl-export-plan.json" \
+  --source-root "$release_parent" \
+  >"$evidence_dir/rl-export-verification.json"
+jq -e \
+  --arg manifest_hash "$rl_manifest_hash" '
+  .manifest_hash == $manifest_hash and
+  .source_release_count == 1 and
+  .component_count == 1 and
+  .task_count == 10 and
+  .database_independent == true and
+  .inventory_verified == true and
+  .hashes_verified == true and
+  .schemas_verified == true and
+  .split_isolation_verified == true and
+  .temporal_policy_verified == true and
+  .source_releases_verified == true and
+  .deterministic_reprojection_verified == true
+' "$evidence_dir/rl-export-verification.json" >/dev/null
 restore_database
 trap - EXIT
 
@@ -441,17 +572,22 @@ jq -cnS \
   --arg release_output "$release_output" \
   --arg corpus_manifest_hash "$corpus_manifest_hash" \
   --arg corpus_output "$corpus_output" \
+  --arg rl_manifest_hash "$rl_manifest_hash" \
+  --arg rl_output "$rl_output" \
   '{
-    schema_version: "pilot_a_release_playtest/2",
+    schema_version: "pilot_a_release_playtest/3",
     manifest_hash: $manifest_hash,
     corpus_export_manifest_hash: $corpus_manifest_hash,
+    rl_export_manifest_hash: $rl_manifest_hash,
     publication_receipt_hash: $receipt_hash,
     pedagogy_root: {object_id: $root_object_id, version_hash: $root_version_hash},
     release_output: $release_output,
     corpus_export_output: $corpus_output,
+    rl_export_output: $rl_output,
     database_hidden_during_verification: true,
     clean_copy_verified: true,
     lean_replay_succeeded: true,
-    corpus_export_reprojection_succeeded: true
+    corpus_export_reprojection_succeeded: true,
+    rl_export_reprojection_succeeded: true
   }' >"$evidence_dir/playtest-summary.json"
 cat "$evidence_dir/playtest-summary.json"
