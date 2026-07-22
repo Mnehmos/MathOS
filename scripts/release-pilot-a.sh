@@ -157,8 +157,8 @@ build_unit() {
     --object-id "$draft_object_id" \
     --expected-head "$draft_version_hash" \
     --decision reviewed \
-    --training-status eligible_private \
-    --notes-json '["Checked against the exact protected source, repaired claim, formalization, and publication receipt."]' \
+    --training-status ineligible \
+    --notes-json '["Checked against the exact protected source, repaired claim, formalization, and publication receipt; the restricted source keeps this unit training-ineligible."]' \
     --actor pilot-a-release-reviewer \
     --idempotency-key "pilot-a-release-$name-review:$receipt_hash" \
     >"$evidence_dir/$name-review.json"
@@ -185,7 +185,7 @@ build_unit() {
   jq -e '
     .valid == true and
     .review_state == "reviewed" and
-    .training_status == "eligible_private"
+    .training_status == "ineligible"
   ' "$evidence_dir/$name-validation.json" >/dev/null
 }
 
@@ -226,7 +226,7 @@ root_version_hash="${unit_version_hashes[mastery_check]}"
 jq -e '
   (.units | length) == 5 and
   ([.units[].unit.payload.review.state] | all(. == "reviewed")) and
-  ([.units[].unit.payload.training_status] | all(. == "eligible_private"))
+  ([.units[].unit.payload.training_status] | all(. == "ineligible"))
 ' "$evidence_dir/pedagogy-path.json" >/dev/null
 
 "$mcl_bin" --root "$state_root" --json release build \
