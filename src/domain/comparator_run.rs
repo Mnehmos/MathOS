@@ -7,6 +7,7 @@ use crate::error::AppError;
 
 pub const COMPARATOR_RUN_REPORT_SCHEMA_VERSION: &str = "comparator_run_report/1";
 pub const COMPARATOR_RUN_LEAN_TOOLCHAIN: &str = "leanprover/lean4:v4.32.0";
+pub const COMPARATOR_RUN_GO_TOOLCHAIN: &str = "go version go1.24.2 linux/amd64";
 pub const COMPARATOR_RUN_REPOSITORY: &str = "Mnehmos/MathOS";
 pub const COMPARATOR_RUN_REPOSITORY_ID: &str = "1305399818";
 pub const COMPARATOR_RUN_WORKFLOW_PATH: &str = ".github/workflows/publication.yml";
@@ -88,6 +89,7 @@ pub struct ComparatorRunToolBinding {
     pub repository: String,
     pub commit: String,
     pub source_tree: String,
+    pub build_toolchain: String,
     pub binary: ComparatorRunFileBinding,
 }
 
@@ -298,6 +300,8 @@ impl ComparatorRunReport {
                 || tool.commit != commit
                 || tool.source_tree != tree
                 || tool.binary.byte_size == 0
+                || (name != "landrun" && tool.build_toolchain != COMPARATOR_RUN_LEAN_TOOLCHAIN)
+                || (name == "landrun" && tool.build_toolchain != COMPARATOR_RUN_GO_TOOLCHAIN)
             {
                 return Err(run_error(format!(
                     "Comparator run tool `{name}` does not use the fixed source identity"
@@ -541,6 +545,7 @@ mod tests {
                     repository: super::super::COMPARATOR_REPOSITORY.to_owned(),
                     commit: COMPARATOR_RUN_COMPARATOR_COMMIT.to_owned(),
                     source_tree: COMPARATOR_RUN_COMPARATOR_TREE.to_owned(),
+                    build_toolchain: COMPARATOR_RUN_LEAN_TOOLCHAIN.to_owned(),
                     binary: binding("comparator.bin"),
                 },
                 ComparatorRunToolBinding {
@@ -548,6 +553,7 @@ mod tests {
                     repository: super::super::LEAN4EXPORT_REPOSITORY.to_owned(),
                     commit: COMPARATOR_RUN_LEAN4EXPORT_COMMIT.to_owned(),
                     source_tree: COMPARATOR_RUN_LEAN4EXPORT_TREE.to_owned(),
+                    build_toolchain: COMPARATOR_RUN_LEAN_TOOLCHAIN.to_owned(),
                     binary: binding("lean4export.bin"),
                 },
                 ComparatorRunToolBinding {
@@ -555,6 +561,7 @@ mod tests {
                     repository: super::super::LANDRUN_REPOSITORY.to_owned(),
                     commit: COMPARATOR_RUN_LANDRUN_COMMIT.to_owned(),
                     source_tree: COMPARATOR_RUN_LANDRUN_TREE.to_owned(),
+                    build_toolchain: COMPARATOR_RUN_GO_TOOLCHAIN.to_owned(),
                     binary: binding("landrun.bin"),
                 },
             ],

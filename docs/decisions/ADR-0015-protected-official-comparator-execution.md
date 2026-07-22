@@ -33,6 +33,9 @@ The job builds and retains binaries from these exact source identities:
 - landrun `5ed4a3db3a4ad930d577215c6b9abaa19df7f99f`, tree
   `890013a5099a92792cbacd2cfff91af3f13cec9c`.
 
+Comparator and lean4export are built with Lean `v4.32.0`; landrun is built with pinned Go
+`1.24.2`. The report binds those build toolchains as well as the resulting binaries.
+
 Before copying `Challenge.lean`, `Solution.lean`, and `config.json`, the runner creates the
 dependency-free Lake manifest under Lean `v4.32.0`. The resulting harness must have exactly those
 three source files and three runner-owned Lake files, with no `.lake` directory or `.olean` file.

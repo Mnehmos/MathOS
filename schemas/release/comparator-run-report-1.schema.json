@@ -253,36 +253,39 @@
     "comparator_tool": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "repository", "commit", "source_tree", "binary"],
+      "required": ["name", "repository", "commit", "source_tree", "build_toolchain", "binary"],
       "properties": {
         "name": {"const": "comparator"},
         "repository": {"const": "https://github.com/leanprover/comparator"},
         "commit": {"const": "68a064109f01c08f47c8edc9f51d6a2bbffaa188"},
         "source_tree": {"const": "0bb408593d6e5f625db53b3be16e3f1cc91a7524"},
+        "build_toolchain": {"const": "leanprover/lean4:v4.32.0"},
         "binary": {"allOf": [{"$ref": "#/$defs/binary_file"}, {"properties": {"path": {"const": "comparator.bin"}}}]}
       }
     },
     "lean4export_tool": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "repository", "commit", "source_tree", "binary"],
+      "required": ["name", "repository", "commit", "source_tree", "build_toolchain", "binary"],
       "properties": {
         "name": {"const": "lean4export"},
         "repository": {"const": "https://github.com/leanprover/lean4export"},
         "commit": {"const": "af5aa64bb914c3c2c781f378088dbd38acf4f804"},
         "source_tree": {"const": "5058a7945d24656600ca05917e3c8c174485bcf5"},
+        "build_toolchain": {"const": "leanprover/lean4:v4.32.0"},
         "binary": {"allOf": [{"$ref": "#/$defs/binary_file"}, {"properties": {"path": {"const": "lean4export.bin"}}}]}
       }
     },
     "landrun_tool": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "repository", "commit", "source_tree", "binary"],
+      "required": ["name", "repository", "commit", "source_tree", "build_toolchain", "binary"],
       "properties": {
         "name": {"const": "landrun"},
         "repository": {"const": "https://github.com/Zouuup/landrun"},
         "commit": {"const": "5ed4a3db3a4ad930d577215c6b9abaa19df7f99f"},
         "source_tree": {"const": "890013a5099a92792cbacd2cfff91af3f13cec9c"},
+        "build_toolchain": {"const": "go version go1.24.2 linux/amd64"},
         "binary": {"allOf": [{"$ref": "#/$defs/binary_file"}, {"properties": {"path": {"const": "landrun.bin"}}}]}
       }
     }

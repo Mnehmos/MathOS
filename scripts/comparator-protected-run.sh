@@ -61,6 +61,10 @@ commit_pattern='^[0-9a-f]{40}$'
   printf 'official Comparator execution refuses root\n' >&2
   exit 65
 }
+[[ "$(go version)" == "go version go1.24.2 linux/amd64" ]] || {
+  printf 'official Comparator execution requires the pinned Go 1.24.2 landrun builder\n' >&2
+  exit 65
+}
 [[ -x "$mcl_bin" && -d "$boundary_root" && ! -L "$boundary_root" \
   && -d "$package_source" && ! -L "$package_source" \
   && -d "$release_source" && ! -L "$release_source" \
@@ -376,6 +380,7 @@ harness_files="$(jq -cn \
 source_tree="$(git rev-parse 'HEAD^{tree}')"
 systemd_version="$(systemd --version | sed -n '1p')"
 runner_image="${ImageOS:-ubuntu}"
+go_version="$(go version)"
 
 jq -cnS \
   --arg classification "$classification" \
@@ -395,6 +400,7 @@ jq -cnS \
   --arg runner_image "$runner_image" \
   --arg kernel_release "$(uname -r)" \
   --arg systemd_version "$systemd_version" \
+  --arg go_version "$go_version" \
   --argjson runner_uid "$(id -u)" \
   --argjson comparator_binary "$(binding comparator.bin "$bundle/comparator.bin")" \
   --argjson lean4export_binary "$(binding lean4export.bin "$bundle/lean4export.bin")" \
@@ -451,9 +457,9 @@ jq -cnS \
       runner_uid:$runner_uid
     },
     tools:[
-      {name:"comparator",repository:"https://github.com/leanprover/comparator",commit:"68a064109f01c08f47c8edc9f51d6a2bbffaa188",source_tree:"0bb408593d6e5f625db53b3be16e3f1cc91a7524",binary:$comparator_binary},
-      {name:"lean4export",repository:"https://github.com/leanprover/lean4export",commit:"af5aa64bb914c3c2c781f378088dbd38acf4f804",source_tree:"5058a7945d24656600ca05917e3c8c174485bcf5",binary:$lean4export_binary},
-      {name:"landrun",repository:"https://github.com/Zouuup/landrun",commit:"5ed4a3db3a4ad930d577215c6b9abaa19df7f99f",source_tree:"890013a5099a92792cbacd2cfff91af3f13cec9c",binary:$landrun_binary}
+      {name:"comparator",repository:"https://github.com/leanprover/comparator",commit:"68a064109f01c08f47c8edc9f51d6a2bbffaa188",source_tree:"0bb408593d6e5f625db53b3be16e3f1cc91a7524",build_toolchain:"leanprover/lean4:v4.32.0",binary:$comparator_binary},
+      {name:"lean4export",repository:"https://github.com/leanprover/lean4export",commit:"af5aa64bb914c3c2c781f378088dbd38acf4f804",source_tree:"5058a7945d24656600ca05917e3c8c174485bcf5",build_toolchain:"leanprover/lean4:v4.32.0",binary:$lean4export_binary},
+      {name:"landrun",repository:"https://github.com/Zouuup/landrun",commit:"5ed4a3db3a4ad930d577215c6b9abaa19df7f99f",source_tree:"890013a5099a92792cbacd2cfff91af3f13cec9c",build_toolchain:$go_version,binary:$landrun_binary}
     ],
     harness:{
       project_name:"mathos_comparator_pilot_a",

@@ -950,6 +950,7 @@ mod tests {
                     repository: COMPARATOR_REPOSITORY.to_owned(),
                     commit: COMPARATOR_RUN_COMPARATOR_COMMIT.to_owned(),
                     source_tree: crate::domain::COMPARATOR_RUN_COMPARATOR_TREE.to_owned(),
+                    build_toolchain: COMPARATOR_RUN_LEAN_TOOLCHAIN.to_owned(),
                     binary: binding(root.path(), "comparator.bin"),
                 },
                 ComparatorRunToolBinding {
@@ -957,6 +958,7 @@ mod tests {
                     repository: LEAN4EXPORT_REPOSITORY.to_owned(),
                     commit: COMPARATOR_RUN_LEAN4EXPORT_COMMIT.to_owned(),
                     source_tree: crate::domain::COMPARATOR_RUN_LEAN4EXPORT_TREE.to_owned(),
+                    build_toolchain: COMPARATOR_RUN_LEAN_TOOLCHAIN.to_owned(),
                     binary: binding(root.path(), "lean4export.bin"),
                 },
                 ComparatorRunToolBinding {
@@ -964,6 +966,7 @@ mod tests {
                     repository: LANDRUN_REPOSITORY.to_owned(),
                     commit: COMPARATOR_RUN_LANDRUN_COMMIT.to_owned(),
                     source_tree: crate::domain::COMPARATOR_RUN_LANDRUN_TREE.to_owned(),
+                    build_toolchain: crate::domain::COMPARATOR_RUN_GO_TOOLCHAIN.to_owned(),
                     binary: binding(root.path(), "landrun.bin"),
                 },
             ],
