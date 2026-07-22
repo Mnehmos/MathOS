@@ -1460,10 +1460,12 @@ fn comparator_export_and_verification_do_not_require_an_instance_root_or_configu
     let missing_root = parent.path().join("missing-instance");
     let bundle = parent.path().join("empty-release");
     let package = parent.path().join("empty-comparator-package");
+    let run = parent.path().join("empty-comparator-run");
     let output_dir = parent.path().join("new-comparator-package");
     let plan_path = parent.path().join("plan.json");
     fs::create_dir(&bundle).expect("empty release creates");
     fs::create_dir(&package).expect("empty package creates");
+    fs::create_dir(&run).expect("empty Comparator run creates");
     fs::write(&plan_path, b"{}").expect("invalid fixture plan writes");
 
     let export = mcl_at(
@@ -1511,6 +1513,24 @@ fn comparator_export_and_verification_do_not_require_an_instance_root_or_configu
         verify_error["code"],
         "MCL_COMPARATOR_PACKAGE_INVENTORY_MISMATCH"
     );
+
+    let verify_run = mcl_at(
+        &missing_root,
+        &[
+            "release",
+            "verify-comparator-run",
+            "--run-dir",
+            run.to_str().expect("run path is UTF-8"),
+            "--expected-report-hash",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--expected-package-verification-hash",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ],
+    );
+    assert!(!verify_run.status.success());
+    assert!(!missing_root.exists());
+    let run_error: Value = serde_json::from_slice(&verify_run.stderr).expect("run error JSON");
+    assert_eq!(run_error["code"], "MCL_COMPARATOR_RUN_INVENTORY_MISMATCH");
 }
 
 #[test]
