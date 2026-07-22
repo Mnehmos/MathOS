@@ -126,15 +126,15 @@
         "restrict_address_families": {"const": "~AF_UNIX"},
         "no_new_privileges": {"const": true},
         "non_root": {"const": true},
-        "tcp_network_denied": {"const": true},
-        "unix_socket_denied": {"const": true},
-        "network_isolated": {"const": true}
+        "tcp_network_denied": {"type": "boolean"},
+        "unix_socket_denied": {"type": "boolean"},
+        "network_isolated": {"type": "boolean"}
       }
     },
     "execution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["command_profile", "exit_code", "timed_out", "stdout", "stderr", "systemd_properties", "landlock_probe_stdout", "landlock_probe_stderr", "package_reprojection", "runner_script", "success_markers"],
+      "required": ["command_profile", "exit_code", "timed_out", "stdout", "stderr", "systemd_properties", "landlock_probe_stdout", "landlock_probe_stderr", "package_reprojection", "runner_script", "network_probe", "success_markers"],
       "properties": {
         "command_profile": {"const": "official_comparator_systemd_landrun_v1"},
         "exit_code": {"type": "integer", "minimum": 0, "maximum": 255},
@@ -146,6 +146,7 @@
         "landlock_probe_stderr": {"$ref": "#/$defs/landlock_stderr_file"},
         "package_reprojection": {"$ref": "#/$defs/reprojection_file"},
         "runner_script": {"$ref": "#/$defs/runner_script_file"},
+        "network_probe": {"$ref": "#/$defs/network_probe_file"},
         "success_markers": {
           "type": "array",
           "maxItems": 16,
@@ -181,6 +182,7 @@
         "properties": {
           "comparator_verified": {"const": true},
           "execution": {"properties": {"exit_code": {"const": 0}, "timed_out": {"const": false}}},
+          "sandbox": {"properties": {"tcp_network_denied": {"const": true}, "unix_socket_denied": {"const": true}, "network_isolated": {"const": true}}},
           "predicates": {
             "properties": {
               "package_reprojected": {"const": true},
@@ -250,6 +252,7 @@
     "landlock_stderr_file": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "landlock-probe.stderr"}}}]},
     "reprojection_file": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "package-reprojection.json"}}}]},
     "runner_script_file": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "runner-script.sh"}}}]},
+    "network_probe_file": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "network-probe.py"}}}]},
     "comparator_tool": {
       "type": "object",
       "additionalProperties": false,

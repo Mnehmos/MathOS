@@ -19,7 +19,7 @@ use crate::domain::{
 use crate::error::AppError;
 
 const REPORT_PATH: &str = "report.json";
-const EXPECTED_ROOT_FILES: [&str; 14] = [
+const EXPECTED_ROOT_FILES: [&str; 15] = [
     "comparator.bin",
     "comparator.stderr",
     "comparator.stdout",
@@ -30,6 +30,7 @@ const EXPECTED_ROOT_FILES: [&str; 14] = [
     "landrun.bin",
     "lean-toolchain",
     "lean4export.bin",
+    "network-probe.py",
     "package-reprojection.json",
     "report.json",
     "runner-script.sh",
@@ -153,7 +154,7 @@ pub fn verify_comparator_run(
     verify_package_binding(&report, &package.verification)?;
     verify_reprojection(&root, &report)?;
     verify_harness(&root)?;
-    verify_runner_script(&root)?;
+    verify_runner_assets(&root)?;
     verify_landlock_probe(&root)?;
     verify_systemd_properties(&root)?;
 
@@ -175,6 +176,9 @@ pub fn verify_comparator_run(
         && stderr.is_empty()
         && output_bounds
         && success_path
+        && report.sandbox.tcp_network_denied
+        && report.sandbox.unix_socket_denied
+        && report.sandbox.network_isolated
         && report.predicates.all();
     let observed_classification = if report.execution.timed_out {
         ComparatorRunClassification::Failed
@@ -228,6 +232,7 @@ fn verify_report_bindings(root: &Path, report: &ComparatorRunReport) -> Result<(
         &report.execution.landlock_probe_stderr,
         &report.execution.package_reprojection,
         &report.execution.runner_script,
+        &report.execution.network_probe,
     ] {
         verify_file_binding(root, binding, MAX_COMPARATOR_RUN_TEXT_BYTES)?;
     }
@@ -339,16 +344,23 @@ fn verify_harness(root: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-fn verify_runner_script(root: &Path) -> Result<(), AppError> {
-    let bytes = read_real_file(
+fn verify_runner_assets(root: &Path) -> Result<(), AppError> {
+    let runner_script = read_real_file(
         &root.join("runner-script.sh"),
         MAX_COMPARATOR_RUN_TEXT_BYTES,
         "protected Comparator runner script",
     )?;
-    if bytes != include_bytes!("../scripts/comparator-protected-run.sh") {
+    let network_probe = read_real_file(
+        &root.join("network-probe.py"),
+        MAX_COMPARATOR_RUN_TEXT_BYTES,
+        "protected Comparator network probe",
+    )?;
+    if runner_script != include_bytes!("../scripts/comparator-protected-run.sh")
+        || network_probe != include_bytes!("../scripts/comparator-network-probe.py")
+    {
         return Err(run_error(
             "MCL_COMPARATOR_RUN_INVOCATION_MISMATCH",
-            "retained Comparator runner script differs from the reviewed verifier build",
+            "retained Comparator runner or network probe differs from the reviewed verifier build",
         ));
     }
     Ok(())
@@ -438,10 +450,18 @@ fn verify_official_stdout(stdout: &[u8], report: &ComparatorRunReport) -> Result
     let mut solution_export = None;
     let mut observed_uid = None;
     let mut uid_lines = 0;
+    let mut tcp_denial_lines = 0;
+    let mut unix_denial_lines = 0;
     for (line_number, line) in value.lines().enumerate() {
         if let Some(raw_uid) = line.strip_prefix("MATHOS_COMPARATOR_UID=") {
             uid_lines += 1;
             observed_uid = raw_uid.parse::<u32>().ok();
+        }
+        if line == "MATHOS_LANDRUN_TCP_DENIED=passed" {
+            tcp_denial_lines += 1;
+        }
+        if line == "MATHOS_SYSTEMD_AF_UNIX_DENIED=passed" {
+            unix_denial_lines += 1;
         }
         let marker = if line == "Building Challenge" {
             Some(0)
@@ -484,6 +504,8 @@ fn verify_official_stdout(stdout: &[u8], report: &ComparatorRunReport) -> Result
         && challenge_export.is_some()
         && challenge_export == solution_export
         && uid_lines == 1
+        && tcp_denial_lines == 1
+        && unix_denial_lines == 1
         && observed_uid == Some(report.workflow.runner_uid))
 }
 
@@ -810,6 +832,8 @@ mod tests {
         let package_hash = sha256(&verification_bytes);
 
         let stdout = concat!(
+            "MATHOS_SYSTEMD_AF_UNIX_DENIED=passed\n",
+            "MATHOS_LANDRUN_TCP_DENIED=passed\n",
             "MATHOS_COMPARATOR_UID=1001\n",
             "Building Challenge\n",
             "Build completed successfully (3 jobs).\n",
@@ -854,6 +878,11 @@ mod tests {
             root.path(),
             "runner-script.sh",
             include_bytes!("../scripts/comparator-protected-run.sh"),
+        );
+        write(
+            root.path(),
+            "network-probe.py",
+            include_bytes!("../scripts/comparator-network-probe.py"),
         );
         write(root.path(), "lakefile.toml", LAKEFILE.as_bytes());
         write(
@@ -1007,6 +1036,7 @@ mod tests {
                 landlock_probe_stderr: binding(root.path(), "landlock-probe.stderr"),
                 package_reprojection: binding(root.path(), "package-reprojection.json"),
                 runner_script: binding(root.path(), "runner-script.sh"),
+                network_probe: binding(root.path(), "network-probe.py"),
                 success_markers: markers,
             },
             predicates: ComparatorRunPredicates {

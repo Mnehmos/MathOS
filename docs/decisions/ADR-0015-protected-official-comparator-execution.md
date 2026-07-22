@@ -45,6 +45,10 @@ official Comparator may then use its reviewed `--best-effort` invocation because
 has already been established. Comparator runs as a non-root user in a live user systemd unit with
 `NoNewPrivileges=yes` and `RestrictAddressFamilies=~AF_UNIX`. The unit is held at a runner-owned
 gate outside the harness until those properties and the pristine harness are inspected.
+After the gate opens, a reviewed probe must fail to create an AF_UNIX socket and must fail to
+connect to a live loopback TCP listener through Comparator's exact `--best-effort --ro / --rw
+/dev -ldd -add-exec` landrun base arguments. The report verifier requires one success marker from
+each denial challenge.
 
 The closed canonical `comparator_run_report/1` binds the exact package, reprojection receipt,
 workflow and runner, source commit and tree, tool commits, trees and binaries, harness metadata,
@@ -52,7 +56,7 @@ sandbox predicates, raw output, exit result, and the retained runner script that
 invocation. Acceptance requires empty stderr and one ordered instance of each official success
 path marker, including equal challenge/solution export targets and Lean-kernel acceptance.
 
-`mcl release verify-comparator-run` verifies the exact 19-file tree without opening SQLite. It
+`mcl release verify-comparator-run` verifies the exact 20-file tree without opening SQLite. It
 streams binary hashes, revalidates the five-file package, checks every report binding, parses the
 Lake and reprojection records, verifies live sandbox records, and independently classifies the raw
 Comparator output. The canonical report is attested and the attestation is verified by the pinned

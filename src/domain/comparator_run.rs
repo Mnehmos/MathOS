@@ -136,6 +136,7 @@ pub struct ComparatorRunExecutionBinding {
     pub landlock_probe_stderr: ComparatorRunFileBinding,
     pub package_reprojection: ComparatorRunFileBinding,
     pub runner_script: ComparatorRunFileBinding,
+    pub network_probe: ComparatorRunFileBinding,
     pub success_markers: Vec<String>,
 }
 
@@ -228,6 +229,12 @@ impl ComparatorRunReport {
             || !bounded(&self.workflow.runner_image, 256)
             || !bounded(&self.workflow.kernel_release, 256)
             || !bounded(&self.workflow.systemd_version, 256)
+            || (self.classification == ComparatorRunClassification::Accepted
+                && (self.execution.exit_code != 0
+                    || self.execution.timed_out
+                    || self.execution.stderr.byte_size != 0
+                    || !self.sandbox.network_isolated
+                    || !self.predicates.all()))
         {
             return Err(run_error(
                 "Comparator run report violates the protected GitHub workflow or non-authority boundary",
@@ -343,9 +350,8 @@ impl ComparatorRunReport {
             || self.sandbox.restrict_address_families != "~AF_UNIX"
             || !self.sandbox.no_new_privileges
             || !self.sandbox.non_root
-            || !self.sandbox.tcp_network_denied
-            || !self.sandbox.unix_socket_denied
-            || !self.sandbox.network_isolated
+            || self.sandbox.network_isolated
+                != (self.sandbox.tcp_network_denied && self.sandbox.unix_socket_denied)
         {
             return Err(run_error(
                 "Comparator run sandbox predicates are not fail-closed",
@@ -388,7 +394,10 @@ impl ComparatorRunReport {
             .validate("package-reprojection.json", MAX_COMPARATOR_RUN_TEXT_BYTES)?;
         self.execution
             .runner_script
-            .validate("runner-script.sh", MAX_COMPARATOR_RUN_TEXT_BYTES)
+            .validate("runner-script.sh", MAX_COMPARATOR_RUN_TEXT_BYTES)?;
+        self.execution
+            .network_probe
+            .validate("network-probe.py", MAX_COMPARATOR_RUN_TEXT_BYTES)
     }
 }
 
@@ -596,12 +605,16 @@ mod tests {
                 exit_code: 0,
                 timed_out: false,
                 stdout: binding("comparator.stdout"),
-                stderr: binding("comparator.stderr"),
+                stderr: ComparatorRunFileBinding {
+                    byte_size: 0,
+                    ..binding("comparator.stderr")
+                },
                 systemd_properties: binding("systemd.properties"),
                 landlock_probe_stdout: binding("landlock-probe.stdout"),
                 landlock_probe_stderr: binding("landlock-probe.stderr"),
                 package_reprojection: binding("package-reprojection.json"),
                 runner_script: binding("runner-script.sh"),
+                network_probe: binding("network-probe.py"),
                 success_markers: vec!["Building Challenge".to_owned()],
             },
             predicates: ComparatorRunPredicates {

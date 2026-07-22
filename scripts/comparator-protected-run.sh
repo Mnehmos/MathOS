@@ -12,6 +12,8 @@ expected_release_hash="$3"
 expected_plan_hash="$4"
 output_root="$5"
 mcl_bin="${MCL_BIN:-target/debug/mcl}"
+runner_script_source="$0"
+network_probe_source="$(dirname -- "$0")/comparator-network-probe.py"
 package_source="${boundary_root}/pilot-a-comparator-package"
 release_source="${boundary_root}/pilot-a-portable-release"
 plan_source="${boundary_root}/publication-candidate/release-build-evidence/comparator-package-plan.json"
@@ -65,7 +67,10 @@ commit_pattern='^[0-9a-f]{40}$'
   printf 'official Comparator execution requires the pinned Go 1.24.2 landrun builder\n' >&2
   exit 65
 }
-[[ -x "$mcl_bin" && -d "$boundary_root" && ! -L "$boundary_root" \
+[[ -x "$mcl_bin" \
+  && -f "$runner_script_source" && ! -L "$runner_script_source" \
+  && -f "$network_probe_source" && ! -L "$network_probe_source" \
+  && -d "$boundary_root" && ! -L "$boundary_root" \
   && -d "$package_source" && ! -L "$package_source" \
   && -d "$release_source" && ! -L "$release_source" \
   && -f "$plan_source" && ! -L "$plan_source" ]] || {
@@ -77,7 +82,8 @@ commit_pattern='^[0-9a-f]{40}$'
   exit 66
 }
 mkdir --parents "$bundle/package" "$tools_dir" "$harness" "$gate_dir"
-cp -- "$0" "$bundle/runner-script.sh"
+cp -- "$runner_script_source" "$bundle/runner-script.sh"
+cp -- "$network_probe_source" "$bundle/network-probe.py"
 
 observed_package_hash="$(sha256sum "$package_source/verification.json" | cut -d ' ' -f 1)"
 observed_release_hash="$(sha256sum "$release_source/manifest.json" | cut -d ' ' -f 1)"
@@ -230,6 +236,37 @@ systemctl --user show-environment >/dev/null
 unit="mathos-comparator-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 ready="${gate_dir}/systemd-ready"
 go="${gate_dir}/systemd-go"
+listener_port_file="${gate_dir}/tcp-listener-port"
+python3 "$bundle/network-probe.py" listen "$listener_port_file" \
+  >"$work/tcp-listener.stdout" \
+  2>"$work/tcp-listener.stderr" &
+listener_pid="$!"
+cleanup_listener() {
+  if kill -0 "$listener_pid" 2>/dev/null; then
+    kill "$listener_pid" 2>/dev/null || true
+    wait "$listener_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup_listener EXIT
+for _ in $(seq 1 200); do
+  [[ -s "$listener_port_file" ]] && break
+  kill -0 "$listener_pid" 2>/dev/null || {
+    printf 'local TCP challenge listener exited before publishing its port\n' >&2
+    exit 70
+  }
+  sleep 0.05
+done
+[[ -s "$listener_port_file" ]] || {
+  printf 'local TCP challenge listener did not publish its port\n' >&2
+  exit 70
+}
+listener_port="$(tr -d '\n' <"$listener_port_file")"
+[[ "$listener_port" =~ ^[0-9]+$ \
+  && "$listener_port" -ge 1 \
+  && "$listener_port" -le 65535 ]] || {
+  printf 'local TCP challenge listener published an invalid port\n' >&2
+  exit 71
+}
 # Positional parameters expand in the gated child shell, not this parent shell.
 # shellcheck disable=SC2016
 /usr/bin/timeout --signal=TERM --kill-after=5s 300 \
@@ -247,8 +284,8 @@ go="${gate_dir}/systemd-go"
   --setenv="COMPARATOR_LANDRUN=${bundle}/landrun.bin" \
   --setenv="COMPARATOR_LEAN4EXPORT=${bundle}/lean4export.bin" \
   -- \
-  bash -c 'touch "$2"; while [[ ! -e "$3" ]]; do sleep 0.05; done; printf "MATHOS_COMPARATOR_UID=%s\n" "$(id -u)"; exec lake env "$1" config.json' \
-  bash "$bundle/comparator.bin" "$ready" "$go" \
+  bash -c 'set -euo pipefail; touch "$2"; while [[ ! -e "$3" ]]; do sleep 0.05; done; python3 "$4" unix; "$5" --best-effort --ro / --rw /dev -ldd -add-exec /usr/bin/python3 "$4" tcp "$6"; printf "MATHOS_COMPARATOR_UID=%s\n" "$(id -u)"; exec lake env "$1" config.json' \
+  bash "$bundle/comparator.bin" "$ready" "$go" "$bundle/network-probe.py" "$bundle/landrun.bin" "$listener_port" \
   >"$bundle/comparator.stdout" \
   2>"$bundle/comparator.stderr" &
 systemd_pid="$!"
@@ -259,6 +296,7 @@ cleanup_comparator_unit() {
     kill "$systemd_pid" 2>/dev/null || true
     wait "$systemd_pid" 2>/dev/null || true
   fi
+  cleanup_listener
 }
 trap cleanup_comparator_unit EXIT
 for _ in $(seq 1 300); do
@@ -298,6 +336,7 @@ wait "$systemd_pid"
 comparator_exit="$?"
 set -e
 trap - EXIT
+cleanup_listener
 timed_out=false
 if [[ "$comparator_exit" -eq 124 ]]; then
   timed_out=true
@@ -335,6 +374,18 @@ if [[ "$(grep --count --extended-regexp '^MATHOS_COMPARATOR_UID=[0-9]+$' "$bundl
   && "$(grep --extended-regexp '^MATHOS_COMPARATOR_UID=[0-9]+$' "$bundle/comparator.stdout" | cut -d= -f2)" -eq "$(id -u)" ]]; then
   uid_ok=true
 fi
+tcp_ok=false
+unix_ok=false
+network_ok=false
+if [[ "$(grep --count --fixed-strings --line-regexp 'MATHOS_LANDRUN_TCP_DENIED=passed' "$bundle/comparator.stdout" || true)" -eq 1 ]]; then
+  tcp_ok=true
+fi
+if [[ "$(grep --count --fixed-strings --line-regexp 'MATHOS_SYSTEMD_AF_UNIX_DENIED=passed' "$bundle/comparator.stdout" || true)" -eq 1 ]]; then
+  unix_ok=true
+fi
+if [[ "$tcp_ok" == "true" && "$unix_ok" == "true" ]]; then
+  network_ok=true
+fi
 output_bounds=false
 if [[ "$(stat --format=%s "$bundle/comparator.stdout")" -le 262144 \
   && "$(stat --format=%s "$bundle/comparator.stderr")" -le 65536 ]]; then
@@ -349,6 +400,7 @@ if [[ "$timed_out" == "true" ]]; then
 elif [[ "$comparator_exit" -eq 0 \
   && "$markers_ok" == "true" \
   && "$uid_ok" == "true" \
+  && "$network_ok" == "true" \
   && "$output_bounds" == "true" \
   && "$stderr_empty" == "true" ]]; then
   classification="accepted"
@@ -415,11 +467,15 @@ jq -cnS \
   --argjson landlock_stderr "$(binding landlock-probe.stderr "$bundle/landlock-probe.stderr")" \
   --argjson reprojection "$(binding package-reprojection.json "$bundle/package-reprojection.json")" \
   --argjson runner_script "$(binding runner-script.sh "$bundle/runner-script.sh")" \
+  --argjson network_probe "$(binding network-probe.py "$bundle/network-probe.py")" \
   --argjson markers "$markers_json" \
   --argjson output_bounds "$output_bounds" \
   --argjson stderr_empty "$stderr_empty" \
   --argjson markers_ok "$markers_ok" \
-  --argjson uid_ok "$uid_ok" '
+  --argjson uid_ok "$uid_ok" \
+  --argjson tcp_ok "$tcp_ok" \
+  --argjson unix_ok "$unix_ok" \
+  --argjson network_ok "$network_ok" '
   {
     schema_version:"comparator_run_report/1",
     classification:$classification,
@@ -481,9 +537,9 @@ jq -cnS \
       restrict_address_families:"~AF_UNIX",
       no_new_privileges:true,
       non_root:true,
-      tcp_network_denied:true,
-      unix_socket_denied:true,
-      network_isolated:true
+      tcp_network_denied:$tcp_ok,
+      unix_socket_denied:$unix_ok,
+      network_isolated:$network_ok
     },
     execution:{
       command_profile:"official_comparator_systemd_landrun_v1",
@@ -496,6 +552,7 @@ jq -cnS \
       landlock_probe_stderr:$landlock_stderr,
       package_reprojection:$reprojection,
       runner_script:$runner_script,
+      network_probe:$network_probe,
       success_markers:$markers
     },
     predicates:{
@@ -504,7 +561,7 @@ jq -cnS \
       fresh_harness_verified:true,
       landlock_strict_probe_passed:true,
       systemd_controls_verified:true,
-      network_isolation_verified:true,
+      network_isolation_verified:$network_ok,
       non_root_verified:$uid_ok,
       output_bounds_verified:$output_bounds,
       unexpected_stderr_absent:$stderr_empty,
