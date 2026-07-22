@@ -89,6 +89,8 @@ jobs:
           [[ -z "$(find "${project_dir}" -name '*.olean' -print -quit)" ]]
 
           probe_unit="mathos-comparator-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          probe_ready="${project_dir}/.systemd-ready"
+          probe_go="${project_dir}/.systemd-go"
           /usr/bin/systemd-run \
             --user \
             --quiet \
@@ -103,15 +105,24 @@ jobs:
             --setenv="COMPARATOR_LANDRUN=${tools_dir}/landrun" \
             --setenv="COMPARATOR_LEAN4EXPORT=${tools_dir}/lean4export" \
             -- \
-            bash -c 'printf "MATHOS_PROBE_UID=%s\n" "$(id -u)"; exec lake env "$1" config.json' \
-            bash "${tools_dir}/comparator" \
+            bash -c 'touch "$2"; while [[ ! -e "$3" ]]; do sleep 0.05; done; printf "MATHOS_PROBE_UID=%s\n" "$(id -u)"; exec lake env "$1" config.json' \
+            bash "${tools_dir}/comparator" "${probe_ready}" "${probe_go}" \
             > "${probe_root}/comparator.stdout" \
-            2> "${probe_root}/comparator.stderr"
+            2> "${probe_root}/comparator.stderr" &
+          systemd_pid="$!"
+          for _ in $(seq 1 200); do
+            [[ -e "${probe_ready}" ]] && break
+            kill -0 "${systemd_pid}"
+            sleep 0.05
+          done
+          [[ -e "${probe_ready}" ]]
           systemctl --user show "${probe_unit}.service" \
             --property=User \
             --property=NoNewPrivileges \
             --property=RestrictAddressFamilies \
             > "${probe_root}/systemd.properties"
+          touch "${probe_go}"
+          wait "${systemd_pid}"
           cat "${probe_root}/comparator.stdout"
           cat "${probe_root}/comparator.stderr" >&2
           cat "${probe_root}/systemd.properties"
