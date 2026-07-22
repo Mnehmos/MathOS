@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 6 ]]; then
-  printf 'usage: %s <state-root> <proof-candidate> <proof-ingestion> <release-output> <corpus-output> <rl-output>\n' "$0" >&2
+if [[ $# -ne 7 ]]; then
+  printf 'usage: %s <state-root> <proof-candidate> <proof-ingestion> <release-output> <corpus-output> <rl-output> <comparator-output>\n' "$0" >&2
   exit 64
 fi
 
@@ -12,8 +12,10 @@ ingestion_dir="$3"
 release_output="$4"
 corpus_output="$5"
 rl_output="$6"
+comparator_output="$7"
 mcl_bin="${PUBLICATION_MCL_BIN:-target/debug/mcl}"
 content_file="fixtures/release/pilot-a-repaired-proof-learning-unit.txt"
+comparator_challenge="fixtures/comparator/pilot-a/Challenge.lean"
 
 for directory in "$state_root" "$candidate_dir" "$ingestion_dir"; do
   [[ -d "$directory" && ! -L "$directory" ]] || {
@@ -21,8 +23,10 @@ for directory in "$state_root" "$candidate_dir" "$ingestion_dir"; do
     exit 66
   }
 done
-[[ -x "$mcl_bin" && -f "$content_file" && ! -L "$content_file" ]] || {
-  printf 'Pilot A release executable or content fixture is unavailable\n' >&2
+[[ -x "$mcl_bin" \
+    && -f "$content_file" && ! -L "$content_file" \
+    && -f "$comparator_challenge" && ! -L "$comparator_challenge" ]] || {
+  printf 'Pilot A release executable or fixture is unavailable\n' >&2
   exit 69
 }
 [[ ! -e "$release_output" && ! -L "$release_output" ]] || {
@@ -37,6 +41,10 @@ done
   printf 'Pilot A RL export output already exists or is unsafe\n' >&2
   exit 66
 }
+[[ ! -e "$comparator_output" && ! -L "$comparator_output" ]] || {
+  printf 'Pilot A Comparator package output already exists or is unsafe\n' >&2
+  exit 66
+}
 
 state_root="$(cd "$state_root" && pwd -P)"
 candidate_dir="$(cd "$candidate_dir" && pwd -P)"
@@ -47,6 +55,8 @@ corpus_parent="$(cd "$(dirname "$corpus_output")" && pwd -P)"
 corpus_output="$corpus_parent/$(basename "$corpus_output")"
 rl_parent="$(cd "$(dirname "$rl_output")" && pwd -P)"
 rl_output="$rl_parent/$(basename "$rl_output")"
+comparator_parent="$(cd "$(dirname "$comparator_output")" && pwd -P)"
+comparator_output="$comparator_parent/$(basename "$comparator_output")"
 evidence_dir="$state_root/release-build-evidence"
 [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" ]] || {
   printf 'Pilot A release evidence output already exists or is unsafe\n' >&2
@@ -561,6 +571,156 @@ jq -e \
   .source_releases_verified == true and
   .deterministic_reprojection_verified == true
 ' "$evidence_dir/rl-export-verification.json" >/dev/null
+
+comparator_declaration="$(jq -er '.publication.declaration_name' "$release_copy/manifest.json")"
+jq -cnS \
+  --rawfile challenge "$comparator_challenge" \
+  --arg manifest_hash "$manifest_hash" \
+  --arg formalization_object_id "$formalization_object_id" \
+  --arg formalization_version_hash "$formalization_version_hash" \
+  --arg declaration "$comparator_declaration" \
+  --arg comparator_repository "https://github.com/leanprover/comparator" \
+  --arg comparator_commit "68a064109f01c08f47c8edc9f51d6a2bbffaa188" \
+  --arg lean4export_repository "https://github.com/leanprover/lean4export" \
+  --arg lean4export_commit "af5aa64bb914c3c2c781f378088dbd38acf4f804" \
+  --arg landrun_repository "https://github.com/Zouuup/landrun" \
+  --arg landrun_commit "5ed4a3db3a4ad930d577215c6b9abaa19df7f99f" '
+  {
+    schema_version: "comparator_package_plan/1",
+    source_release_manifest_hash: $manifest_hash,
+    formalization: {
+      object_id: $formalization_object_id,
+      version_hash: $formalization_version_hash
+    },
+    challenge_source: $challenge,
+    theorem_names: [$declaration],
+    permitted_axioms: [],
+    enable_nanoda: false,
+    tool_pins: {
+      comparator_repository: $comparator_repository,
+      comparator_commit: $comparator_commit,
+      lean4export_repository: $lean4export_repository,
+      lean4export_commit: $lean4export_commit,
+      landrun_repository: $landrun_repository,
+      landrun_commit: $landrun_commit
+    },
+    formalization_metadata: {
+      mathematical_source: "Pilot A repaired claim: every prime natural number other than 2 is odd.",
+      theorem_scope: "Natural-number primality is defined in the frozen module; the theorem excludes the unique even prime 2.",
+      ai_involvement: "AI-assisted formalization, proof repair, packaging, and review under protected MathOS controls.",
+      human_operators: ["Mnehmos"],
+      upstream_repositories: ["https://github.com/Mnehmos/MathOS"],
+      publication_status: "internal"
+    }
+  }' >"$evidence_dir/comparator-package-plan.json"
+truncate --size=-1 "$evidence_dir/comparator-package-plan.json"
+
+"$mcl_bin" --root "$state_root/nonexistent-offline-root" --json release export-comparator \
+  --plan "$evidence_dir/comparator-package-plan.json" \
+  --bundle-dir "$release_copy" \
+  --expected-release-manifest-hash "$manifest_hash" \
+  --output-dir "$comparator_output" \
+  --dry-run \
+  >"$evidence_dir/comparator-export-dry-run.json"
+comparator_preview_hash="$(
+  jq -er '
+    select(
+      .dry_run == true and
+      .status == "ready" and
+      .comparator_verified == false and
+      .authoritative == false and
+      .member_count == 5
+    ) | .verification_hash
+  ' "$evidence_dir/comparator-export-dry-run.json"
+)"
+[[ ! -e "$comparator_output" && ! -L "$comparator_output" ]] || {
+  printf 'Comparator package dry-run wrote its output directory\n' >&2
+  exit 71
+}
+
+"$mcl_bin" --root "$state_root/nonexistent-offline-root" --json release export-comparator \
+  --plan "$evidence_dir/comparator-package-plan.json" \
+  --bundle-dir "$release_copy" \
+  --expected-release-manifest-hash "$manifest_hash" \
+  --output-dir "$comparator_output" \
+  >"$evidence_dir/comparator-export-build.json"
+comparator_verification_hash="$(sha256sum "$comparator_output/verification.json" | cut -d ' ' -f 1)"
+[[ "$comparator_preview_hash" == "$comparator_verification_hash" ]] || {
+  printf 'Comparator package dry-run and build identities differ\n' >&2
+  exit 71
+}
+jq -e \
+  --arg verification_hash "$comparator_verification_hash" \
+  --arg manifest_hash "$manifest_hash" '
+  .dry_run == false and
+  .verification_hash == $verification_hash and
+  .source_release_manifest_hash == $manifest_hash and
+  .status == "ready" and
+  .comparator_verified == false and
+  .authoritative == false and
+  .member_count == 5 and
+  .total_member_bytes > 0
+' "$evidence_dir/comparator-export-build.json" >/dev/null
+jq -e \
+  --arg manifest_hash "$manifest_hash" \
+  --arg declaration "$comparator_declaration" '
+  .schema_version == "comparator_package_verification/1" and
+  .source_release_manifest_hash == $manifest_hash and
+  .declaration_name == $declaration and
+  .status == "ready" and
+  .comparator_verified == false and
+  .authoritative == false and
+  .tool_pins.comparator_repository == "https://github.com/leanprover/comparator" and
+  .tool_pins.comparator_commit == "68a064109f01c08f47c8edc9f51d6a2bbffaa188" and
+  .tool_pins.lean4export_repository == "https://github.com/leanprover/lean4export" and
+  .tool_pins.lean4export_commit == "af5aa64bb914c3c2c781f378088dbd38acf4f804" and
+  .tool_pins.landrun_repository == "https://github.com/Zouuup/landrun" and
+  .tool_pins.landrun_commit == "5ed4a3db3a4ad930d577215c6b9abaa19df7f99f"
+' "$comparator_output/verification.json" >/dev/null
+cmp --silent "$comparator_output/Solution.lean" "$release_copy/replay/Submission.lean" || {
+  printf 'Comparator Solution.lean differs from the frozen theorem source\n' >&2
+  exit 71
+}
+[[ "$(find "$comparator_output" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 5 \
+    && -z "$(find "$comparator_output" -mindepth 1 ! -type f -print -quit)" ]] || {
+  printf 'Comparator package does not contain exactly five regular files\n' >&2
+  exit 71
+}
+lean "$comparator_output/Challenge.lean" \
+  >"$evidence_dir/comparator-challenge-lean.stdout" \
+  2>"$evidence_dir/comparator-challenge-lean.stderr"
+lean "$comparator_output/Solution.lean" \
+  >"$evidence_dir/comparator-solution-lean.stdout" \
+  2>"$evidence_dir/comparator-solution-lean.stderr"
+
+comparator_copy="$comparator_parent/$(basename "$comparator_output")-clean-copy"
+[[ ! -e "$comparator_copy" && ! -L "$comparator_copy" ]] || {
+  printf 'clean Comparator package copy destination already exists\n' >&2
+  exit 66
+}
+cp -a -- "$comparator_output" "$comparator_copy"
+"$mcl_bin" --root "$state_root/nonexistent-offline-root" --json release verify-comparator-package \
+  --package-dir "$comparator_copy" \
+  --expected-verification-hash "$comparator_verification_hash" \
+  --plan "$evidence_dir/comparator-package-plan.json" \
+  --bundle-dir "$release_copy" \
+  --expected-release-manifest-hash "$manifest_hash" \
+  >"$evidence_dir/comparator-package-verification.json"
+jq -e \
+  --arg verification_hash "$comparator_verification_hash" \
+  --arg manifest_hash "$manifest_hash" '
+  .verification_hash == $verification_hash and
+  .source_release_manifest_hash == $manifest_hash and
+  .status == "ready" and
+  .comparator_verified == false and
+  .authoritative == false and
+  .member_count == 5 and
+  .database_independent == true and
+  .inventory_verified == true and
+  .hashes_verified == true and
+  .bindings_verified == true and
+  .deterministic_reprojection == true
+' "$evidence_dir/comparator-package-verification.json" >/dev/null
 restore_database
 trap - EXIT
 
@@ -574,20 +734,28 @@ jq -cnS \
   --arg corpus_output "$corpus_output" \
   --arg rl_manifest_hash "$rl_manifest_hash" \
   --arg rl_output "$rl_output" \
+  --arg comparator_verification_hash "$comparator_verification_hash" \
+  --arg comparator_output "$comparator_output" \
   '{
-    schema_version: "pilot_a_release_playtest/3",
+    schema_version: "pilot_a_release_playtest/4",
     manifest_hash: $manifest_hash,
     corpus_export_manifest_hash: $corpus_manifest_hash,
     rl_export_manifest_hash: $rl_manifest_hash,
+    comparator_package_verification_hash: $comparator_verification_hash,
     publication_receipt_hash: $receipt_hash,
     pedagogy_root: {object_id: $root_object_id, version_hash: $root_version_hash},
     release_output: $release_output,
     corpus_export_output: $corpus_output,
     rl_export_output: $rl_output,
+    comparator_package_output: $comparator_output,
     database_hidden_during_verification: true,
     clean_copy_verified: true,
     lean_replay_succeeded: true,
     corpus_export_reprojection_succeeded: true,
-    rl_export_reprojection_succeeded: true
+    rl_export_reprojection_succeeded: true,
+    comparator_package_reprojection_succeeded: true,
+    comparator_status: "ready",
+    comparator_verified: false,
+    authoritative: false
   }' >"$evidence_dir/playtest-summary.json"
 cat "$evidence_dir/playtest-summary.json"

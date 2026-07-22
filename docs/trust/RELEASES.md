@@ -59,6 +59,19 @@ The full interface and output contract are documented in
 [MathCorpus and MCIP export](../implementation/CORPUS_EXPORT.md), with the trust decision in
 [ADR-0012](../decisions/ADR-0012-deterministic-offline-mathcorpus-mcip-projection.md).
 
+## Project a Comparator-ready package
+
+`mcl release export-comparator` combines an explicit reviewed challenge plan with the exact theorem
+source, formalization, and environment from a verified frozen release. It emits the five files in
+SPEC 20.3 and fixes the official tool repositories to reviewed full commits. The separate
+`verify-comparator-package` command requires trusted release and verification hashes and reproduces
+every byte without SQLite.
+
+This boundary establishes only `ready`. It cannot encode a Comparator result or authority. The
+full interface and status vocabulary are documented in
+[Comparator-ready packages](COMPARATOR_PACKAGES.md), with the trust decision in
+[ADR-0014](../decisions/ADR-0014-deterministic-comparator-ready-package-boundary.md).
+
 ## Trust boundary
 
 - A successful build means the exported directory matched canonical state at build time.

@@ -575,6 +575,10 @@ enum ReleaseAction {
     ExportRl(ReleaseExportRlOptions),
     /// Verify an RL/evaluation export by deterministic offline cohort reprojection.
     VerifyRlExport(ReleaseVerifyRlExportOptions),
+    /// Project one frozen release into an exact five-file Comparator-ready package.
+    ExportComparator(ReleaseExportComparatorOptions),
+    /// Verify and deterministically reproject a Comparator-ready package offline.
+    VerifyComparatorPackage(ReleaseVerifyComparatorPackageOptions),
 }
 
 #[derive(Debug, Args)]
@@ -686,6 +690,42 @@ struct ReleaseVerifyRlExportOptions {
 
     #[arg(long)]
     source_root: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct ReleaseExportComparatorOptions {
+    #[arg(long)]
+    plan: PathBuf,
+
+    #[arg(long)]
+    bundle_dir: PathBuf,
+
+    #[arg(long)]
+    expected_release_manifest_hash: String,
+
+    #[arg(long)]
+    output_dir: PathBuf,
+
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct ReleaseVerifyComparatorPackageOptions {
+    #[arg(long)]
+    package_dir: PathBuf,
+
+    #[arg(long)]
+    expected_verification_hash: String,
+
+    #[arg(long)]
+    plan: PathBuf,
+
+    #[arg(long)]
+    bundle_dir: PathBuf,
+
+    #[arg(long)]
+    expected_release_manifest_hash: String,
 }
 
 #[derive(Debug, Args)]
@@ -866,6 +906,28 @@ impl Cli {
                         &options.source_root,
                     )?)
                     .expect("RL export verification report is serializable"),
+                ),
+                ReleaseAction::ExportComparator(options) => Some(
+                    to_value(crate::comparator_export::export_comparator(
+                        crate::comparator_export::ComparatorExportRequest {
+                            plan_path: &options.plan,
+                            bundle_dir: &options.bundle_dir,
+                            expected_release_manifest_hash: &options.expected_release_manifest_hash,
+                            output_dir: &options.output_dir,
+                            dry_run: options.dry_run,
+                        },
+                    )?)
+                    .expect("Comparator export outcome is serializable"),
+                ),
+                ReleaseAction::VerifyComparatorPackage(options) => Some(
+                    to_value(crate::comparator_export::verify_comparator_package(
+                        &options.package_dir,
+                        &options.expected_verification_hash,
+                        &options.plan,
+                        &options.bundle_dir,
+                        &options.expected_release_manifest_hash,
+                    )?)
+                    .expect("Comparator package verification report is serializable"),
                 ),
                 ReleaseAction::Build(_) => None,
             };
@@ -1671,6 +1733,28 @@ fn execute_release(
             &options.source_root,
         )?)
         .expect("RL export verification report is serializable"),
+        ReleaseAction::ExportComparator(options) => {
+            to_value(crate::comparator_export::export_comparator(
+                crate::comparator_export::ComparatorExportRequest {
+                    plan_path: &options.plan,
+                    bundle_dir: &options.bundle_dir,
+                    expected_release_manifest_hash: &options.expected_release_manifest_hash,
+                    output_dir: &options.output_dir,
+                    dry_run: options.dry_run,
+                },
+            )?)
+            .expect("Comparator export outcome is serializable")
+        }
+        ReleaseAction::VerifyComparatorPackage(options) => {
+            to_value(crate::comparator_export::verify_comparator_package(
+                &options.package_dir,
+                &options.expected_verification_hash,
+                &options.plan,
+                &options.bundle_dir,
+                &options.expected_release_manifest_hash,
+            )?)
+            .expect("Comparator package verification report is serializable")
+        }
     };
     Ok(CliOutcome {
         value,
