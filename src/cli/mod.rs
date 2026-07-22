@@ -579,6 +579,8 @@ enum ReleaseAction {
     ExportComparator(ReleaseExportComparatorOptions),
     /// Verify and deterministically reproject a Comparator-ready package offline.
     VerifyComparatorPackage(ReleaseVerifyComparatorPackageOptions),
+    /// Verify a protected official Comparator execution bundle without opening the database.
+    VerifyComparatorRun(ReleaseVerifyComparatorRunOptions),
 }
 
 #[derive(Debug, Args)]
@@ -726,6 +728,18 @@ struct ReleaseVerifyComparatorPackageOptions {
 
     #[arg(long)]
     expected_release_manifest_hash: String,
+}
+
+#[derive(Debug, Args)]
+struct ReleaseVerifyComparatorRunOptions {
+    #[arg(long)]
+    run_dir: PathBuf,
+
+    #[arg(long)]
+    expected_report_hash: String,
+
+    #[arg(long)]
+    expected_package_verification_hash: String,
 }
 
 #[derive(Debug, Args)]
@@ -928,6 +942,17 @@ impl Cli {
                         &options.expected_release_manifest_hash,
                     )?)
                     .expect("Comparator package verification report is serializable"),
+                ),
+                ReleaseAction::VerifyComparatorRun(options) => Some(
+                    to_value(crate::comparator_run::verify_comparator_run(
+                        crate::comparator_run::ComparatorRunVerificationRequest {
+                            run_dir: &options.run_dir,
+                            expected_report_hash: &options.expected_report_hash,
+                            expected_package_verification_hash: &options
+                                .expected_package_verification_hash,
+                        },
+                    )?)
+                    .expect("Comparator run verification outcome is serializable"),
                 ),
                 ReleaseAction::Build(_) => None,
             };
@@ -1754,6 +1779,16 @@ fn execute_release(
                 &options.expected_release_manifest_hash,
             )?)
             .expect("Comparator package verification report is serializable")
+        }
+        ReleaseAction::VerifyComparatorRun(options) => {
+            to_value(crate::comparator_run::verify_comparator_run(
+                crate::comparator_run::ComparatorRunVerificationRequest {
+                    run_dir: &options.run_dir,
+                    expected_report_hash: &options.expected_report_hash,
+                    expected_package_verification_hash: &options.expected_package_verification_hash,
+                },
+            )?)
+            .expect("Comparator run verification outcome is serializable")
         }
     };
     Ok(CliOutcome {

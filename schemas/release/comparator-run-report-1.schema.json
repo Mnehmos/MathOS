@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/release/comparator-run-report/1",
+  "title": "MathOS Protected Comparator Run Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "classification",
+    "comparator_verified",
+    "authoritative",
+    "attestation_required",
+    "package",
+    "workflow",
+    "tools",
+    "harness",
+    "sandbox",
+    "execution",
+    "predicates"
+  ],
+  "properties": {
+    "schema_version": {"const": "comparator_run_report/1"},
+    "classification": {"enum": ["accepted", "rejected", "failed"]},
+    "comparator_verified": {"type": "boolean"},
+    "authoritative": {"const": false},
+    "attestation_required": {"const": true},
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verification_hash", "input_fingerprint", "plan_hash", "source_release_manifest_hash", "source_formalization", "declaration_name", "lean_toolchain", "members"],
+      "properties": {
+        "verification_hash": {"$ref": "#/$defs/hash"},
+        "input_fingerprint": {"$ref": "#/$defs/hash"},
+        "plan_hash": {"$ref": "#/$defs/hash"},
+        "source_release_manifest_hash": {"$ref": "#/$defs/hash"},
+        "source_formalization": {"$ref": "#/$defs/exact_reference"},
+        "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_']+(\\.[A-Za-z0-9_']+)*$"},
+        "lean_toolchain": {"const": "leanprover/lean4:v4.32.0"},
+        "members": {
+          "type": "array",
+          "prefixItems": [
+            {"$ref": "#/$defs/package_challenge"},
+            {"$ref": "#/$defs/package_solution"},
+            {"$ref": "#/$defs/package_config"},
+            {"$ref": "#/$defs/package_formalization"},
+            {"$ref": "#/$defs/package_verification"}
+          ],
+          "items": false,
+          "minItems": 5,
+          "maxItems": 5
+        }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "repository_id", "workflow_path", "workflow_ref", "source_ref", "source_commit_sha", "source_tree_sha", "run_id", "run_attempt", "job", "protected_ref", "github_hosted", "runner_os", "runner_arch", "runner_image", "kernel_release", "systemd_version", "runner_uid"],
+      "properties": {
+        "repository": {"const": "Mnehmos/MathOS"},
+        "repository_id": {"const": "1305399818"},
+        "workflow_path": {"const": ".github/workflows/publication.yml"},
+        "workflow_ref": {"const": "Mnehmos/MathOS/.github/workflows/publication.yml@refs/heads/main"},
+        "source_ref": {"const": "refs/heads/main"},
+        "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "source_tree_sha": {"$ref": "#/$defs/commit"},
+        "run_id": {"type": "string", "pattern": "^[0-9]{1,32}$"},
+        "run_attempt": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "job": {"const": "comparator"},
+        "protected_ref": {"const": true},
+        "github_hosted": {"const": true},
+        "runner_os": {"const": "Linux"},
+        "runner_arch": {"const": "X64"},
+        "runner_image": {"type": "string", "minLength": 1, "maxLength": 256},
+        "kernel_release": {"type": "string", "minLength": 1, "maxLength": 256},
+        "systemd_version": {"type": "string", "minLength": 1, "maxLength": 256},
+        "runner_uid": {"type": "integer", "minimum": 1, "maximum": 4294967295}
+      }
+    },
+    "tools": {
+      "type": "array",
+      "prefixItems": [
+        {"$ref": "#/$defs/comparator_tool"},
+        {"$ref": "#/$defs/lean4export_tool"},
+        {"$ref": "#/$defs/landrun_tool"}
+      ],
+      "items": false,
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_name", "challenge_module", "solution_module", "files", "manifest_created_before_solution_copy", "source_file_count", "no_lake_directory_before_run", "no_olean_before_run"],
+      "properties": {
+        "project_name": {"const": "mathos_comparator_pilot_a"},
+        "challenge_module": {"const": "Challenge"},
+        "solution_module": {"const": "Solution"},
+        "files": {
+          "type": "array",
+          "prefixItems": [
+            {"$ref": "#/$defs/harness_manifest"},
+            {"$ref": "#/$defs/harness_lakefile"},
+            {"$ref": "#/$defs/harness_toolchain"}
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "manifest_created_before_solution_copy": {"const": true},
+        "source_file_count": {"const": 3},
+        "no_lake_directory_before_run": {"const": true},
+        "no_olean_before_run": {"const": true}
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["real_landrun", "fake_landrun", "landlock_abi", "strict_probe_without_best_effort", "comparator_best_effort_after_strict_probe", "systemd_user_manager", "restrict_address_families", "no_new_privileges", "non_root", "tcp_network_denied", "unix_socket_denied", "network_isolated"],
+      "properties": {
+        "real_landrun": {"const": true},
+        "fake_landrun": {"const": false},
+        "landlock_abi": {"const": 5},
+        "strict_probe_without_best_effort": {"const": true},
+        "comparator_best_effort_after_strict_probe": {"const": true},
+        "systemd_user_manager": {"const": true},
+        "restrict_address_families": {"const": "~AF_UNIX"},
+        "no_new_privileges": {"const": true},
+        "non_root": {"const": true},
+        "tcp_network_denied": {"type": "boolean"},
+        "unix_socket_denied": {"type": "boolean"},
+        "network_isolated": {"type": "boolean"}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command_profile", "exit_code", "timed_out", "stdout", "stderr", "systemd_properties", "landlock_probe_stdout", "landlock_probe_stderr", "package_reprojection", "runner_script", "network_probe", "success_markers"],
+      "properties": {
+        "command_profile": {"const": "official_comparator_systemd_landrun_v1"},
+        "exit_code": {"type": "integer", "minimum": 0, "maximum": 255},
+        "timed_out": {"type": "boolean"},
+        "stdout": {"$ref": "#/$defs/stdout_file"},
+        "stderr": {"$ref": "#/$defs/stderr_file"},
+        "systemd_properties": {"$ref": "#/$defs/systemd_file"},
+        "landlock_probe_stdout": {"$ref": "#/$defs/landlock_stdout_file"},
+        "landlock_probe_stderr": {"$ref": "#/$defs/landlock_stderr_file"},
+        "package_reprojection": {"$ref": "#/$defs/reprojection_file"},
+        "runner_script": {"$ref": "#/$defs/runner_script_file"},
+        "network_probe": {"$ref": "#/$defs/network_probe_file"},
+        "success_markers": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"type": "string", "minLength": 1, "maxLength": 8192, "pattern": "^[^\\r\\n]+$"}
+        }
+      }
+    },
+    "predicates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package_reprojected", "tool_sources_and_binaries_verified", "fresh_harness_verified", "landlock_strict_probe_passed", "systemd_controls_verified", "network_isolation_verified", "non_root_verified", "output_bounds_verified", "unexpected_stderr_absent", "success_markers_ordered_unique", "statement_match_verified", "axioms_verified", "lean_kernel_verified"],
+      "properties": {
+        "package_reprojected": {"type": "boolean"},
+        "tool_sources_and_binaries_verified": {"type": "boolean"},
+        "fresh_harness_verified": {"type": "boolean"},
+        "landlock_strict_probe_passed": {"type": "boolean"},
+        "systemd_controls_verified": {"type": "boolean"},
+        "network_isolation_verified": {"type": "boolean"},
+        "non_root_verified": {"type": "boolean"},
+        "output_bounds_verified": {"type": "boolean"},
+        "unexpected_stderr_absent": {"type": "boolean"},
+        "success_markers_ordered_unique": {"type": "boolean"},
+        "statement_match_verified": {"type": "boolean"},
+        "axioms_verified": {"type": "boolean"},
+        "lean_kernel_verified": {"type": "boolean"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"classification": {"const": "accepted"}}},
+      "then": {
+        "properties": {
+          "comparator_verified": {"const": true},
+          "execution": {"properties": {"exit_code": {"const": 0}, "timed_out": {"const": false}}},
+          "sandbox": {"properties": {"tcp_network_denied": {"const": true}, "unix_socket_denied": {"const": true}, "network_isolated": {"const": true}}},
+          "predicates": {
+            "properties": {
+              "package_reprojected": {"const": true},
+              "tool_sources_and_binaries_verified": {"const": true},
+              "fresh_harness_verified": {"const": true},
+              "landlock_strict_probe_passed": {"const": true},
+              "systemd_controls_verified": {"const": true},
+              "network_isolation_verified": {"const": true},
+              "non_root_verified": {"const": true},
+              "output_bounds_verified": {"const": true},
+              "unexpected_stderr_absent": {"const": true},
+              "success_markers_ordered_unique": {"const": true},
+              "statement_match_verified": {"const": true},
+              "axioms_verified": {"const": true},
+              "lean_kernel_verified": {"const": true}
+            }
+          }
+        }
+      },
+      "else": {"properties": {"comparator_verified": {"const": false}}}
+    }
+  ],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "exact_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "format": "uuid"},
+        "version_hash": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "text_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "content_hash", "byte_size"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 128},
+        "content_hash": {"$ref": "#/$defs/hash"},
+        "byte_size": {"type": "integer", "minimum": 0, "maximum": 4194304}
+      }
+    },
+    "binary_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "content_hash", "byte_size"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 128},
+        "content_hash": {"$ref": "#/$defs/hash"},
+        "byte_size": {"type": "integer", "minimum": 1, "maximum": 536870912}
+      }
+    },
+    "package_challenge": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "package/Challenge.lean"}}}]},
+    "package_solution": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "package/Solution.lean"}}}]},
+    "package_config": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "package/config.json"}}}]},
+    "package_formalization": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "package/formalization.yaml"}}}]},
+    "package_verification": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "package/verification.json"}}}]},
+    "harness_manifest": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "lake-manifest.json"}}}]},
+    "harness_lakefile": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "lakefile.toml"}}}]},
+    "harness_toolchain": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "lean-toolchain"}}}]},
+    "stdout_file": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "comparator.stdout"}}}]},
+    "stderr_file": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "comparator.stderr"}}}]},
+    "systemd_file": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "systemd.properties"}}}]},
+    "landlock_stdout_file": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "landlock-probe.stdout"}}}]},
+    "landlock_stderr_file": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "landlock-probe.stderr"}}}]},
+    "reprojection_file": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "package-reprojection.json"}}}]},
+    "runner_script_file": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "runner-script.sh"}}}]},
+    "network_probe_file": {"allOf": [{"$ref": "#/$defs/text_file"}, {"properties": {"path": {"const": "network-probe.py"}}}]},
+    "comparator_tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "repository", "commit", "source_tree", "build_toolchain", "binary"],
+      "properties": {
+        "name": {"const": "comparator"},
+        "repository": {"const": "https://github.com/leanprover/comparator"},
+        "commit": {"const": "68a064109f01c08f47c8edc9f51d6a2bbffaa188"},
+        "source_tree": {"const": "0bb408593d6e5f625db53b3be16e3f1cc91a7524"},
+        "build_toolchain": {"const": "leanprover/lean4:v4.32.0"},
+        "binary": {"allOf": [{"$ref": "#/$defs/binary_file"}, {"properties": {"path": {"const": "comparator.bin"}}}]}
+      }
+    },
+    "lean4export_tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "repository", "commit", "source_tree", "build_toolchain", "binary"],
+      "properties": {
+        "name": {"const": "lean4export"},
+        "repository": {"const": "https://github.com/leanprover/lean4export"},
+        "commit": {"const": "af5aa64bb914c3c2c781f378088dbd38acf4f804"},
+        "source_tree": {"const": "5058a7945d24656600ca05917e3c8c174485bcf5"},
+        "build_toolchain": {"const": "leanprover/lean4:v4.32.0"},
+        "binary": {"allOf": [{"$ref": "#/$defs/binary_file"}, {"properties": {"path": {"const": "lean4export.bin"}}}]}
+      }
+    },
+    "landrun_tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "repository", "commit", "source_tree", "build_toolchain", "binary"],
+      "properties": {
+        "name": {"const": "landrun"},
+        "repository": {"const": "https://github.com/Zouuup/landrun"},
+        "commit": {"const": "5ed4a3db3a4ad930d577215c6b9abaa19df7f99f"},
+        "source_tree": {"const": "890013a5099a92792cbacd2cfff91af3f13cec9c"},
+        "build_toolchain": {"const": "go version go1.24.2 linux/amd64"},
+        "binary": {"allOf": [{"$ref": "#/$defs/binary_file"}, {"properties": {"path": {"const": "landrun.bin"}}}]}
+      }
+    }
+  }
+}

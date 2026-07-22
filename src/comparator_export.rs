@@ -54,7 +54,8 @@ pub struct ComparatorExportOutcome {
     pub total_member_bytes: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ComparatorPackageVerificationReport {
     pub verification_hash: String,
     pub input_fingerprint: String,
@@ -90,10 +91,10 @@ struct ComparatorProjection {
 }
 
 #[derive(Clone, Debug)]
-struct ComparatorPackageIntegrity {
-    files: BTreeMap<String, Vec<u8>>,
-    verification: ComparatorPackageVerification,
-    verification_hash: String,
+pub(crate) struct ComparatorPackageIntegrity {
+    pub(crate) files: BTreeMap<String, Vec<u8>>,
+    pub(crate) verification: ComparatorPackageVerification,
+    pub(crate) verification_hash: String,
 }
 
 pub fn export_comparator(
@@ -583,7 +584,9 @@ where
     Ok(())
 }
 
-fn verify_package_integrity(root: &Path) -> Result<ComparatorPackageIntegrity, AppError> {
+pub(crate) fn verify_package_integrity(
+    root: &Path,
+) -> Result<ComparatorPackageIntegrity, AppError> {
     let root = require_real_directory(root, "Comparator package root")?;
     let observed = inventory(&root)?;
     let expected = PACKAGE_PATHS
