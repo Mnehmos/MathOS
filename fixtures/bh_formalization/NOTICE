@@ -1,0 +1,25 @@
+BHFormalization
+Copyright 2026 Levario Ramirez
+
+This product includes a Lean 4 formalization (the BHFormalization/ directory)
+licensed under the Apache License, Version 2.0 (see the LICENSE file).
+
+Scope of this license
+----------------------
+The Apache-2.0 license in this repository covers the original contribution of
+this repository: the Lean 4 formalization under BHFormalization/.
+
+The Python reproducibility bundle at the repository root (the *.py scripts,
+reproducibility_manifest.json, published_fdr_plan.json, fdr_experiment_results.tex,
+and the CSV JSON/ data) is reproduced from Edgar Dobriban's repository
+https://github.com/dobriban/BH and remains subject to that project's terms. It
+is included here only for convenience and is not an original contribution of
+this repository.
+
+Attribution
+-----------
+The mathematical result formalized here is due to Edgar Dobriban, "The
+Benjamini-Hochberg Procedure Can Fail to Control the FDR for Correlated
+Two-Sided Gaussian Tests" (2026), arXiv:2607.12208. This formalization is an
+independent machine-checked verification layer and is not a product of, or
+endorsed by, the paper's author.

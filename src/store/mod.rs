@@ -47,6 +47,7 @@ const MIGRATION_0009: &str = include_str!("../../migrations/0009_evidence_invari
 const MIGRATION_0010: &str = include_str!("../../migrations/0010_publication_ingestion.sql");
 const MIGRATION_0011: &str = include_str!("../../migrations/0011_publication_authority.sql");
 const MIGRATION_0012: &str = include_str!("../../migrations/0012_comparator_authority.sql");
+const MIGRATION_0013: &str = include_str!("../../migrations/0013_source_content_closure.sql");
 const MAX_CLAIM_STATUS_FORMALIZATIONS: usize = 256;
 const MAX_CLAIM_STATUS_EVIDENCE_PER_FORMALIZATION: usize = 256;
 const MAX_PUBLICATION_INPUT_BYTES: u64 = 16 * 1_048_576;
@@ -502,6 +503,24 @@ impl Store {
                     params![12_i64, "Comparator authority"],
                 )
                 .map_err(|error| AppError::database("record migration 0012", error))?;
+        }
+        let migration_0013_applied: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 13)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::database("inspect migration 0013", error))?;
+        if !migration_0013_applied {
+            transaction
+                .execute_batch(MIGRATION_0013)
+                .map_err(|error| AppError::database("apply migration 0013", error))?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, unixepoch())",
+                    params![13_i64, "source content closure"],
+                )
+                .map_err(|error| AppError::database("record migration 0013", error))?;
         }
         transaction
             .commit()
@@ -7379,7 +7398,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("migration succeeds");
 
-        assert_eq!(store.migration_version().expect("migration version"), 12);
+        assert_eq!(store.migration_version().expect("migration version"), 13);
         assert_eq!(store.journal_mode().expect("journal mode"), "wal");
         assert_eq!(store.integrity_check().expect("integrity"), "ok");
         store.schema_check().expect("required schema exists");
@@ -7393,7 +7412,180 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("first migration succeeds");
         store.migrate().expect("second migration succeeds");
-        assert_eq!(store.migration_version().expect("migration version"), 12);
+        assert_eq!(store.migration_version().expect("migration version"), 13);
+    }
+
+    #[test]
+    fn source_content_sql_guard_rejects_missing_or_unreviewed_artifacts() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+
+        let valid_hash = "a".repeat(64);
+        let wrong_role_hash = "b".repeat(64);
+        let metadata = |source_role: &str| ArtifactMetadata {
+            schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION.to_owned(),
+            media_type: ArtifactMediaType::PlainText,
+            creation_source: ArtifactCreationSource::UserIngest,
+            license_expression: Some("Apache-2.0".to_owned()),
+            restriction: ArtifactRestriction::Public,
+            semantic_metadata: BTreeMap::from([("source_role".to_owned(), source_role.to_owned())]),
+        };
+        store
+            .register_artifact(
+                &valid_hash,
+                1,
+                &metadata("source_content"),
+                "source-guard-test",
+                "source-guard-valid-artifact",
+            )
+            .expect("reviewed source artifact registers");
+        store
+            .register_artifact(
+                &wrong_role_hash,
+                1,
+                &metadata("unreviewed_snapshot"),
+                "source-guard-test",
+                "source-guard-wrong-role-artifact",
+            )
+            .expect("non-source artifact registers");
+
+        let payload = |content_hash: &str| {
+            serde_json::to_string(&json!({
+                "source_type": "repository",
+                "title_or_label": "SQL source closure",
+                "authors_or_origin": ["fixture"],
+                "canonical_locator": "https://example.test/repository",
+                "acquisition_date": "2026-07-25",
+                "license_expression": "Apache-2.0",
+                "redistribution_status": "allowed",
+                "content_hash": content_hash,
+                "citation_metadata": {},
+                "redaction_class": "public",
+                "provenance_notes": "direct SQL defense",
+                "original_text": "exact fixture"
+            }))
+            .expect("source payload serializes")
+        };
+        let insert_source = |store: &Store,
+                             object_id: &str,
+                             version_hash: &str,
+                             content_hash: &str| {
+            store
+                .connection
+                .execute(
+                    "INSERT INTO records(object_id, record_type, head_version_hash, tombstoned, created_at, created_by) VALUES (?1, 'source', NULL, 0, unixepoch(), 'forger')",
+                    [object_id],
+                )
+                .expect("source identity inserts");
+            store.connection.execute(
+                "INSERT INTO record_versions(version_hash, object_id, schema_version, payload_json, predecessor_hash, created_at, created_by) VALUES (?1, ?2, 'source/1', ?3, NULL, unixepoch(), 'forger')",
+                params![version_hash, object_id, payload(content_hash)],
+            )
+        };
+
+        assert!(
+            insert_source(
+                &store,
+                "missing-source-content",
+                &"c".repeat(64),
+                &"0".repeat(64),
+            )
+            .is_err()
+        );
+        assert!(
+            insert_source(
+                &store,
+                "wrong-role-source-content",
+                &"d".repeat(64),
+                &wrong_role_hash,
+            )
+            .is_err()
+        );
+        insert_source(
+            &store,
+            "reviewed-source-content",
+            &"e".repeat(64),
+            &valid_hash,
+        )
+        .expect("exact reviewed source content passes the SQL guard");
+    }
+
+    #[test]
+    fn source_content_migration_rejects_invalid_legacy_bindings_without_partial_upgrade() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("current migration succeeds");
+        store
+            .connection
+            .execute(
+                "DROP TRIGGER source_versions_require_registered_content",
+                [],
+            )
+            .expect("test restores the version-12 trigger set");
+        store
+            .connection
+            .execute("DELETE FROM schema_migrations WHERE version = 13", [])
+            .expect("test restores the version-12 migration ledger");
+        assert_eq!(store.migration_version().expect("legacy version"), 12);
+
+        let payload = serde_json::to_string(&json!({
+            "source_type": "repository",
+            "title_or_label": "Unresolved legacy source",
+            "authors_or_origin": ["fixture"],
+            "canonical_locator": "https://example.test/legacy",
+            "acquisition_date": "2026-07-25",
+            "license_expression": "Apache-2.0",
+            "redistribution_status": "allowed",
+            "content_hash": "0".repeat(64),
+            "citation_metadata": {},
+            "redaction_class": "public",
+            "provenance_notes": "must not receive silent trust promotion",
+            "original_text": "legacy fixture"
+        }))
+        .expect("legacy source serializes");
+        store
+            .connection
+            .execute(
+                "INSERT INTO records(object_id, record_type, head_version_hash, tombstoned, created_at, created_by) VALUES ('legacy-source', 'source', NULL, 0, unixepoch(), 'legacy')",
+                [],
+            )
+            .expect("legacy source identity inserts");
+        store
+            .connection
+            .execute(
+                "INSERT INTO record_versions(version_hash, object_id, schema_version, payload_json, predecessor_hash, created_at, created_by) VALUES (?1, 'legacy-source', 'source/1', ?2, NULL, unixepoch(), 'legacy')",
+                params!["f".repeat(64), payload],
+            )
+            .expect("version-12 database permits the unresolved binding");
+
+        let error = store
+            .migrate()
+            .expect_err("migration must not bless unresolved legacy source content");
+        assert_eq!(error.code, "MCL_DATABASE_ERROR");
+        assert!(
+            error.message.contains("apply migration 0013"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            store
+                .migration_version()
+                .expect("failed upgrade rolls back"),
+            12
+        );
+        assert!(
+            !store
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'source_versions_require_registered_content')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .expect("trigger rollback is observable")
+        );
     }
 
     #[test]
@@ -7425,7 +7617,7 @@ mod tests {
         assert_eq!(store.migration_version().expect("legacy version"), 7);
 
         store.migrate().expect("forward migration succeeds");
-        assert_eq!(store.migration_version().expect("current version"), 12);
+        assert_eq!(store.migration_version().expect("current version"), 13);
         assert!(
             store
                 .connection

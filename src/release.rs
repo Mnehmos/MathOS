@@ -7,11 +7,12 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::artifacts::is_link_or_reparse;
 use crate::canonical::{canonical_json, record_version_hash};
 use crate::domain::schemas::{
     ClaimPayload, ConceptPayload, ExactVersionReference, FormalizationPayload, LearningUnitPayload,
     LearningUnitReviewState, LearningUnitTrainingStatus, RedactionClass, RedistributionStatus,
-    SourcePayload, validate_record_payload,
+    SourcePayload, validate_record_payload, validate_source_content_metadata,
 };
 use crate::domain::{
     ArtifactMetadata, ArtifactRestriction, EdgeKind, EdgeSnapshot, EnvironmentSnapshot,
@@ -330,6 +331,7 @@ fn validate_semantic_closure(
 ) -> Result<(), AppError> {
     let mut records = BTreeMap::new();
     let mut artifact_hashes = BTreeSet::new();
+    let mut artifact_metadata = BTreeMap::new();
     let mut environments = BTreeMap::new();
     let mut edge_ids = BTreeSet::new();
     let mut repair_witnesses = Vec::new();
@@ -359,7 +361,19 @@ fn validate_semantic_closure(
                 }
             }
             ReleaseMemberKind::Artifact => {
-                artifact_hashes.insert(member.content_hash.clone());
+                if member.path != format!("artifacts/{}", member.content_hash)
+                    || !artifact_hashes.insert(member.content_hash.clone())
+                    || artifact_metadata
+                        .insert(
+                            member.content_hash.clone(),
+                            member.artifact_metadata.clone(),
+                        )
+                        .is_some()
+                {
+                    return Err(invalid_semantics(
+                        "artifact identity, path, or metadata inventory mismatch",
+                    ));
+                }
             }
             ReleaseMemberKind::Environment => {
                 let environment: EnvironmentSnapshot = decode_canonical(bytes, &member.path)?;
@@ -399,7 +413,7 @@ fn validate_semantic_closure(
                 )));
             }
         }
-        validate_record_assets(record, &artifact_hashes, &environments)?;
+        validate_record_assets(record, &artifact_hashes, &artifact_metadata, &environments)?;
     }
     for unit in &manifest.pedagogy.unit_order {
         let record = records
@@ -1131,9 +1145,29 @@ pub(crate) fn object_path(record: &RecordSnapshot) -> String {
 fn validate_record_assets(
     record: &RecordSnapshot,
     artifacts: &BTreeSet<String>,
+    artifact_metadata: &BTreeMap<String, Option<ArtifactMetadata>>,
     environments: &BTreeMap<String, EnvironmentSnapshot>,
 ) -> Result<(), AppError> {
     match record.kind {
+        RecordKind::Source => {
+            let source: SourcePayload = decode_value(&record.payload, "source")?;
+            if let Some(content_hash) = source.content_hash.as_deref() {
+                let metadata = artifact_metadata
+                    .get(content_hash)
+                    .and_then(Option::as_ref)
+                    .ok_or_else(|| {
+                        invalid_semantics(
+                            "source content artifact or its reviewed metadata is absent",
+                        )
+                    })?;
+                validate_source_content_metadata(&source, metadata).map_err(|error| {
+                    invalid_semantics(format!(
+                        "source content metadata is invalid: {}",
+                        error.message
+                    ))
+                })?;
+            }
+        }
         RecordKind::Formalization => {
             let payload: FormalizationPayload = decode_value(&record.payload, "formalization")?;
             if !artifacts.contains(&payload.module_artifact_hash)
@@ -1209,11 +1243,11 @@ fn write_new_member(root: &Path, relative: &str, bytes: &[u8]) -> Result<(), App
 fn require_real_directory(path: &Path, label: &str) -> Result<PathBuf, AppError> {
     let metadata =
         fs::symlink_metadata(path).map_err(|error| AppError::io("inspect directory", error))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    if is_link_or_reparse(&metadata) || !metadata.is_dir() {
         return Err(release_error(
             "MCL_RELEASE_PATH_UNSAFE",
             format!("{label} is not a real directory"),
-            "Use a real directory tree without symbolic links.",
+            "Use a real directory tree without links or reparse points.",
         ));
     }
     path.canonicalize()
@@ -1240,7 +1274,7 @@ fn safe_member_path(root: &Path, relative: &str) -> Result<PathBuf, AppError> {
 fn read_real_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, AppError> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| AppError::io("inspect release member", error))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > max_bytes {
+    if is_link_or_reparse(&metadata) || !metadata.is_file() || metadata.len() > max_bytes {
         return Err(release_error(
             "MCL_RELEASE_PATH_UNSAFE",
             format!("release member {} is unsafe or oversized", path.display()),
@@ -1272,11 +1306,11 @@ fn inventory(root: &Path) -> Result<BTreeSet<String>, AppError> {
             let path = entry.path();
             let metadata = fs::symlink_metadata(&path)
                 .map_err(|error| AppError::io("inspect release entry", error))?;
-            if metadata.file_type().is_symlink() {
+            if is_link_or_reparse(&metadata) {
                 return Err(release_error(
                     "MCL_RELEASE_PATH_UNSAFE",
-                    "release tree contains a symbolic link",
-                    "Use a copied release containing only real directories and files.",
+                    "release tree contains a link or reparse point",
+                    "Use a copied release containing only real directories and files without reparse points.",
                 ));
             }
             if metadata.is_dir() {

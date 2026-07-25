@@ -35,6 +35,15 @@ fn parse_stdout(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("stdout is JSON")
 }
 
+fn parse_stdout_or_stderr(output: &Output) -> Value {
+    let bytes = if output.status.success() {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
+    serde_json::from_slice(bytes).expect("structured CLI output is JSON")
+}
+
 fn normalize_hash(value: &mut Value, pointer: &str) {
     *value.pointer_mut(pointer).expect("hash field") = json!("<sha256>");
 }
@@ -312,7 +321,7 @@ fn init_creates_real_storage_and_health_passes() {
         String::from_utf8_lossy(&initialized.stderr)
     );
     let value = parse_stdout(&initialized);
-    assert_eq!(value["migration_version"], 12);
+    assert_eq!(value["migration_version"], 13);
     assert_eq!(value["journal_mode"], "wal");
     assert!(root.path().join("mcl.toml").is_file());
     assert!(root.path().join(".mcl/state.sqlite3").is_file());
@@ -1590,6 +1599,352 @@ fn dry_run_does_not_create_a_missing_root() {
     assert!(!missing.exists());
     let error: Value = serde_json::from_slice(&output.stderr).expect("stderr is JSON");
     assert_eq!(error["code"], "MCL_DRY_RUN_ROOT_MISSING");
+}
+
+#[test]
+fn source_content_hash_requires_verified_cas_through_create_version_and_retry() {
+    let root = TempDir::new().expect("temporary root");
+    assert!(
+        mcl(
+            &root,
+            &[
+                "init",
+                "--actor",
+                "source-content-test",
+                "--idempotency-key",
+                "source-content-init",
+            ],
+        )
+        .status
+        .success()
+    );
+
+    let source_payload = |content_hash: &str, title: &str| {
+        json!({
+            "source_type": "repository",
+            "title_or_label": title,
+            "authors_or_origin": ["Mnehmos/BHFormalization contributors"],
+            "canonical_locator": "https://github.com/Mnehmos/BHFormalization/tree/8875bef812375d7e6fd00bff95764cd5c057c7fe",
+            "acquisition_date": "2026-07-25",
+            "license_expression": "Apache-2.0",
+            "redistribution_status": "allowed",
+            "content_hash": content_hash,
+            "citation_metadata": {
+                "commit_sha": "8875bef812375d7e6fd00bff95764cd5c057c7fe",
+                "tree_sha": "600f3e1230ca88f9784837933e2417c319aaad3e"
+            },
+            "redaction_class": "public",
+            "provenance_notes": "Exact BH Pilot C repository-source fixture; no fidelity or authority.",
+            "original_text": include_str!("../fixtures/bh_formalization/SOURCE-LOCK.md")
+        })
+    };
+
+    let missing_hash = "0".repeat(64);
+    let missing = mcl_owned(
+        &root,
+        &[
+            "source".to_owned(),
+            "create".to_owned(),
+            "--payload-json".to_owned(),
+            serde_json::to_string(&source_payload(&missing_hash, "missing source content"))
+                .expect("missing source payload serializes"),
+            "--searchable-text".to_owned(),
+            "missing source content".to_owned(),
+            "--dry-run".to_owned(),
+            "--actor".to_owned(),
+            "source-content-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "source-content-missing-create".to_owned(),
+        ],
+    );
+    assert!(!missing.status.success());
+    assert_eq!(
+        parse_stdout_or_stderr(&missing)["code"],
+        "MCL_SOURCE_CONTENT_INVALID"
+    );
+    let missing_persisted = mcl_owned(
+        &root,
+        &[
+            "source".to_owned(),
+            "create".to_owned(),
+            "--payload-json".to_owned(),
+            serde_json::to_string(&source_payload(
+                &missing_hash,
+                "missing persisted source content",
+            ))
+            .expect("missing persisted source payload serializes"),
+            "--searchable-text".to_owned(),
+            "missing persisted source content".to_owned(),
+            "--actor".to_owned(),
+            "source-content-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "source-content-missing-persisted-create".to_owned(),
+        ],
+    );
+    assert!(!missing_persisted.status.success());
+    assert_eq!(
+        parse_stdout_or_stderr(&missing_persisted)["code"],
+        "MCL_SOURCE_CONTENT_INVALID"
+    );
+
+    let input = root.path().join("BH-SOURCE-LOCK.md");
+    let source_bytes = include_bytes!("../fixtures/bh_formalization/SOURCE-LOCK.md");
+    fs::write(&input, source_bytes).expect("source fixture writes beneath instance root");
+    let metadata = serde_json::to_string(&json!({
+        "schema_version": "artifact_metadata/1",
+        "media_type": "text/plain",
+        "creation_source": "user_ingest",
+        "license_expression": "Apache-2.0",
+        "restriction": "public",
+        "semantic_metadata": {
+            "artifact_role": "source_snapshot",
+            "source_role": "source_content",
+            "repository": "Mnehmos/BHFormalization",
+            "commit_sha": "8875bef812375d7e6fd00bff95764cd5c057c7fe",
+            "source_path": "BHFormalization/SOURCE-LOCK.md"
+        }
+    }))
+    .expect("source artifact metadata serializes");
+    let repository_fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/bh_formalization/SOURCE-LOCK.md");
+    let unsafe_ingest = mcl_owned(
+        &root,
+        &[
+            "artifact".to_owned(),
+            "ingest".to_owned(),
+            "--input-file".to_owned(),
+            repository_fixture.to_string_lossy().into_owned(),
+            "--metadata-json".to_owned(),
+            metadata.clone(),
+            "--actor".to_owned(),
+            "source-content-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "source-content-unsafe-input".to_owned(),
+        ],
+    );
+    assert!(!unsafe_ingest.status.success());
+    assert_eq!(
+        parse_stdout_or_stderr(&unsafe_ingest)["code"],
+        "MCL_ARTIFACT_INPUT_UNSAFE"
+    );
+    let ingested = mcl_owned(
+        &root,
+        &[
+            "artifact".to_owned(),
+            "ingest".to_owned(),
+            "--input-file".to_owned(),
+            input.to_string_lossy().into_owned(),
+            "--metadata-json".to_owned(),
+            metadata,
+            "--actor".to_owned(),
+            "source-content-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "source-content-artifact".to_owned(),
+        ],
+    );
+    assert_cli_success(&ingested);
+    let artifact_hash = parse_stdout(&ingested)["artifact"]["artifact_hash"]
+        .as_str()
+        .expect("artifact hash")
+        .to_owned();
+    assert_eq!(
+        artifact_hash,
+        "249f62a4e2780235239cf9f4e781f274f8dadba7f3aeba3aab51f46b0a6fc5c5"
+    );
+
+    let payload = source_payload(&artifact_hash, "BHFormalization source lock");
+    let create_arguments = vec![
+        "source".to_owned(),
+        "create".to_owned(),
+        "--payload-json".to_owned(),
+        serde_json::to_string(&payload).expect("source payload serializes"),
+        "--searchable-text".to_owned(),
+        "BH Pilot C source lock".to_owned(),
+        "--actor".to_owned(),
+        "source-content-test".to_owned(),
+        "--idempotency-key".to_owned(),
+        "source-content-create".to_owned(),
+    ];
+    let created = mcl_owned(&root, &create_arguments);
+    assert_cli_success(&created);
+    let created = parse_stdout(&created);
+    let object_id = created["record"]["object_id"]
+        .as_str()
+        .expect("source object ID")
+        .to_owned();
+    let version_hash = created["record"]["version_hash"]
+        .as_str()
+        .expect("source version hash")
+        .to_owned();
+
+    let retried = mcl_owned(&root, &create_arguments);
+    assert_cli_success(&retried);
+    assert_eq!(parse_stdout(&retried)["record"], created["record"]);
+
+    let artifact = mcl_owned(
+        &root,
+        &[
+            "artifact".to_owned(),
+            "get".to_owned(),
+            "--artifact-hash".to_owned(),
+            artifact_hash.clone(),
+        ],
+    );
+    assert_cli_success(&artifact);
+    assert_eq!(
+        parse_stdout(&artifact)["semantic_metadata"]["source_role"],
+        "source_content"
+    );
+    let verified = mcl_owned(
+        &root,
+        &[
+            "artifact".to_owned(),
+            "verify".to_owned(),
+            "--artifact-hash".to_owned(),
+            artifact_hash.clone(),
+        ],
+    );
+    assert_cli_success(&verified);
+    assert_eq!(
+        parse_stdout(&verified)["content_hash_verified"],
+        json!(true)
+    );
+    let loaded_source = mcl_owned(
+        &root,
+        &[
+            "source".to_owned(),
+            "get".to_owned(),
+            "--object-id".to_owned(),
+            object_id.clone(),
+            "--version-hash".to_owned(),
+            version_hash.clone(),
+        ],
+    );
+    assert_cli_success(&loaded_source);
+    assert_eq!(
+        parse_stdout(&loaded_source)["payload"]["content_hash"],
+        artifact_hash
+    );
+
+    let missing_version = mcl_owned(
+        &root,
+        &[
+            "source".to_owned(),
+            "version".to_owned(),
+            "--object-id".to_owned(),
+            object_id.clone(),
+            "--expected-head".to_owned(),
+            version_hash.clone(),
+            "--payload-json".to_owned(),
+            serde_json::to_string(&source_payload(&missing_hash, "missing successor content"))
+                .expect("successor payload serializes"),
+            "--searchable-text".to_owned(),
+            "missing successor source content".to_owned(),
+            "--dry-run".to_owned(),
+            "--actor".to_owned(),
+            "source-content-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "source-content-missing-version".to_owned(),
+        ],
+    );
+    assert!(!missing_version.status.success());
+    assert_eq!(
+        parse_stdout_or_stderr(&missing_version)["code"],
+        "MCL_SOURCE_CONTENT_INVALID"
+    );
+    let missing_persisted_version = mcl_owned(
+        &root,
+        &[
+            "source".to_owned(),
+            "version".to_owned(),
+            "--object-id".to_owned(),
+            object_id.clone(),
+            "--expected-head".to_owned(),
+            version_hash.clone(),
+            "--payload-json".to_owned(),
+            serde_json::to_string(&source_payload(
+                &missing_hash,
+                "missing persisted successor content",
+            ))
+            .expect("persisted successor payload serializes"),
+            "--searchable-text".to_owned(),
+            "missing persisted successor source content".to_owned(),
+            "--actor".to_owned(),
+            "source-content-test".to_owned(),
+            "--idempotency-key".to_owned(),
+            "source-content-missing-persisted-version".to_owned(),
+        ],
+    );
+    assert!(!missing_persisted_version.status.success());
+    assert_eq!(
+        parse_stdout_or_stderr(&missing_persisted_version)["code"],
+        "MCL_SOURCE_CONTENT_INVALID"
+    );
+
+    let version_arguments = vec![
+        "source".to_owned(),
+        "version".to_owned(),
+        "--object-id".to_owned(),
+        object_id,
+        "--expected-head".to_owned(),
+        version_hash,
+        "--payload-json".to_owned(),
+        serde_json::to_string(&source_payload(
+            &artifact_hash,
+            "BHFormalization source lock, reviewed",
+        ))
+        .expect("reviewed successor payload serializes"),
+        "--searchable-text".to_owned(),
+        "BH Pilot C reviewed source lock".to_owned(),
+        "--actor".to_owned(),
+        "source-content-test".to_owned(),
+        "--idempotency-key".to_owned(),
+        "source-content-version".to_owned(),
+    ];
+    let versioned = mcl_owned(&root, &version_arguments);
+    assert_cli_success(&versioned);
+    let versioned = parse_stdout(&versioned);
+    let version_retry = mcl_owned(&root, &version_arguments);
+    assert_cli_success(&version_retry);
+    assert_eq!(parse_stdout(&version_retry)["record"], versioned["record"]);
+
+    let cas = root
+        .path()
+        .join(".mcl/artifacts/sha256")
+        .join(&artifact_hash[..2])
+        .join(&artifact_hash[2..4])
+        .join(&artifact_hash);
+    assert_eq!(
+        fs::read(&cas).expect("retained source bytes read"),
+        source_bytes
+    );
+    fs::write(&cas, b"substituted source content")
+        .expect("test substitutes the retained source bytes");
+    let corrupted_retry = mcl_owned(&root, &create_arguments);
+    assert!(!corrupted_retry.status.success());
+    assert_eq!(
+        parse_stdout_or_stderr(&corrupted_retry)["code"],
+        "MCL_SOURCE_CONTENT_INVALID"
+    );
+    let corrupted_version_retry = mcl_owned(&root, &version_arguments);
+    assert!(!corrupted_version_retry.status.success());
+    assert_eq!(
+        parse_stdout_or_stderr(&corrupted_version_retry)["code"],
+        "MCL_SOURCE_CONTENT_INVALID"
+    );
+    fs::remove_file(cas).expect("test removes retained source bytes");
+    let damaged_retry = mcl_owned(&root, &create_arguments);
+    assert!(!damaged_retry.status.success());
+    assert_eq!(
+        parse_stdout_or_stderr(&damaged_retry)["code"],
+        "MCL_SOURCE_CONTENT_INVALID"
+    );
+    let damaged_version_retry = mcl_owned(&root, &version_arguments);
+    assert!(!damaged_version_retry.status.success());
+    assert_eq!(
+        parse_stdout_or_stderr(&damaged_version_retry)["code"],
+        "MCL_SOURCE_CONTENT_INVALID"
+    );
 }
 
 #[test]

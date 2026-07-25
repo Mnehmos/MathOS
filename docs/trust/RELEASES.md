@@ -20,7 +20,7 @@ mcl --root <instance> --json release build \
 
 `--mode` is `prerequisites` or `recommended`; only prerequisite mode accepts `--include-soft`. The destination's parent must exist, and the destination itself must not exist. Builds do not overwrite or merge directories.
 
-The application fully revalidates the receipt-bound protected publication chain and the current reviewed pedagogy path before writing. A stale source, claim, formalization, unit, edge, artifact, environment, stage, receipt, or policy fails closed.
+The application fully revalidates the receipt-bound protected publication chain and the current reviewed pedagogy path before writing. Every non-null `source/1.content_hash` in that exact object closure contributes its verified CAS bytes and retained metadata to the artifact inventory. A stale source, claim, formalization, unit, edge, artifact, environment, stage, receipt, or policy fails closed.
 
 Add `--dry-run` to execute the same derivation and validation without creating the output directory. The returned `dry_run: true` manifest hash must equal a later build from unchanged state, including after reopening the instance.
 
@@ -36,7 +36,7 @@ mcl --root <missing-path-is-allowed> --json release verify \
   --expected-manifest-hash <trusted-sha256>
 ```
 
-The expected hash is required out of band so a coherent replacement manifest cannot silently redefine the release. The verifier checks the exact file inventory, rejects symbolic links and unsafe paths, recomputes every member hash and size, parses exact canonical JSON, validates record hashes and schemas, resolves all object and edge references, verifies the persisted authority and current fidelity witnesses, artifacts, environment identities, and controlled repair graph, reproduces the publication report/closure/stage/receipt bindings, compares report copies with their CAS members and the license index, and checks the replay and pedagogy exports against the manifest.
+The expected hash is required out of band so a coherent replacement manifest cannot silently redefine the release. The verifier checks the exact file inventory, rejects symbolic links and unsafe paths, recomputes every member hash and size, parses exact canonical JSON, validates record hashes and schemas, resolves all object and edge references, requires exact path and retained policy metadata for non-null source content, verifies the persisted authority and current fidelity witnesses, artifacts, environment identities, and controlled repair graph, reproduces the publication report/closure/stage/receipt bindings, compares report copies with their CAS members and the license index, and checks the replay and pedagogy exports against the manifest.
 
 Only after those checks pass does it replay `replay/Submission.lean`. The executable is fixed to `lean` (or `lean.exe` on Windows), the only argument is the verifier-controlled module path, and the declaration comes from the receipt-bound manifest. The pinned environment controls toolchain, platform, network flag, timeout, and output limit. A platform or Lean-version mismatch fails closed.
 

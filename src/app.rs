@@ -21,7 +21,7 @@ use crate::domain::schemas::{
     FormalizationClaimPolarity, FormalizationPayload, LEARNING_UNIT_SCHEMA_VERSION,
     LearningTargetKind, LearningUnitKind, LearningUnitPayload, LearningUnitReviewState,
     LearningUnitTrainingStatus, RedactionClass, RedistributionStatus, SourcePayload, SourceType,
-    validate_record_payload,
+    validate_record_payload, validate_source_content_metadata,
 };
 use crate::domain::{
     ArtifactCreationSource, ArtifactMediaType, ArtifactMetadata, ArtifactRestriction,
@@ -4140,6 +4140,10 @@ impl Application {
         ]);
         for record in records.values() {
             match record.kind {
+                RecordKind::Source => {
+                    let source = decode_source(&record.payload)?;
+                    artifact_hashes.extend(source.content_hash);
+                }
                 RecordKind::Formalization => {
                     let formalization = decode_formalization(&record.payload)?;
                     environment_hashes.insert(formalization.environment_hash);
@@ -5656,6 +5660,9 @@ impl Application {
         dry_run: bool,
     ) -> Result<RecordMutationOutcome, AppError> {
         validate_attribution(actor, idempotency_key)?;
+        if draft.kind == RecordKind::Source {
+            self.validate_source_content_draft(draft)?;
+        }
         if draft.kind == RecordKind::LearningUnit {
             if !dry_run
                 && let Some(record) =
@@ -5693,6 +5700,9 @@ impl Application {
         dry_run: bool,
     ) -> Result<RecordMutationOutcome, AppError> {
         validate_attribution(actor, idempotency_key)?;
+        if draft.kind == RecordKind::Source {
+            self.validate_source_content_draft(draft)?;
+        }
         if draft.kind == RecordKind::LearningUnit {
             if !dry_run
                 && let Some(record) = self.store.existing_record_version_result(
@@ -5732,6 +5742,36 @@ impl Application {
             proposed_version_hash,
             record,
         })
+    }
+
+    fn validate_source_content_draft(&self, draft: &RecordDraft) -> Result<(), AppError> {
+        validate_record_payload(draft.kind, &draft.schema_version, &draft.payload)?;
+        let source: SourcePayload =
+            serde_json::from_value(draft.payload.clone()).map_err(|error| {
+                source_content_error(format!("source content binding cannot be decoded: {error}"))
+            })?;
+        let Some(content_hash) = source.content_hash.as_deref() else {
+            return Ok(());
+        };
+        let verified = self.verify_artifact(content_hash).map_err(|error| {
+            source_content_error(format!(
+                "source content artifact {content_hash} did not verify: {}",
+                error.message
+            ))
+        })?;
+        let artifact = verified.artifact;
+        validate_source_content_metadata(
+            &source,
+            &ArtifactMetadata {
+                schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION
+                    .to_owned(),
+                media_type: artifact.media_type,
+                creation_source: artifact.creation_source,
+                license_expression: artifact.license_expression,
+                restriction: artifact.restriction,
+                semantic_metadata: artifact.semantic_metadata,
+            },
+        )
     }
 
     pub fn get_record(
@@ -6477,6 +6517,16 @@ impl Application {
     }
 }
 
+fn decode_source(payload: &Value) -> Result<SourcePayload, AppError> {
+    serde_json::from_value(payload.clone()).map_err(|error| {
+        release_build_error(
+            "MCL_RELEASE_SOURCE_INVALID",
+            format!("source payload could not be decoded after validation: {error}"),
+            "Restore the exact schema-valid source before building a release.",
+        )
+    })
+}
+
 fn decode_learning_unit(payload: &Value) -> Result<LearningUnitPayload, AppError> {
     serde_json::from_value(payload.clone()).map_err(|error| {
         AppError::new(
@@ -6523,6 +6573,15 @@ fn insert_release_file(
         ));
     }
     Ok(())
+}
+
+fn source_content_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_SOURCE_CONTENT_INVALID",
+        message,
+        false,
+        "Register and retain the exact source bytes with reviewed source-content provenance and compatible policy.",
+    )
 }
 
 fn release_build_error(
@@ -8683,10 +8742,10 @@ mod tests {
                     creation_source: ArtifactCreationSource::UserIngest,
                     license_expression: None,
                     restriction: ArtifactRestriction::Private,
-                    semantic_metadata: BTreeMap::from([(
-                        "declaration_name".to_owned(),
-                        declaration_name.to_owned(),
-                    )]),
+                    semantic_metadata: BTreeMap::from([
+                        ("declaration_name".to_owned(), declaration_name.to_owned()),
+                        ("source_role".to_owned(), "source_content".to_owned()),
+                    ]),
                 },
                 "publication-authority-test",
                 "publication-authority-module",
@@ -9317,6 +9376,79 @@ mod tests {
         )?;
         add_fixture_verified_fidelity(&mut fixture, None, "release")?;
         let (source, claim, _) = fixture_fidelity_lineage(&fixture);
+        let bh_source_content = fixture
+            .application
+            .ingest_artifact(
+                include_bytes!("../fixtures/bh_formalization/SOURCE-LOCK.md"),
+                &ArtifactMetadata {
+                    schema_version: crate::domain::artifact::ARTIFACT_METADATA_SCHEMA_VERSION
+                        .to_owned(),
+                    media_type: ArtifactMediaType::PlainText,
+                    creation_source: ArtifactCreationSource::UserIngest,
+                    license_expression: Some("Apache-2.0".to_owned()),
+                    restriction: ArtifactRestriction::Public,
+                    semantic_metadata: BTreeMap::from([
+                        ("artifact_role".to_owned(), "source_snapshot".to_owned()),
+                        ("source_role".to_owned(), "source_content".to_owned()),
+                        (
+                            "repository".to_owned(),
+                            "Mnehmos/BHFormalization".to_owned(),
+                        ),
+                        (
+                            "commit_sha".to_owned(),
+                            "8875bef812375d7e6fd00bff95764cd5c057c7fe".to_owned(),
+                        ),
+                        (
+                            "source_path".to_owned(),
+                            "BHFormalization/SOURCE-LOCK.md".to_owned(),
+                        ),
+                    ]),
+                },
+                "release-test",
+                "release-test-bh-source-content",
+                false,
+            )?
+            .artifact
+            .expect("BH source content persists");
+        assert_eq!(
+            bh_source_content.artifact_hash,
+            "249f62a4e2780235239cf9f4e781f274f8dadba7f3aeba3aab51f46b0a6fc5c5"
+        );
+        let bh_source = fixture
+            .application
+            .create_record(
+                &RecordDraft {
+                    kind: RecordKind::Source,
+                    schema_version: crate::domain::schemas::SOURCE_SCHEMA_VERSION.to_owned(),
+                    payload: json!({
+                        "source_type": "repository",
+                        "title_or_label": "BHFormalization source lock",
+                        "authors_or_origin": ["Mnehmos/BHFormalization contributors"],
+                        "canonical_locator": "https://github.com/Mnehmos/BHFormalization/tree/8875bef812375d7e6fd00bff95764cd5c057c7fe",
+                        "acquisition_date": "2026-07-25",
+                        "license_expression": "Apache-2.0",
+                        "redistribution_status": "allowed",
+                        "content_hash": bh_source_content.artifact_hash,
+                        "citation_metadata": {
+                            "commit_sha": "8875bef812375d7e6fd00bff95764cd5c057c7fe",
+                            "tree_sha": "600f3e1230ca88f9784837933e2417c319aaad3e"
+                        },
+                        "redaction_class": "public",
+                        "provenance_notes": "Exact BH Pilot C repository-source fixture; no fidelity or authority.",
+                        "original_text": include_str!("../fixtures/bh_formalization/SOURCE-LOCK.md")
+                    }),
+                    searchable_text: "BH Pilot C exact repository source lock".to_owned(),
+                },
+                "release-test",
+                "release-test-bh-source-record",
+                false,
+            )?
+            .record
+            .expect("BH source record persists");
+        let bh_source_ref = ExactVersionReference {
+            object_id: bh_source.object_id,
+            version_hash: bh_source.version_hash,
+        };
         let content = fixture
             .application
             .ingest_artifact(
@@ -9349,7 +9481,7 @@ mod tests {
                 "learning_objectives": [format!("Complete the {kind} release step.")],
                 "hard_prerequisites": prerequisites,
                 "soft_prerequisites": [],
-                "grounded_source_references": [source],
+                "grounded_source_references": [source, bh_source_ref],
                 "content_artifact_hash": content.artifact_hash,
                 "examples": [],
                 "nonexamples": [],
@@ -9480,6 +9612,44 @@ mod tests {
         let verified = crate::release::verify_release_bundle_integrity(&bundle)?;
         assert_eq!(verified.manifest_hash, built.manifest_hash);
         assert_eq!(verified.manifest.pedagogy.root, root_ref);
+        let bh_artifact_path = format!("artifacts/{}", bh_source_content.artifact_hash);
+        assert_eq!(
+            fs::read(bundle.join(&bh_artifact_path)).expect("released BH source bytes read"),
+            include_bytes!("../fixtures/bh_formalization/SOURCE-LOCK.md")
+        );
+        let bh_members = verified
+            .manifest
+            .members
+            .iter()
+            .filter(|member| member.path == bh_artifact_path)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bh_members.len(),
+            1,
+            "BH source artifact occurs exactly once"
+        );
+        let bh_member = bh_members[0];
+        assert_eq!(bh_member.content_hash, bh_source_content.artifact_hash);
+        assert_eq!(
+            bh_member.byte_size,
+            include_bytes!("../fixtures/bh_formalization/SOURCE-LOCK.md").len() as u64
+        );
+        let bh_metadata = bh_member
+            .artifact_metadata
+            .as_ref()
+            .expect("BH source artifact retains reviewed metadata");
+        assert_eq!(
+            bh_metadata
+                .semantic_metadata
+                .get("source_role")
+                .map(String::as_str),
+            Some("source_content")
+        );
+        assert_eq!(
+            bh_metadata.license_expression.as_deref(),
+            Some("Apache-2.0")
+        );
+        assert_eq!(bh_metadata.restriction, ArtifactRestriction::Public);
 
         let config = ResolvedConfig::load(fixture.root.path(), None)?;
         drop(fixture.application);
@@ -9551,6 +9721,81 @@ mod tests {
             "MCL_RELEASE_MANIFEST_HASH_MISMATCH"
         );
 
+        let restarted_bh_artifact = restarted_bundle.join(&bh_artifact_path);
+        fs::remove_file(&restarted_bh_artifact).expect("test removes copied BH source bytes");
+        assert_eq!(
+            crate::release::verify_release_bundle_integrity(&restarted_bundle)
+                .expect_err("missing source artifact must fail offline")
+                .code,
+            "MCL_RELEASE_INVENTORY_MISMATCH"
+        );
+        fs::write(&restarted_bh_artifact, b"substituted source bytes")
+            .expect("test substitutes copied BH source bytes");
+        assert_eq!(
+            crate::release::verify_release_bundle_integrity(&restarted_bundle)
+                .expect_err("substituted source artifact must fail offline")
+                .code,
+            "MCL_RELEASE_MEMBER_INTEGRITY_FAILED"
+        );
+        fs::write(
+            &restarted_bh_artifact,
+            include_bytes!("../fixtures/bh_formalization/SOURCE-LOCK.md"),
+        )
+        .expect("exact BH source bytes restore again");
+        let restarted_manifest_path = restarted_bundle.join("manifest.json");
+        let exact_restarted_manifest =
+            fs::read(&restarted_manifest_path).expect("exact restarted manifest reads");
+        let mut changed_metadata_manifest: crate::domain::ReleaseManifest =
+            serde_json::from_slice(&exact_restarted_manifest)
+                .expect("restarted manifest decodes for adversarial test");
+        changed_metadata_manifest
+            .members
+            .iter_mut()
+            .find(|member| member.path == bh_artifact_path)
+            .and_then(|member| member.artifact_metadata.as_mut())
+            .expect("BH artifact metadata is mutable in test copy")
+            .semantic_metadata
+            .insert("source_role".to_owned(), "unreviewed_snapshot".to_owned());
+        fs::write(
+            &restarted_manifest_path,
+            canonical_json(
+                &serde_json::to_value(&changed_metadata_manifest)
+                    .expect("changed manifest serializes"),
+            )?,
+        )
+        .expect("changed metadata manifest writes");
+        assert_eq!(
+            crate::release::verify_release_bundle_integrity(&restarted_bundle)
+                .expect_err("changed source metadata must fail offline")
+                .code,
+            "MCL_RELEASE_SEMANTIC_CLOSURE_INVALID"
+        );
+        fs::write(&restarted_manifest_path, exact_restarted_manifest)
+            .expect("exact restarted manifest restores");
+        #[cfg(windows)]
+        {
+            let outside = tempfile::TempDir::new().expect("outside release directory");
+            let junction = restarted_bundle.join("linked-source");
+            let output = Command::new("cmd.exe")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(&junction)
+                .arg(outside.path())
+                .output()
+                .expect("release junction command runs");
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                crate::release::verify_release_bundle_integrity(&restarted_bundle)
+                    .expect_err("release junction must fail offline")
+                    .code,
+                "MCL_RELEASE_PATH_UNSAFE"
+            );
+            fs::remove_dir(junction).expect("test removes release junction only");
+        }
         fs::write(restarted_bundle.join("extra.txt"), b"extra")
             .expect("test adds an unlisted member");
         assert_eq!(
