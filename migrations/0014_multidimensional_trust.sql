@@ -49,6 +49,7 @@ CREATE TABLE trust_transitions (
     created_at INTEGER NOT NULL CHECK (created_at >= 0),
     created_by TEXT NOT NULL
         CHECK (length(trim(created_by)) BETWEEN 1 AND 256),
+    CHECK (created_by = reviewer_identity),
     CHECK (
         (
             dimension = 'definition'
@@ -232,6 +233,17 @@ BEGIN
     ) THEN RAISE(
         ABORT,
         'trust transition evidence hashes must be strictly sorted and unique'
+    ) END;
+
+    SELECT CASE WHEN (
+        SELECT COUNT(*)
+        FROM trust_transitions
+        WHERE subject_object_id = NEW.subject_object_id
+          AND subject_version_hash = NEW.subject_version_hash
+          AND dimension = NEW.dimension
+    ) >= 256 THEN RAISE(
+        ABORT,
+        'trust transition dimension history cannot exceed 256 entries'
     ) END;
 
     SELECT CASE WHEN (

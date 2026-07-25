@@ -59,6 +59,9 @@ mcl --root <instance> --json verify transition-trust \
   --idempotency-key <key>
 ```
 
+The request's `reviewer_identity` must exactly equal `--actor`; delegated review recording is not
+accepted. Definition, reuse, and coverage histories are each capped at 256 immutable decisions.
+
 MCP exposes the equivalent closed `trust_status` and `transition_trust` verify actions. Both
 interfaces return the same canonical representation.
 

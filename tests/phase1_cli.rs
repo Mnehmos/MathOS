@@ -1101,8 +1101,28 @@ fn verifier_job_cli_dry_runs_enqueues_retries_and_survives_restart() {
     assert_eq!(initial_trust["definition"]["status"], "ungrounded");
     assert_eq!(initial_trust["reuse"]["status"], "experimental");
     assert_eq!(initial_trust["coverage"]["status"], "unknown");
-    assert_eq!(initial_trust["promotion"][0]["profile"], "experimental");
-    assert_eq!(initial_trust["promotion"][0]["eligible"], false);
+    let promotion_by_profile = |trust: &Value, profile: &str| {
+        trust["promotion"]
+            .as_array()
+            .expect("promotion evaluations")
+            .iter()
+            .find(|evaluation| evaluation["profile"] == profile)
+            .unwrap_or_else(|| panic!("missing {profile} promotion evaluation"))
+            .clone()
+    };
+    assert_eq!(
+        initial_trust["promotion"]
+            .as_array()
+            .expect("initial promotion evaluations")
+            .len(),
+        3
+    );
+    for profile in ["experimental", "publication", "upstream"] {
+        assert_eq!(
+            promotion_by_profile(&initial_trust, profile)["eligible"],
+            false
+        );
+    }
 
     let trust_request = json!({
         "schema_version": "trust_transition/1",
@@ -1118,6 +1138,27 @@ fn verifier_job_cli_dry_runs_enqueues_retries_and_survives_restart() {
         "reason": "The exact source mapping was independently reviewed.",
         "predecessor_transition_id": null
     });
+    let reviewer_mismatch = mcl_owned(
+        &root,
+        &[
+            "verify".to_owned(),
+            "transition-trust".to_owned(),
+            "--request-json".to_owned(),
+            trust_request.to_string(),
+            "--actor".to_owned(),
+            "different-reviewer".to_owned(),
+            "--idempotency-key".to_owned(),
+            "trust-transition-reviewer-mismatch".to_owned(),
+            "--dry-run".to_owned(),
+        ],
+    );
+    assert!(!reviewer_mismatch.status.success());
+    let reviewer_mismatch_error: Value =
+        serde_json::from_slice(&reviewer_mismatch.stderr).expect("reviewer mismatch error JSON");
+    assert_eq!(
+        reviewer_mismatch_error["code"],
+        "MCL_TRUST_REVIEWER_MISMATCH"
+    );
     let transition = |dry_run: bool| {
         let mut arguments = vec![
             "verify".to_owned(),
@@ -1152,6 +1193,21 @@ fn verifier_job_cli_dry_runs_enqueues_retries_and_survives_restart() {
     assert_eq!(reviewed_trust["definition"]["status"], "source_grounded");
     assert_eq!(reviewed_trust["kernel"]["status"], "unverified");
     assert_eq!(reviewed_trust["fidelity"]["status"], "unreviewed");
+    assert_eq!(reviewed_trust["reuse"]["status"], "experimental");
+    assert_eq!(reviewed_trust["coverage"]["status"], "unknown");
+    assert_eq!(
+        reviewed_trust["promotion"]
+            .as_array()
+            .expect("reviewed promotion evaluations")
+            .len(),
+        3
+    );
+    for profile in ["experimental", "publication", "upstream"] {
+        assert_eq!(
+            promotion_by_profile(&reviewed_trust, profile)["eligible"],
+            false
+        );
+    }
     let trust_artifact_path = root
         .path()
         .join(".mcl/artifacts/sha256")

@@ -2881,8 +2881,10 @@ impl Store {
     ) -> Result<String, AppError> {
         validate_mutation_inputs(actor, idempotency_key)?;
         request.validate()?;
+        validate_trust_transition_actor(request, actor)?;
         validate_trust_transition_head(&self.connection, request)?;
         validate_trust_transition_artifacts(&self.connection, request)?;
+        validate_trust_transition_capacity(&self.connection, request)?;
         request.transition_hash()
     }
 
@@ -2894,6 +2896,7 @@ impl Store {
     ) -> Result<TrustTransitionSnapshot, AppError> {
         validate_mutation_inputs(actor, idempotency_key)?;
         request.validate()?;
+        validate_trust_transition_actor(request, actor)?;
         let transition_hash = request.transition_hash()?;
         let input_hash = value_hash(&json!({
             "operation": TRUST_TRANSITION_OPERATION,
@@ -2949,6 +2952,7 @@ impl Store {
         }
         validate_trust_transition_head(&transaction, request)?;
         validate_trust_transition_artifacts(&transaction, request)?;
+        validate_trust_transition_capacity(&transaction, request)?;
         if transaction
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM trust_transitions WHERE transition_hash = ?1)",
@@ -3008,30 +3012,42 @@ impl Store {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT transition_id FROM trust_transitions WHERE subject_object_id = ?1 AND subject_version_hash = ?2 ORDER BY created_at, transition_id LIMIT ?3",
+                "SELECT transition_id, dimension FROM trust_transitions WHERE subject_object_id = ?1 AND subject_version_hash = ?2 ORDER BY created_at, transition_id LIMIT ?3",
             )
             .map_err(|error| AppError::database("prepare trust transition list", error))?;
-        let ids = statement
+        let rows = statement
             .query_map(
                 params![
                     subject.object_id,
                     subject.version_hash,
-                    (crate::domain::trust::MAX_TRUST_HISTORY + 1) as i64
+                    (crate::domain::trust::MAX_TRUST_HISTORY
+                        * crate::domain::ReviewedTrustDimension::ALL.len()
+                        + 1) as i64
                 ],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .map_err(|error| AppError::database("list trust transitions", error))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| AppError::database("read trust transition list", error))?;
-        if ids.len() > crate::domain::trust::MAX_TRUST_HISTORY {
-            return Err(AppError::new(
-                "MCL_TRUST_HISTORY_LIMIT",
-                "trust transition history exceeds its reviewed bound",
-                false,
-                "Create a new formalization version rather than extending an unbounded review history.",
-            ));
+        let mut counts = [0_usize; 3];
+        for (_, dimension) in &rows {
+            let index = match dimension.as_str() {
+                "definition" => 0,
+                "reuse" => 1,
+                "coverage" => 2,
+                _ => {
+                    return Err(trust_transition_integrity_error(
+                        "stored trust transition has an unsupported reviewed dimension",
+                    ));
+                }
+            };
+            counts[index] += 1;
+            if counts[index] > crate::domain::trust::MAX_TRUST_HISTORY {
+                return Err(trust_history_limit_error(dimension));
+            }
         }
-        ids.iter()
+        rows.iter()
+            .map(|(transition_id, _)| transition_id)
             .map(|transition_id| read_trust_transition(&self.connection, transition_id))
             .collect()
     }
@@ -6125,6 +6141,51 @@ fn validate_diagnostic_evidence_references(
     Ok(())
 }
 
+fn validate_trust_transition_actor(
+    request: &TrustTransitionRequest,
+    actor: &str,
+) -> Result<(), AppError> {
+    if request.reviewer_identity != actor {
+        return Err(AppError::new(
+            "MCL_TRUST_REVIEWER_MISMATCH",
+            "trust-transition reviewer identity must equal the attributed actor",
+            false,
+            "Submit the reviewed transition under the reviewer's own actor identity.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_trust_transition_capacity(
+    connection: &Connection,
+    request: &TrustTransitionRequest,
+) -> Result<(), AppError> {
+    let count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM trust_transitions WHERE subject_object_id = ?1 AND subject_version_hash = ?2 AND dimension = ?3",
+            params![
+                request.formalization.object_id,
+                request.formalization.version_hash,
+                request.dimension.as_str()
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| AppError::database("count trust transition history", error))?;
+    if count >= crate::domain::trust::MAX_TRUST_HISTORY as i64 {
+        return Err(trust_history_limit_error(request.dimension.as_str()));
+    }
+    Ok(())
+}
+
+fn trust_history_limit_error(dimension: &str) -> AppError {
+    AppError::new(
+        "MCL_TRUST_HISTORY_LIMIT",
+        format!("{dimension} trust transition history has reached or exceeded its reviewed bound"),
+        false,
+        "Create a new formalization version rather than extending an unbounded review history.",
+    )
+}
+
 fn validate_trust_transition_head(
     connection: &Connection,
     request: &TrustTransitionRequest,
@@ -7906,6 +7967,17 @@ mod tests {
             store
                 .validate_trust_transition(
                     &first_request,
+                    "different-reviewer",
+                    "trust-reviewer-mismatch"
+                )
+                .expect_err("reviewer identity must be actor-bound")
+                .code,
+            "MCL_TRUST_REVIEWER_MISMATCH"
+        );
+        assert_eq!(
+            store
+                .validate_trust_transition(
+                    &first_request,
                     "definition-reviewer",
                     "trust-first-preview"
                 )
@@ -7970,6 +8042,147 @@ mod tests {
                 .is_err()
         );
 
+        let mut capacity_head = second.clone();
+        let mut capacity_status = ReviewedTrustStatus::ProjectApproved;
+        for index in 2..crate::domain::trust::MAX_TRUST_HISTORY {
+            let next_status = if capacity_status == ReviewedTrustStatus::ProjectApproved {
+                ReviewedTrustStatus::SourceGrounded
+            } else {
+                ReviewedTrustStatus::ProjectApproved
+            };
+            let request = TrustTransitionRequest {
+                from_status: capacity_status,
+                to_status: next_status,
+                predecessor_transition_id: Some(capacity_head.transition_id.clone()),
+                reason: format!("Bounded trust-history decision {index}."),
+                ..second_request.clone()
+            };
+            capacity_head = store
+                .create_trust_transition(
+                    &request,
+                    "definition-reviewer",
+                    &format!("trust-capacity-{index}"),
+                )
+                .expect("transition below the per-dimension bound persists");
+            capacity_status = next_status;
+        }
+        assert_eq!(
+            store
+                .list_trust_transitions(&subject)
+                .expect("history at the per-dimension bound remains readable")
+                .len(),
+            crate::domain::trust::MAX_TRUST_HISTORY
+        );
+        let overflow_status = if capacity_status == ReviewedTrustStatus::ProjectApproved {
+            ReviewedTrustStatus::SourceGrounded
+        } else {
+            ReviewedTrustStatus::ProjectApproved
+        };
+        let overflow_request = TrustTransitionRequest {
+            from_status: capacity_status,
+            to_status: overflow_status,
+            predecessor_transition_id: Some(capacity_head.transition_id.clone()),
+            reason: "Attempts to exceed the immutable per-dimension history bound.".to_owned(),
+            ..second_request.clone()
+        };
+        assert_eq!(
+            store
+                .validate_trust_transition(
+                    &overflow_request,
+                    "definition-reviewer",
+                    "trust-capacity-preview"
+                )
+                .expect_err("preview must reject the 257th transition")
+                .code,
+            "MCL_TRUST_HISTORY_LIMIT"
+        );
+        assert_eq!(
+            store
+                .create_trust_transition(
+                    &overflow_request,
+                    "definition-reviewer",
+                    "trust-capacity-overflow"
+                )
+                .expect_err("write must reject the 257th transition")
+                .code,
+            "MCL_TRUST_HISTORY_LIMIT"
+        );
+        let overflow_json = String::from_utf8(
+            canonical_json(
+                &serde_json::to_value(&overflow_request).expect("overflow request serializes"),
+            )
+            .expect("overflow request canonicalizes"),
+        )
+        .expect("canonical request is UTF-8");
+        let sql_overflow_error = store
+            .connection
+            .execute(
+                "INSERT INTO trust_transitions(transition_id, transition_hash, subject_object_id, subject_version_hash, dimension, from_status, to_status, reviewer_identity, evidence_artifact_hashes_json, reason, predecessor_transition_id, request_json, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, unixepoch(), ?13)",
+                params![
+                    Uuid::now_v7().to_string(),
+                    overflow_request
+                        .transition_hash()
+                        .expect("overflow transition identity"),
+                    overflow_request.formalization.object_id,
+                    overflow_request.formalization.version_hash,
+                    overflow_request.dimension.as_str(),
+                    overflow_request.from_status.as_str(),
+                    overflow_request.to_status.as_str(),
+                    overflow_request.reviewer_identity,
+                    serde_json::to_string(&overflow_request.evidence_artifact_hashes)
+                        .expect("overflow evidence serializes"),
+                    overflow_request.reason,
+                    overflow_request.predecessor_transition_id,
+                    overflow_json,
+                    "definition-reviewer",
+                ],
+            )
+            .expect_err("SQL trigger must reject the 257th transition");
+        assert!(
+            sql_overflow_error
+                .to_string()
+                .contains("trust transition dimension history cannot exceed 256 entries"),
+            "unexpected SQL overflow error: {sql_overflow_error}"
+        );
+        assert_eq!(
+            store
+                .list_trust_transitions(&subject)
+                .expect("rejected overflow leaves history readable")
+                .len(),
+            crate::domain::trust::MAX_TRUST_HISTORY
+        );
+        let reuse_request = TrustTransitionRequest {
+            dimension: crate::domain::ReviewedTrustDimension::Reuse,
+            from_status: ReviewedTrustStatus::Experimental,
+            to_status: ReviewedTrustStatus::CampaignSpecific,
+            reviewer_identity: "reuse-reviewer".to_owned(),
+            predecessor_transition_id: None,
+            reason: "Campaign-specific reuse was independently reviewed.".to_owned(),
+            ..second_request.clone()
+        };
+        store
+            .create_trust_transition(&reuse_request, "reuse-reviewer", "trust-reuse")
+            .expect("independent reuse transition persists");
+        let coverage_request = TrustTransitionRequest {
+            dimension: crate::domain::ReviewedTrustDimension::Coverage,
+            from_status: ReviewedTrustStatus::Unknown,
+            to_status: ReviewedTrustStatus::StatementOnly,
+            reviewer_identity: "coverage-reviewer".to_owned(),
+            predecessor_transition_id: None,
+            reason: "Statement-only coverage was independently reviewed.".to_owned(),
+            ..second_request.clone()
+        };
+        store
+            .create_trust_transition(&coverage_request, "coverage-reviewer", "trust-coverage")
+            .expect("independent coverage transition persists");
+        assert_eq!(
+            store
+                .list_trust_transitions(&subject)
+                .expect("aggregate history preserves independent per-dimension bounds")
+                .len(),
+            crate::domain::trust::MAX_TRUST_HISTORY + 2
+        );
+
         let forged_request = TrustTransitionRequest {
             dimension: crate::domain::ReviewedTrustDimension::Coverage,
             from_status: ReviewedTrustStatus::StatementOnly,
@@ -8007,7 +8220,7 @@ mod tests {
             store
                 .connection
                 .execute(
-                    "INSERT INTO trust_transitions(transition_id, transition_hash, subject_object_id, subject_version_hash, dimension, from_status, to_status, reviewer_identity, evidence_artifact_hashes_json, reason, predecessor_transition_id, request_json, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, unixepoch(), 'forger')",
+                    "INSERT INTO trust_transitions(transition_id, transition_hash, subject_object_id, subject_version_hash, dimension, from_status, to_status, reviewer_identity, evidence_artifact_hashes_json, reason, predecessor_transition_id, request_json, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, unixepoch(), ?12)",
                     params![
                         Uuid::now_v7().to_string(),
                         "e".repeat(64),
@@ -8020,6 +8233,7 @@ mod tests {
                         evidence_json,
                         forged_request.reason,
                         forged_json,
+                        "definition-reviewer",
                     ],
                 )
                 .is_err()
@@ -8028,7 +8242,7 @@ mod tests {
             store
                 .connection
                 .execute(
-                    "INSERT INTO trust_transitions(transition_id, transition_hash, subject_object_id, subject_version_hash, dimension, from_status, to_status, reviewer_identity, evidence_artifact_hashes_json, reason, predecessor_transition_id, request_json, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, unixepoch(), 'forger')",
+                    "INSERT INTO trust_transitions(transition_id, transition_hash, subject_object_id, subject_version_hash, dimension, from_status, to_status, reviewer_identity, evidence_artifact_hashes_json, reason, predecessor_transition_id, request_json, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, unixepoch(), ?12)",
                     params![
                         Uuid::now_v7().to_string(),
                         "d".repeat(64),
@@ -8044,6 +8258,7 @@ mod tests {
                         .expect("evidence serializes"),
                         missing_predecessor_request.reason,
                         missing_predecessor_json,
+                        "definition-reviewer",
                     ],
                 )
                 .is_err()

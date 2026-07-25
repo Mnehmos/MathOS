@@ -52,6 +52,8 @@ pub enum ReviewedTrustDimension {
 }
 
 impl ReviewedTrustDimension {
+    pub const ALL: [Self; 3] = [Self::Definition, Self::Reuse, Self::Coverage];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Definition => "definition",
@@ -294,6 +296,28 @@ impl ReviewedTrustStatus {
         }
     }
 
+    fn from_name(value: &str) -> Option<Self> {
+        match value {
+            "ungrounded" => Some(Self::Ungrounded),
+            "source_grounded" => Some(Self::SourceGrounded),
+            "project_approved" => Some(Self::ProjectApproved),
+            "upstream_accepted" => Some(Self::UpstreamAccepted),
+            "experimental" => Some(Self::Experimental),
+            "campaign_specific" => Some(Self::CampaignSpecific),
+            "candidate" => Some(Self::Candidate),
+            "review_ready" => Some(Self::ReviewReady),
+            "upstreamed" => Some(Self::Upstreamed),
+            "unknown" => Some(Self::Unknown),
+            "statement_only" => Some(Self::StatementOnly),
+            "analytical_core" => Some(Self::AnalyticalCore),
+            "supporting_lemma" => Some(Self::SupportingLemma),
+            "finite_specialization" => Some(Self::FiniteSpecialization),
+            "asymptotic_component" => Some(Self::AsymptoticComponent),
+            "full_theorem" => Some(Self::FullTheorem),
+            _ => None,
+        }
+    }
+
     pub const fn initial(dimension: ReviewedTrustDimension) -> Self {
         match dimension {
             ReviewedTrustDimension::Definition => Self::Ungrounded,
@@ -487,6 +511,7 @@ impl TrustTransitionSnapshot {
             || self.transition_hash != self.request.transition_hash()?
             || self.created_at < 0
             || !bounded_nonempty(&self.created_by, MAX_IDENTITY)
+            || self.created_by != self.request.reviewer_identity
         {
             return Err(trust_error(
                 "MCL_TRUST_TRANSITION_INTEGRITY_FAILED",
@@ -545,7 +570,7 @@ impl TrustStatusSnapshot {
             KernelTrustStatus::ALL
                 .map(KernelTrustStatus::as_str)
                 .as_slice(),
-            true,
+            false,
         )?;
         validate_axis(
             &self.fidelity,
@@ -554,7 +579,7 @@ impl TrustStatusSnapshot {
             FidelityTrustStatus::ALL
                 .map(FidelityTrustStatus::as_str)
                 .as_slice(),
-            true,
+            false,
         )?;
         validate_axis(
             &self.definition,
@@ -563,7 +588,7 @@ impl TrustStatusSnapshot {
             DefinitionTrustStatus::ALL
                 .map(DefinitionTrustStatus::as_str)
                 .as_slice(),
-            false,
+            true,
         )?;
         validate_axis(
             &self.reuse,
@@ -572,7 +597,7 @@ impl TrustStatusSnapshot {
             ReuseTrustStatus::ALL
                 .map(ReuseTrustStatus::as_str)
                 .as_slice(),
-            false,
+            true,
         )?;
         validate_axis(
             &self.coverage,
@@ -581,7 +606,7 @@ impl TrustStatusSnapshot {
             CoverageTrustStatus::ALL
                 .map(CoverageTrustStatus::as_str)
                 .as_slice(),
-            false,
+            true,
         )?;
         let expected = promotion_evaluations(self);
         if self.promotion != expected {
@@ -863,7 +888,7 @@ fn validate_axis<T: Copy + Eq>(
     default: T,
     as_str: fn(T) -> &'static str,
     allowed: &[&str],
-    allow_same_status_decision: bool,
+    enforce_reviewed_state_machine: bool,
 ) -> Result<(), AppError> {
     if axis.history.len() > MAX_TRUST_HISTORY
         || axis.head_decision_id.is_some() != axis.head_decision_hash.is_some()
@@ -877,7 +902,10 @@ fn validate_axis<T: Copy + Eq>(
         let key = (decision.decided_at, decision.decision_id.as_str());
         if previous_key.is_some_and(|previous| previous >= key)
             || decision.from_status != previous_status
-            || (!allow_same_status_decision && decision.from_status == decision.to_status)
+            || (enforce_reviewed_state_machine
+                && !ReviewedTrustStatus::from_name(&decision.from_status)
+                    .zip(ReviewedTrustStatus::from_name(&decision.to_status))
+                    .is_some_and(|(from, to)| from.valid_transition(to)))
         {
             return Err(trust_status_error());
         }
@@ -1062,7 +1090,7 @@ fn is_hash(value: &str) -> bool {
 }
 
 fn bounded_nonempty(value: &str, maximum: usize) -> bool {
-    !value.trim().is_empty() && value.len() <= maximum && value.len() <= MAX_TEXT
+    !value.trim().is_empty() && value.chars().count() <= maximum && value.len() <= MAX_TEXT
 }
 
 fn trust_status_error() -> AppError {
@@ -1166,6 +1194,41 @@ mod tests {
             !ReviewedTrustStatus::Experimental
                 .valid_transition(ReviewedTrustStatus::SourceGrounded)
         );
+    }
+
+    #[test]
+    fn trust_snapshots_reject_nonadjacent_reviewed_promotions() {
+        let mut snapshot = adversarial_snapshot();
+        snapshot.definition = axis(
+            DefinitionTrustStatus::UpstreamAccepted,
+            vec![decision(3, "ungrounded", "upstream_accepted", 3)],
+        );
+        snapshot.promotion = promotion_evaluations(&snapshot);
+
+        assert_eq!(
+            snapshot
+                .validate()
+                .expect_err("nonadjacent reviewed promotion must fail")
+                .code,
+            "MCL_TRUST_STATUS_INVALID"
+        );
+    }
+
+    #[test]
+    fn trust_transition_text_limits_count_unicode_code_points() {
+        TrustTransitionRequest {
+            schema_version: TRUST_TRANSITION_SCHEMA_VERSION.to_owned(),
+            formalization: reference(),
+            dimension: ReviewedTrustDimension::Definition,
+            from_status: ReviewedTrustStatus::Ungrounded,
+            to_status: ReviewedTrustStatus::SourceGrounded,
+            reviewer_identity: "é".repeat(MAX_IDENTITY),
+            evidence_artifact_hashes: vec!["f".repeat(64)],
+            reason: "界".repeat(MAX_REASON),
+            predecessor_transition_id: None,
+        }
+        .validate()
+        .expect("schema-valid Unicode identity and reason must be accepted");
     }
 
     #[test]

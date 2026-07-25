@@ -1260,6 +1260,14 @@ impl Application {
     ) -> Result<TrustTransitionOutcome, AppError> {
         validate_attribution(actor, idempotency_key)?;
         request.validate()?;
+        if request.reviewer_identity != actor {
+            return Err(AppError::new(
+                "MCL_TRUST_REVIEWER_MISMATCH",
+                "trust-transition reviewer identity must equal the attributed actor",
+                false,
+                "Submit the reviewed transition under the reviewer's own actor identity.",
+            ));
+        }
         self.read_validated_exact_record(
             &request.formalization,
             RecordKind::Formalization,
