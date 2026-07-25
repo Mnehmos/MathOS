@@ -8741,25 +8741,42 @@ fn fidelity_trust_axis(
             .cmp(&right.evidence.created_at)
             .then_with(|| left.evidence.evidence_id.cmp(&right.evidence.evidence_id))
     });
+
+    if entries.len() > crate::domain::trust::MAX_TRUST_HISTORY {
+        let head_evidence_id = fidelity.head_evidence_id.as_deref().ok_or_else(|| {
+            trust_status_integrity_error(
+                "oversized fidelity history does not identify one exact current head",
+            )
+        })?;
+        let head = entries
+            .iter()
+            .find(|entry| entry.evidence.evidence_id == head_evidence_id)
+            .ok_or_else(|| {
+                trust_status_integrity_error(
+                    "oversized fidelity history does not contain its current head",
+                )
+            })?;
+        let head_request = head.report.request();
+        let status = fidelity_trust_status(&head_request);
+        let history = vec![fidelity_trust_decision(
+            head,
+            FidelityTrustStatus::Unreviewed,
+        )];
+        let (head_decision_id, head_decision_hash) = decision_head(&history);
+        return Ok(TrustAxisSnapshot {
+            status,
+            head_decision_id,
+            head_decision_hash,
+            history,
+        });
+    }
+
     let mut history = Vec::with_capacity(entries.len());
     let mut status = FidelityTrustStatus::Unreviewed;
     for entry in entries {
         let request = entry.report.request();
         let next = fidelity_trust_status(&request);
-        history.push(TrustDecision {
-            decision_id: entry.evidence.evidence_id.clone(),
-            decision_hash: entry.evidence.evidence_hash.clone(),
-            from_status: status.as_str().to_owned(),
-            to_status: next.as_str().to_owned(),
-            decided_at: entry.evidence.created_at,
-            reviewer_identity: request.reviewer_identity().to_owned(),
-            evidence_artifact_hashes: entry.evidence.payload.artifact_hashes.clone(),
-            reason: format!(
-                "fidelity review recorded `{}` at `{}` level",
-                fidelity_verdict_name(request.verdict()),
-                fidelity_review_level_name(request.review_level())
-            ),
-        });
+        history.push(fidelity_trust_decision(entry, status));
         status = next;
     }
     let (head_decision_id, head_decision_hash) = decision_head(&history);
@@ -8769,6 +8786,28 @@ fn fidelity_trust_axis(
         head_decision_hash,
         history,
     })
+}
+
+fn fidelity_trust_decision(
+    entry: &FidelityReviewHistoryEntry,
+    from_status: FidelityTrustStatus,
+) -> TrustDecision {
+    let request = entry.report.request();
+    let to_status = fidelity_trust_status(&request);
+    TrustDecision {
+        decision_id: entry.evidence.evidence_id.clone(),
+        decision_hash: entry.evidence.evidence_hash.clone(),
+        from_status: from_status.as_str().to_owned(),
+        to_status: to_status.as_str().to_owned(),
+        decided_at: entry.evidence.created_at,
+        reviewer_identity: request.reviewer_identity().to_owned(),
+        evidence_artifact_hashes: entry.evidence.payload.artifact_hashes.clone(),
+        reason: format!(
+            "fidelity review recorded `{}` at `{}` level",
+            fidelity_verdict_name(request.verdict()),
+            fidelity_review_level_name(request.review_level())
+        ),
+    }
 }
 
 fn fidelity_trust_status(
@@ -8972,6 +9011,152 @@ mod tests {
         );
         assert_eq!(axis.history[0].from_status, "unverified");
         assert_eq!(axis.history[0].to_status, "lean_checked");
+    }
+
+    #[test]
+    fn oversized_fidelity_history_compacts_to_exact_current_head() {
+        let source = ExactVersionReference {
+            object_id: "018f0000-0000-7000-8000-000000000201".to_owned(),
+            version_hash: "a".repeat(64),
+        };
+        let claim = ExactVersionReference {
+            object_id: "018f0000-0000-7000-8000-000000000202".to_owned(),
+            version_hash: "b".repeat(64),
+        };
+        let formalization = ExactVersionReference {
+            object_id: "018f0000-0000-7000-8000-000000000203".to_owned(),
+            version_hash: "c".repeat(64),
+        };
+        let mut history = Vec::new();
+        let mut predecessor = None;
+        for index in 0..=crate::domain::trust::MAX_TRUST_HISTORY {
+            let evidence_id = format!("018f0000-0000-7000-8000-{index:012x}");
+            let review_level = if index == crate::domain::trust::MAX_TRUST_HISTORY {
+                FidelityReviewLevel::ExpertDomainReview
+            } else {
+                FidelityReviewLevel::MathematicalStatement
+            };
+            let request = crate::domain::FidelityReviewRequest {
+                schema_version: crate::domain::fidelity::FIDELITY_REVIEW_REQUEST_SCHEMA_VERSION
+                    .to_owned(),
+                source: source.clone(),
+                claim: claim.clone(),
+                formalization: formalization.clone(),
+                review_level,
+                verdict: FidelityVerdict::Verified,
+                reviewer_identity: format!("fidelity-reviewer-{index}"),
+                findings: vec!["The exact formal statement matches the source.".to_owned()],
+                ambiguity_disposition: crate::domain::AmbiguityDisposition::NoAmbiguity,
+                definition_mappings: Vec::new(),
+                supporting_artifact_hashes: Vec::new(),
+                producing_run_id: format!("018f0000-0000-7000-9000-{index:012x}"),
+                supersedes_evidence_id: predecessor.clone(),
+            };
+            let request_hash = request.request_hash().expect("valid fidelity request");
+            let report = FidelityReviewReport {
+                schema_version: crate::domain::fidelity::FIDELITY_REVIEW_REPORT_SCHEMA_VERSION
+                    .to_owned(),
+                request_hash,
+                request,
+                formalization_author: "independent-formalizer".to_owned(),
+                exact_theorem_type: "P".to_owned(),
+                declaration_hash: "d".repeat(64),
+            };
+            report.validate().expect("valid fidelity report");
+            let report_artifact_hash = format!("{:064x}", index + 1_000);
+            let payload = EvidencePayload {
+                schema_version: crate::domain::evidence::EVIDENCE_SCHEMA_VERSION.to_owned(),
+                subject: formalization.clone(),
+                evidence_kind: EvidenceKind::StatementFidelityReview,
+                result: EvidenceResult::Accepted,
+                authority_class: EvidenceAuthorityClass::Reviewed,
+                producing_run_id: Some(report.request.producing_run_id.clone()),
+                producing_job_id: None,
+                artifact_hashes: vec![report_artifact_hash.clone()],
+                verifier_or_reviewer_identity: report.request.reviewer_identity.clone(),
+                environment_hash: None,
+                supersedes_evidence_id: predecessor,
+                stale: false,
+                stale_reason: None,
+                publication_authority: None,
+                comparator_authority: None,
+            };
+            let evidence_hash = payload.evidence_hash().expect("valid fidelity evidence");
+            history.push(FidelityReviewHistoryEntry {
+                status: if index == crate::domain::trust::MAX_TRUST_HISTORY {
+                    FidelityStatus::Verified
+                } else {
+                    FidelityStatus::Superseded
+                },
+                evidence: EvidenceSnapshot {
+                    evidence_id: evidence_id.clone(),
+                    evidence_hash,
+                    payload,
+                    created_at: index as i64,
+                    created_by: format!("fidelity-reviewer-{index}"),
+                },
+                report_artifact_hash,
+                report: crate::domain::VersionedFidelityReviewReport::V1(report),
+            });
+            predecessor = Some(evidence_id);
+        }
+
+        let expected_head = history.last().expect("fidelity head").evidence.clone();
+        let fidelity = FidelityStatusSnapshot {
+            formalization: formalization.clone(),
+            status: FidelityStatus::Verified,
+            head_evidence_id: Some(expected_head.evidence_id.clone()),
+            history,
+        };
+        let fidelity_axis =
+            fidelity_trust_axis(&fidelity).expect("oversized fidelity history compacts");
+        assert_eq!(fidelity_axis.status, FidelityTrustStatus::ExpertApproved);
+        assert_eq!(fidelity_axis.history.len(), 1);
+        assert_eq!(
+            fidelity_axis.head_decision_id.as_deref(),
+            Some(expected_head.evidence_id.as_str())
+        );
+        assert_eq!(
+            fidelity_axis.head_decision_hash.as_deref(),
+            Some(expected_head.evidence_hash.as_str())
+        );
+        assert_eq!(fidelity_axis.history[0].from_status, "unreviewed");
+        assert_eq!(fidelity_axis.history[0].to_status, "expert_approved");
+
+        let mut snapshot = TrustStatusSnapshot {
+            schema_version: crate::domain::TRUST_STATUS_SCHEMA_VERSION.to_owned(),
+            formalization,
+            kernel: TrustAxisSnapshot {
+                status: KernelTrustStatus::Unverified,
+                head_decision_id: None,
+                head_decision_hash: None,
+                history: Vec::new(),
+            },
+            fidelity: fidelity_axis,
+            definition: TrustAxisSnapshot {
+                status: DefinitionTrustStatus::Ungrounded,
+                head_decision_id: None,
+                head_decision_hash: None,
+                history: Vec::new(),
+            },
+            reuse: TrustAxisSnapshot {
+                status: ReuseTrustStatus::Experimental,
+                head_decision_id: None,
+                head_decision_hash: None,
+                history: Vec::new(),
+            },
+            coverage: TrustAxisSnapshot {
+                status: CoverageTrustStatus::Unknown,
+                head_decision_id: None,
+                head_decision_hash: None,
+                history: Vec::new(),
+            },
+            promotion: Vec::new(),
+        };
+        snapshot.promotion = crate::domain::promotion_evaluations(&snapshot);
+        snapshot
+            .validate()
+            .expect("compacted trust status validates");
     }
 
     fn publication_request() -> PublicationRequest {

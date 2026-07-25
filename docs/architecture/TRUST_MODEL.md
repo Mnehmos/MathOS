@@ -64,7 +64,10 @@ accepted. Definition, reuse, and coverage histories are each capped at 256 immut
 New kernel evidence is also capped at 256 entries per exact formalization. A larger history retained
 from before migration 14 is fully replayed for integrity; diagnostic events are compacted to their
 current semantic decision while bounded exact authority decisions are retained. Migration therefore
-neither discards evidence nor makes an otherwise valid formalization unreadable.
+neither discards evidence nor makes an otherwise valid formalization unreadable. Fidelity evidence
+remains an append-only supersession chain without a new admission cap. When that fully replayed
+chain exceeds the bounded `trust_status/1` representation, the fidelity axis projects its exact
+current evidence head as one decision; the underlying review history remains unchanged.
 
 MCP exposes the equivalent closed `trust_status` and `transition_trust` verify actions. Both
 interfaces return the same canonical representation.
