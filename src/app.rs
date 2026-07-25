@@ -9729,11 +9729,6 @@ mod tests {
                 .code,
             "MCL_RELEASE_INVENTORY_MISMATCH"
         );
-        fs::write(
-            &restarted_bh_artifact,
-            include_bytes!("../fixtures/bh_formalization/SOURCE-LOCK.md"),
-        )
-        .expect("exact BH source bytes restore");
         fs::write(&restarted_bh_artifact, b"substituted source bytes")
             .expect("test substitutes copied BH source bytes");
         assert_eq!(

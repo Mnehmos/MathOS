@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::artifacts::is_link_or_reparse;
 use crate::canonical::{canonical_json, record_version_hash};
 use crate::domain::schemas::{
     ClaimPayload, ConceptPayload, ExactVersionReference, FormalizationPayload, LearningUnitPayload,
@@ -1343,21 +1344,6 @@ fn inventory(root: &Path) -> Result<BTreeSet<String>, AppError> {
     let mut entries = 0;
     visit(root, root, &mut files, &mut entries)?;
     Ok(files)
-}
-
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
-        }
-    }
-    false
 }
 
 fn decode_canonical<T: DeserializeOwned + Serialize>(

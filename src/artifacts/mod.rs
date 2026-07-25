@@ -25,7 +25,7 @@ impl ArtifactStore {
         {
             return Err(AppError::new(
                 "MCL_ARTIFACT_ROOT_UNSAFE",
-                "artifact root may not be a symbolic link",
+                "artifact root may not be a link or reparse point",
                 false,
                 "Configure a real directory under the instance root.",
             ));
@@ -285,7 +285,7 @@ impl ArtifactStore {
                 return Err(AppError::new(
                     "MCL_ARTIFACT_PATH_UNSAFE",
                     format!(
-                        "symbolic link is forbidden in artifact path: {}",
+                        "link or reparse point is forbidden in artifact path: {}",
                         current.display()
                     ),
                     false,
@@ -324,7 +324,7 @@ fn require_real_directory(path: &Path, label: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+pub(crate) fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
     if metadata.file_type().is_symlink() {
         return true;
     }
