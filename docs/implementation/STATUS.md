@@ -256,9 +256,8 @@ These items establish only part of the product foundation and trace model. One e
 
 ## Next highest-priority criteria
 
-1. Complete issue #65 exact-head CI, protected receipt-bound promotion, and independent portable-artifact audit without trusting package or report fields.
-2. Continue the BH Pilot C lifecycle against the resulting exact protected Comparator authority boundary.
-3. Continue remaining pilots, migration, and section 30 criteria while preserving exact histories and negative attempts.
+1. Continue the BH Pilot C lifecycle against the exact protected Comparator authority boundary completed in issue #65.
+2. Continue remaining pilots, migration, and section 30 criteria while preserving exact histories and negative attempts.
 
 ## Exact last validation commands
 
@@ -280,9 +279,9 @@ git diff --check
 Observed validation evidence for this update:
 
 - Home workstation: Windows 10.0.19045, PowerShell 5.1.19041.6456, Rust 1.97.1, Python 3.12.10, GitHub CLI 2.70.0, GNU Bash 5.2.37 through Git for Windows, and Lean 4.32.0 `x86_64-w64-windows-gnu`.
-- Formatting, warnings-denied Clippy across all targets and features, 187 library tests, 20 CLI tests, four MCP tests, the opt-in real Lean 4.32 lifecycle, all 39 legacy Python regressions, Bash syntax and ShellCheck 0.11.0 for the Comparator authority script, Actionlint 1.7.12, and patch whitespace validation pass for the Phase 6f implementation candidate.
+- Formatting, warnings-denied Clippy across all targets and features, 187 library tests, 20 CLI tests, four MCP tests, the opt-in real Lean 4.32 lifecycle, all 39 legacy Python regressions, Bash syntax and ShellCheck 0.11.0 for the Comparator authority script, Actionlint 1.7.12, and patch whitespace validation passed for the Phase 6f implementation.
 - Comparator-specific local coverage preserves the committed evidence v1/v2 schemas and identities, matches every new committed schema and the policy hash, parses the exact protected Pilot A report/bundle/verifier fixture, applies migration 12 idempotently, and passes four Store authority tests covering exact retry, receipt uniqueness, immutable stage/receipt rows, direct-SQL closure/policy rejection, claim-status noninterference, current-head conflict, and read-time projection tampering. CLI and MCP tests expose the same four application actions, reject filesystem escape and caller-authored authority selectors, and fail closed for missing stages and receipts.
-- The new protected-main step is locally syntax- and workflow-valid but has not run on protected `main`. No Phase 6f receipt, `evidence/3` identity, currentness result, or portable retained-artifact hash is recorded until the implementation merges and that artifact is independently audited.
+- The protected-main Phase 6f step passed in run `30172614051`. Independent audit of retained artifact `8623423197` verified the database-free stage, receipt, `evidence/3` identity, complete portable closure, and live `current` result recorded above.
 - The retained Pilot A release projected twice to manifest `33e6ccc24979e85c14688d755130ace9960f0e074342695e951ac9756c2c590b` with 11 members and 101,695 bytes. Verification from a nonexistent instance root independently reprojected the exact source release and passed every inventory, hash, schema, policy, and binding check. The pinned upstream `validate_packets.py --check-hashes --warn-as-error` and `validate_mcip.py --check-hashes` commands reported zero errors and zero warnings.
 - The application-level authority fixture constructs the real source/claim/formalization, diagnostic and audit jobs/evidence, exact 25-role retained closure, parser-valid protected attestation output, stage, and receipt without fidelity evidence. Dry-run writes no evidence; persisted promotion creates the expected receipt-bound authoritative `evidence/2`; exact retry is identical; and missing staged CAS fails closed. A hands-on Windows CLI smoke applied migration 11, reported healthy `mcl health` and `mcl doctor`, exposed only the receipt-hash promotion surface, and rejected an unknown receipt as `MCL_PUBLICATION_RECEIPT_NOT_FOUND`.
 - CodeRabbit's final review found one uncovered fail-closed test family. Commit `761171fb093cecc4b2391ac53ef89c315ff1eeea` now tests rejected/failed classifications, each required protected-report control independently set false while classification remains passed, and a pre-authoritative report. Formatting, full Rust tests, warnings-denied Clippy, and all five required PR jobs passed on that exact head.
@@ -308,4 +307,4 @@ Observed validation evidence for this update:
 
 ## Release readiness
 
-Not ready. Protected Pilot A authority, fidelity, repair, pedagogy, portable-release, corpus-export, private held-out RL/evaluation, Comparator-ready package, and official Comparator execution evidence exist. Controlled Comparator authority is still under validation; remaining pilots, migration, later interfaces, and many section 30 criteria are unfinished.
+Not ready. Protected Pilot A authority, fidelity, repair, pedagogy, portable-release, corpus-export, private held-out RL/evaluation, Comparator-ready package, official Comparator execution, and controlled Comparator authority evidence exist. BH Pilot C, remaining pilots, migration, later interfaces, and many section 30 criteria are unfinished.
