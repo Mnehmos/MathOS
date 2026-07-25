@@ -1128,7 +1128,7 @@ mod tests {
     ) -> TrustDecision {
         TrustDecision {
             decision_id: format!("00000000-0000-4000-8000-{id_suffix:012}"),
-            decision_hash: format!("{id_suffix:x}").repeat(64),
+            decision_hash: format!("{id_suffix:02x}").repeat(32),
             from_status: from_status.to_owned(),
             to_status: to_status.to_owned(),
             decided_at,

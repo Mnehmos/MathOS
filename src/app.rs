@@ -915,6 +915,8 @@ impl Application {
         };
         let proposed_evidence_hash = payload.evidence_hash()?;
         let evidence = if dry_run {
+            self.store
+                .validate_kernel_trust_evidence_capacity(&payload.subject)?;
             None
         } else {
             Some(
@@ -3464,6 +3466,8 @@ impl Application {
         let proposed_evidence_hash = proposed_payload.evidence_hash()?;
         let evidence_kind = proposed_payload.evidence_kind;
         let evidence = if dry_run {
+            self.store
+                .validate_kernel_trust_evidence_capacity(&proposed_payload.subject)?;
             None
         } else {
             Some(self.store.create_publication_authority_evidence(
@@ -8643,9 +8647,35 @@ fn failed_check(
 fn kernel_trust_axis(
     evidence: &[EvidenceSnapshot],
 ) -> Result<TrustAxisSnapshot<KernelTrustStatus>, AppError> {
-    let mut history = Vec::new();
+    let retained = if evidence.len() > crate::domain::trust::MAX_TRUST_HISTORY {
+        let authority = evidence
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.payload.evidence_kind,
+                    EvidenceKind::LeanKernelProof | EvidenceKind::LeanKernelRefutation
+                )
+            })
+            .collect::<Vec<_>>();
+        if authority.len() > crate::domain::trust::MAX_TRUST_HISTORY {
+            return Err(AppError::new(
+                "MCL_TRUST_HISTORY_LIMIT",
+                "migration-era kernel authority history exceeds the bounded trust snapshot",
+                false,
+                "Create a new formalization version with a bounded exact authority history.",
+            ));
+        }
+        if authority.is_empty() {
+            evidence.last().into_iter().collect::<Vec<_>>()
+        } else {
+            authority
+        }
+    } else {
+        evidence.iter().collect::<Vec<_>>()
+    };
+    let mut history = Vec::with_capacity(retained.len());
     let mut status = KernelTrustStatus::Unverified;
-    for entry in evidence {
+    for entry in retained {
         let (observed, reason) = if matches!(
             entry.payload.evidence_kind,
             EvidenceKind::LeanKernelProof | EvidenceKind::LeanKernelRefutation
@@ -8891,6 +8921,58 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn migration_era_kernel_diagnostics_compact_without_losing_current_status() {
+        let subject = ExactVersionReference {
+            object_id: "018f0000-0000-7000-8000-000000000101".to_owned(),
+            version_hash: "a".repeat(64),
+        };
+        let evidence = (0..=crate::domain::trust::MAX_TRUST_HISTORY)
+            .map(|index| {
+                let payload = EvidencePayload {
+                    schema_version: crate::domain::evidence::EVIDENCE_SCHEMA_VERSION.to_owned(),
+                    subject: subject.clone(),
+                    evidence_kind: EvidenceKind::LeanElaboration,
+                    result: if index == crate::domain::trust::MAX_TRUST_HISTORY {
+                        EvidenceResult::Accepted
+                    } else {
+                        EvidenceResult::Failed
+                    },
+                    authority_class: EvidenceAuthorityClass::Diagnostic,
+                    producing_run_id: None,
+                    producing_job_id: Some("018f0000-0000-7000-8000-000000000102".to_owned()),
+                    artifact_hashes: Vec::new(),
+                    verifier_or_reviewer_identity: format!("migration-verifier-{index}"),
+                    environment_hash: Some("b".repeat(64)),
+                    supersedes_evidence_id: None,
+                    stale: false,
+                    stale_reason: None,
+                    publication_authority: None,
+                    comparator_authority: None,
+                };
+                EvidenceSnapshot {
+                    evidence_id: format!("018f0000-0000-7000-8000-{index:012}"),
+                    evidence_hash: payload
+                        .evidence_hash()
+                        .expect("diagnostic evidence identity"),
+                    payload,
+                    created_at: index as i64,
+                    created_by: "migration:test".to_owned(),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let axis = kernel_trust_axis(&evidence).expect("legacy diagnostic history compacts");
+        assert_eq!(axis.status, KernelTrustStatus::LeanChecked);
+        assert_eq!(axis.history.len(), 1);
+        assert_eq!(
+            axis.head_decision_id.as_deref(),
+            evidence.last().map(|entry| entry.evidence_id.as_str())
+        );
+        assert_eq!(axis.history[0].from_status, "unverified");
+        assert_eq!(axis.history[0].to_status, "lean_checked");
+    }
 
     fn publication_request() -> PublicationRequest {
         let policy = crate::domain::publication::committed_publication_policy()

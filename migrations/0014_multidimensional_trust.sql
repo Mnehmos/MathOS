@@ -296,3 +296,28 @@ BEFORE DELETE ON trust_transitions
 BEGIN
     SELECT RAISE(ABORT, 'trust transition history is durable');
 END;
+
+CREATE TRIGGER evidence_reject_kernel_trust_history_overflow
+BEFORE INSERT ON evidence
+WHEN NEW.evidence_kind IN (
+    'lean_elaboration',
+    'lean_kernel_proof',
+    'lean_kernel_refutation'
+)
+AND (
+    SELECT COUNT(*)
+    FROM evidence
+    WHERE subject_object_id = NEW.subject_object_id
+      AND subject_version_hash = NEW.subject_version_hash
+      AND evidence_kind IN (
+          'lean_elaboration',
+          'lean_kernel_proof',
+          'lean_kernel_refutation'
+      )
+) >= 256
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'kernel trust evidence history cannot exceed 256 admitted entries'
+    );
+END;

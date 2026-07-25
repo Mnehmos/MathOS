@@ -52,6 +52,7 @@ const MIGRATION_0013: &str = include_str!("../../migrations/0013_source_content_
 const MIGRATION_0014: &str = include_str!("../../migrations/0014_multidimensional_trust.sql");
 const MAX_CLAIM_STATUS_FORMALIZATIONS: usize = 256;
 const MAX_CLAIM_STATUS_EVIDENCE_PER_FORMALIZATION: usize = 256;
+const MAX_KERNEL_TRUST_EVIDENCE_SCAN: usize = 100_000;
 const MAX_PUBLICATION_INPUT_BYTES: u64 = 16 * 1_048_576;
 const MAX_REGISTERED_CAS_HASHES: usize = 100_000;
 const PUBLICATION_INGESTION_OPERATION: &str = "publication.ingestion_receipt.register";
@@ -1808,6 +1809,7 @@ impl Store {
             ));
         }
 
+        validate_kernel_trust_evidence_capacity(&transaction, &payload.subject)?;
         let evidence_id = Uuid::now_v7().to_string();
         transaction
             .execute(
@@ -2579,6 +2581,7 @@ impl Store {
                 "Retrieve the existing evidence or retry with the original idempotency key.",
             ));
         }
+        validate_kernel_trust_evidence_capacity(&transaction, &payload.subject)?;
         let evidence_id = Uuid::now_v7().to_string();
         transaction
             .execute(
@@ -3067,24 +3070,31 @@ impl Store {
                 params![
                     subject.object_id,
                     subject.version_hash,
-                    (crate::domain::trust::MAX_TRUST_HISTORY + 1) as i64
+                    (MAX_KERNEL_TRUST_EVIDENCE_SCAN + 1) as i64
                 ],
                 |row| row.get::<_, String>(0),
             )
             .map_err(|error| AppError::database("list kernel trust evidence", error))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| AppError::database("read kernel trust evidence list", error))?;
-        if ids.len() > crate::domain::trust::MAX_TRUST_HISTORY {
+        if ids.len() > MAX_KERNEL_TRUST_EVIDENCE_SCAN {
             return Err(AppError::new(
                 "MCL_TRUST_HISTORY_LIMIT",
-                "kernel trust evidence history exceeds its reviewed bound",
+                "kernel trust evidence history exceeds its migration-compatible scan bound",
                 false,
-                "Create a new formalization version rather than deriving trust from an unbounded evidence history.",
+                "Create a new formalization version and retain a bounded exact authority history.",
             ));
         }
         ids.iter()
             .map(|evidence_id| read_evidence(&self.connection, evidence_id))
             .collect()
+    }
+
+    pub(crate) fn validate_kernel_trust_evidence_capacity(
+        &self,
+        subject: &ExactVersionReference,
+    ) -> Result<(), AppError> {
+        validate_kernel_trust_evidence_capacity(&self.connection, subject)
     }
 
     pub fn get_evidence(&self, evidence_id: &str) -> Result<EvidenceSnapshot, AppError> {
@@ -6177,6 +6187,28 @@ fn validate_trust_transition_capacity(
     Ok(())
 }
 
+fn validate_kernel_trust_evidence_capacity(
+    connection: &Connection,
+    subject: &ExactVersionReference,
+) -> Result<(), AppError> {
+    let count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM evidence WHERE subject_object_id = ?1 AND subject_version_hash = ?2 AND evidence_kind IN ('lean_elaboration', 'lean_kernel_proof', 'lean_kernel_refutation')",
+            params![subject.object_id, subject.version_hash],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| AppError::database("count kernel trust evidence history", error))?;
+    if count >= crate::domain::trust::MAX_TRUST_HISTORY as i64 {
+        return Err(AppError::new(
+            "MCL_TRUST_HISTORY_LIMIT",
+            "kernel trust evidence history has reached or exceeded its admission bound",
+            false,
+            "Create a new formalization version rather than extending an unbounded kernel history.",
+        ));
+    }
+    Ok(())
+}
+
 fn trust_history_limit_error(dimension: &str) -> AppError {
     AppError::new(
         "MCL_TRUST_HISTORY_LIMIT",
@@ -7906,6 +7938,151 @@ mod tests {
         store.migrate().expect("first migration succeeds");
         store.migrate().expect("second migration succeeds");
         assert_eq!(store.migration_version().expect("migration version"), 14);
+    }
+
+    #[test]
+    fn kernel_trust_evidence_is_admission_bounded_and_legacy_history_remains_readable() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let claim = store
+            .create_record(
+                &claim("Kernel trust history fixture"),
+                "kernel-history-author",
+                "kernel-history-claim",
+            )
+            .expect("claim creates");
+        let environment = store
+            .register_environment(
+                &environment_manifest(),
+                "kernel-history-author",
+                "kernel-history-environment",
+            )
+            .expect("environment registers");
+        let module = register_lean_artifact(
+            &mut store,
+            b"theorem kernelHistoryFixture : True := by trivial\n",
+            "kernel-history-module",
+        );
+        let formalization = store
+            .create_record(
+                &formalization(
+                    &claim,
+                    "True",
+                    &environment.environment_hash,
+                    &module.artifact_hash,
+                    &[],
+                ),
+                "kernel-history-formalizer",
+                "kernel-history-formalization",
+            )
+            .expect("formalization creates");
+        let subject = ExactVersionReference {
+            object_id: formalization.object_id,
+            version_hash: formalization.version_hash,
+        };
+        let job = store
+            .enqueue_verifier_job(
+                &VerifierJobRequest {
+                    schema_version: crate::domain::verifier::VERIFIER_REQUEST_SCHEMA_VERSION
+                        .to_owned(),
+                    environment_hash: environment.environment_hash.clone(),
+                    module_artifact_hash: module.artifact_hash.clone(),
+                    declaration_name: "kernelHistoryFixture".to_owned(),
+                },
+                0,
+                "kernel-history-author",
+                "kernel-history-job",
+            )
+            .expect("verifier job creates");
+        let insert = |connection: &Connection, index: usize| {
+            let payload = EvidencePayload {
+                schema_version: crate::domain::evidence::EVIDENCE_SCHEMA_VERSION.to_owned(),
+                subject: subject.clone(),
+                evidence_kind: EvidenceKind::LeanElaboration,
+                result: EvidenceResult::Accepted,
+                authority_class: EvidenceAuthorityClass::Diagnostic,
+                producing_run_id: None,
+                producing_job_id: Some(job.job_id.clone()),
+                artifact_hashes: vec![module.artifact_hash.clone()],
+                verifier_or_reviewer_identity: format!("migration-verifier-{index}"),
+                environment_hash: Some(environment.environment_hash.clone()),
+                supersedes_evidence_id: None,
+                stale: false,
+                stale_reason: None,
+                publication_authority: None,
+                comparator_authority: None,
+            };
+            let evidence_hash = payload.evidence_hash().expect("legacy evidence identity");
+            let payload_json = String::from_utf8(
+                canonical_json(
+                    &serde_json::to_value(&payload).expect("legacy evidence serializes"),
+                )
+                .expect("legacy evidence canonicalizes"),
+            )
+            .expect("canonical evidence is UTF-8");
+            connection.execute(
+                "INSERT INTO evidence(evidence_id, subject_object_id, subject_version_hash, evidence_kind, result, authority_class, run_id, environment_hash, artifact_hash, metadata_json, created_at, superseded_by, evidence_hash, job_id, artifact_hashes_json, verifier_identity, created_by, stale_reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10, NULL, ?11, ?12, ?13, ?14, 'migration:test', NULL)",
+                params![
+                    format!("018f0000-0000-7000-8001-{index:012}"),
+                    payload.subject.object_id,
+                    payload.subject.version_hash,
+                    payload.evidence_kind.as_str(),
+                    payload.result.as_str(),
+                    payload.authority_class.as_str(),
+                    payload.environment_hash,
+                    payload.artifact_hashes.first(),
+                    payload_json,
+                    index as i64,
+                    evidence_hash,
+                    payload.producing_job_id,
+                    serde_json::to_string(&payload.artifact_hashes)
+                        .expect("legacy artifact hashes serialize"),
+                    payload.verifier_or_reviewer_identity,
+                ],
+            )
+        };
+        {
+            let transaction = store
+                .connection
+                .transaction()
+                .expect("legacy evidence transaction starts");
+            for index in 0..crate::domain::trust::MAX_TRUST_HISTORY {
+                insert(&transaction, index).expect("evidence within the bound inserts");
+            }
+            transaction
+                .commit()
+                .expect("legacy evidence transaction commits");
+        }
+        assert_eq!(
+            store
+                .validate_kernel_trust_evidence_capacity(&subject)
+                .expect_err("the 257th kernel evidence must be rejected")
+                .code,
+            "MCL_TRUST_HISTORY_LIMIT"
+        );
+        let overflow_error = insert(&store.connection, crate::domain::trust::MAX_TRUST_HISTORY)
+            .expect_err("SQL trigger rejects the 257th kernel evidence");
+        assert!(
+            overflow_error
+                .to_string()
+                .contains("kernel trust evidence history cannot exceed 256 admitted entries"),
+            "unexpected SQL overflow error: {overflow_error}"
+        );
+        store
+            .connection
+            .execute_batch("DROP TRIGGER evidence_reject_kernel_trust_history_overflow;")
+            .expect("test simulates evidence retained before migration 14");
+        insert(&store.connection, crate::domain::trust::MAX_TRUST_HISTORY)
+            .expect("migration-era overflow evidence inserts before the new trigger");
+        assert_eq!(
+            store
+                .list_kernel_trust_evidence(&subject)
+                .expect("migration-era kernel history remains readable")
+                .len(),
+            crate::domain::trust::MAX_TRUST_HISTORY + 1
+        );
     }
 
     #[test]
