@@ -2,6 +2,7 @@ pub mod app;
 pub mod artifacts;
 pub mod canonical;
 pub mod cli;
+mod comparator_authority;
 pub mod comparator_export;
 pub mod comparator_run;
 pub mod config;

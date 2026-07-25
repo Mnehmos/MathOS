@@ -196,6 +196,14 @@ enum VerifyAction {
     StagePublicationCandidate(VerifyStagePublicationCandidateOptions),
     IngestPublication(VerifyIngestPublicationOptions),
     PromotePublicationAuthority(VerifyPromotePublicationAuthorityOptions),
+    /// Stage one exact protected Comparator run, plan, release, policy, and attestation closure.
+    StageComparatorAuthority(VerifyStageComparatorAuthorityOptions),
+    /// Replay a staged Comparator closure and create a non-authoritative attestation receipt.
+    IngestComparatorAuthority(VerifyIngestComparatorAuthorityOptions),
+    /// Promote one fully replayed Comparator receipt through the closed authority gate.
+    PromoteComparatorAuthority(VerifyPromoteComparatorAuthorityOptions),
+    /// Replay live current/stale status for immutable Comparator authority evidence.
+    ComparatorAuthorityStatus(VerifyComparatorAuthorityStatusOptions),
 }
 
 #[derive(Debug, Args)]
@@ -405,6 +413,60 @@ struct VerifyPromotePublicationAuthorityOptions {
 
     #[command(flatten)]
     mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct VerifyStageComparatorAuthorityOptions {
+    #[arg(long)]
+    run_dir: PathBuf,
+
+    #[arg(long)]
+    expected_report_hash: String,
+
+    #[arg(long)]
+    expected_package_verification_hash: String,
+
+    #[arg(long)]
+    plan_file: PathBuf,
+
+    #[arg(long)]
+    release_dir: PathBuf,
+
+    #[arg(long)]
+    expected_release_manifest_hash: String,
+
+    #[arg(long)]
+    attestation_bundle_file: PathBuf,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct VerifyIngestComparatorAuthorityOptions {
+    #[arg(long)]
+    report_artifact_hash: String,
+
+    #[arg(long)]
+    attestation_bundle_artifact_hash: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct VerifyPromoteComparatorAuthorityOptions {
+    #[arg(long)]
+    comparator_receipt_hash: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
+}
+
+#[derive(Debug, Args)]
+struct VerifyComparatorAuthorityStatusOptions {
+    #[arg(long)]
+    evidence_id: String,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -1294,6 +1356,70 @@ fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<Cli
             )?)
             .expect("publication authority promotion outcome is serializable")
         }
+        VerifyAction::StageComparatorAuthority(options) => {
+            let run_dir = resolve_comparator_authority_input(
+                config,
+                &options.run_dir,
+                true,
+                "Comparator run directory",
+            )?;
+            let plan_file = resolve_comparator_authority_input(
+                config,
+                &options.plan_file,
+                false,
+                "Comparator plan",
+            )?;
+            let release_dir = resolve_comparator_authority_input(
+                config,
+                &options.release_dir,
+                true,
+                "Comparator source release",
+            )?;
+            let bundle_file = resolve_comparator_authority_input(
+                config,
+                &options.attestation_bundle_file,
+                false,
+                "Comparator attestation bundle",
+            )?;
+            let bundle_bytes = fs::read(&bundle_file)
+                .map_err(|error| AppError::io("read Comparator attestation bundle", error))?;
+            to_value(application.stage_comparator_authority(
+                &run_dir,
+                &options.expected_report_hash,
+                &options.expected_package_verification_hash,
+                &plan_file,
+                &release_dir,
+                &options.expected_release_manifest_hash,
+                &bundle_bytes,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("Comparator authority stage outcome is serializable")
+        }
+        VerifyAction::IngestComparatorAuthority(options) => {
+            to_value(application.ingest_comparator_authority(
+                &options.report_artifact_hash,
+                &options.attestation_bundle_artifact_hash,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("Comparator authority ingestion outcome is serializable")
+        }
+        VerifyAction::PromoteComparatorAuthority(options) => {
+            to_value(application.promote_comparator_authority(
+                &options.comparator_receipt_hash,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("Comparator authority promotion outcome is serializable")
+        }
+        VerifyAction::ComparatorAuthorityStatus(options) => {
+            to_value(application.comparator_authority_status(&options.evidence_id)?)
+                .expect("Comparator authority status is serializable")
+        }
     };
     Ok(CliOutcome {
         value,
@@ -1335,6 +1461,47 @@ fn resolve_publication_retained_root(
         ));
     }
     Ok(root)
+}
+
+fn resolve_comparator_authority_input(
+    config: &ResolvedConfig,
+    requested: &PathBuf,
+    directory: bool,
+    label: &str,
+) -> Result<PathBuf, AppError> {
+    let path = if requested.is_absolute() {
+        requested.clone()
+    } else {
+        config.root.join(requested)
+    };
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|error| AppError::io("inspect Comparator authority input", error))?;
+    if metadata.file_type().is_symlink()
+        || (directory && !metadata.is_dir())
+        || (!directory && !metadata.is_file())
+    {
+        return Err(AppError::new(
+            "MCL_COMPARATOR_AUTHORITY_PATH_UNSAFE",
+            format!(
+                "{label} must be a real {}",
+                if directory { "directory" } else { "file" }
+            ),
+            false,
+            "Place exact protected inputs under the initialized instance root without links.",
+        ));
+    }
+    let path = path
+        .canonicalize()
+        .map_err(|error| AppError::io("canonicalize Comparator authority input", error))?;
+    if !path.starts_with(&config.root) {
+        return Err(AppError::new(
+            "MCL_COMPARATOR_AUTHORITY_PATH_UNSAFE",
+            format!("{label} {} escapes the instance root", path.display()),
+            false,
+            "Place exact protected inputs under the initialized instance root.",
+        ));
+    }
+    Ok(path)
 }
 
 fn read_publication_candidate_file(

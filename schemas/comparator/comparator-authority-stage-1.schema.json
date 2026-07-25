@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/comparator/authority-stage/1",
+  "title": "MathOS Comparator Authority Stage v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "report_artifact_hash", "package_verification_hash", "package_input_fingerprint", "plan_artifact_hash", "plan_byte_size", "source_release_manifest_hash", "attestation_bundle_artifact_hash", "attestation_bundle_byte_size", "policy_hash", "source_formalization", "source_commit_sha", "workflow_run_id", "workflow_run_attempt", "artifacts", "authoritative"],
+  "properties": {
+    "schema_version": {"const": "comparator_authority_stage/1"},
+    "report_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "package_verification_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "package_input_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "plan_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "plan_byte_size": {"type": "integer", "minimum": 1, "maximum": 536870912},
+    "source_release_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "attestation_bundle_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "attestation_bundle_byte_size": {"type": "integer", "minimum": 1, "maximum": 524288},
+    "policy_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_formalization": {"type": "object", "additionalProperties": false, "required": ["object_id", "version_hash"], "properties": {"object_id": {"type": "string", "format": "uuid"}, "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "workflow_run_id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+    "workflow_run_attempt": {"type": "integer", "minimum": 1},
+    "artifacts": {"type": "array", "maxItems": 256, "items": {"type": "object", "additionalProperties": false, "required": ["artifact_set", "path", "content_hash", "byte_size"], "properties": {"artifact_set": {"enum": ["run_bundle", "source_release"]}, "path": {"type": "string", "minLength": 1, "maxLength": 512}, "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "byte_size": {"type": "integer", "minimum": 0, "maximum": 536870912}}}},
+    "authoritative": {"const": false}
+  }
+}

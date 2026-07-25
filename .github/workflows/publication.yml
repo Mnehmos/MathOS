@@ -208,6 +208,29 @@ jobs:
           printf 'comparator_package_hash=%s\n' "$package_hash" >> "${GITHUB_OUTPUT}"
           printf 'comparator_release_hash=%s\n' "$release_hash" >> "${GITHUB_OUTPUT}"
           printf 'comparator_plan_hash=%s\n' "$plan_hash" >> "${GITHUB_OUTPUT}"
+      - name: Snapshot canonical state for the separate Comparator authority gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          state_snapshot="${RUNNER_TEMP}/comparator-authority-state"
+          mkdir -- "$state_snapshot"
+          cp -a -- "${RUNNER_TEMP}/publication-candidate/.mcl" "$state_snapshot/.mcl"
+          cp -- "${RUNNER_TEMP}/publication-candidate/mcl.toml" "$state_snapshot/mcl.toml"
+          [[ -f "$state_snapshot/.mcl/state.sqlite3" \
+              && ! -L "$state_snapshot/.mcl/state.sqlite3" \
+              && -f "$state_snapshot/mcl.toml" \
+              && ! -L "$state_snapshot/mcl.toml" ]] || {
+            echo "Comparator authority state snapshot is incomplete" >&2
+            exit 71
+          }
+      - name: Transfer canonical state only to the separate authority job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: comparator-authority-state-${{ github.sha }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
+          path: ${{ runner.temp }}/comparator-authority-state/
       - name: Retain smoke, candidate closures, release, exports, Comparator package, diagnostics, and Sigstore bundles
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -244,7 +267,7 @@ jobs:
     needs: boundary
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       actions: read
       contents: read
@@ -295,6 +318,11 @@ jobs:
         with:
           name: publication-boundary-${{ github.sha }}
           path: ${{ runner.temp }}/publication-boundary
+      - name: Download canonical state for controlled Comparator ingestion
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: comparator-authority-state-${{ github.sha }}
+          path: ${{ runner.temp }}/comparator-authority-state
       - name: Install pinned attestation verifier
         shell: bash
         run: |
@@ -340,6 +368,17 @@ jobs:
             "${RUNNER_TEMP}/comparator-run/bundle/report.json" \
             "${COMPARATOR_BUNDLE_PATH}" \
             "${RUNNER_TEMP}/comparator-run-attestation-verification"
+      - name: Stage, ingest, promote, and replay Comparator authority
+        shell: bash
+        env:
+          COMPARATOR_BUNDLE_PATH: ${{ steps.attest_comparator.outputs.bundle-path }}
+        run: |
+          scripts/comparator-authority-ingest.sh \
+            "${RUNNER_TEMP}/comparator-authority-state" \
+            "${RUNNER_TEMP}/publication-boundary" \
+            "${RUNNER_TEMP}/comparator-run/bundle" \
+            "${COMPARATOR_BUNDLE_PATH}" \
+            "${RUNNER_TEMP}/comparator-authority-state/comparator-authority-output"
       - name: Retain the package, report, binaries, raw logs, verifier result, and attestation
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -356,3 +395,4 @@ jobs:
             ${{ runner.temp }}/comparator-run/work/lake-manifest-init.stderr
             ${{ runner.temp }}/comparator-run-attestation-verification/
             ${{ steps.attest_comparator.outputs.bundle-path }}
+            ${{ runner.temp }}/comparator-authority-state/comparator-authority-output/

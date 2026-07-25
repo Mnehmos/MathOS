@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/comparator/authority-status/1",
+  "title": "MathOS Comparator Authority Status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "evidence_id", "evidence_hash", "subject", "ingestion_receipt_hash", "currentness", "stale_reasons", "authoritative"],
+  "properties": {
+    "schema_version": {"const": "comparator_authority_status/1"},
+    "evidence_id": {"type": "string", "format": "uuid"},
+    "evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "subject": {"type": "object", "additionalProperties": false, "required": ["object_id", "version_hash"], "properties": {"object_id": {"type": "string", "format": "uuid"}, "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+    "ingestion_receipt_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "currentness": {"enum": ["current", "stale"]},
+    "stale_reasons": {"type": "array", "maxItems": 7, "items": {"enum": ["formalization_not_current", "publication_authority_not_current", "fidelity_not_current", "release_binding_changed", "plan_binding_changed", "package_binding_changed", "policy_changed"]}},
+    "authoritative": {"const": true}
+  }
+}

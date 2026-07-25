@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/evidence/3",
+  "title": "MathOS Authoritative Comparator Evidence Payload v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "subject", "evidence_kind", "result", "authority_class", "producing_run_id", "producing_job_id", "artifact_hashes", "verifier_or_reviewer_identity", "environment_hash", "supersedes_evidence_id", "stale", "stale_reason", "comparator_authority"],
+  "properties": {
+    "schema_version": {"const": "evidence/3"},
+    "subject": {"type": "object", "additionalProperties": false, "required": ["object_id", "version_hash"], "properties": {"object_id": {"type": "string", "format": "uuid"}, "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+    "evidence_kind": {"const": "comparator_run"},
+    "result": {"const": "accepted"},
+    "authority_class": {"const": "authoritative"},
+    "producing_run_id": {"type": "null"},
+    "producing_job_id": {"type": "null"},
+    "artifact_hashes": {"type": "array", "maxItems": 256, "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "verifier_or_reviewer_identity": {"type": "string", "minLength": 1, "maxLength": 256},
+    "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "supersedes_evidence_id": {"type": "null"},
+    "stale": {"const": false},
+    "stale_reason": {"type": "null"},
+    "comparator_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "ingestion_receipt_hash", "stage_hash", "report_artifact_hash", "attestation_bundle_artifact_hash", "raw_verification_hash", "policy_hash", "plan_artifact_hash", "source_release_manifest_hash", "package_verification_hash", "package_input_fingerprint", "source_commit_sha", "workflow_run_id", "workflow_run_attempt"],
+      "properties": {
+        "schema_version": {"const": "comparator_authority_binding/1"},
+        "ingestion_receipt_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "stage_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "report_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "attestation_bundle_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "raw_verification_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "policy_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "plan_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_release_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "package_verification_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "package_input_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "workflow_run_id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "workflow_run_attempt": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

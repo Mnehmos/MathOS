@@ -1,0 +1,48 @@
+{
+  "schema_version": "comparator_authority_policy/1",
+  "policy_name": "protected_comparator_authority",
+  "repository": "Mnehmos/MathOS",
+  "repository_id": "1305399818",
+  "repository_owner_id": "193347153",
+  "workflow_path": ".github/workflows/publication.yml",
+  "required_source_ref": "refs/heads/main",
+  "required_job": "comparator",
+  "required_report_schema_version": "comparator_run_report/1",
+  "required_evidence_schema_version": "evidence/3",
+  "required_command_profile": "official_comparator_systemd_landrun_v1",
+  "required_lean_toolchain": "leanprover/lean4:v4.32.0",
+  "required_go_toolchain": "go version go1.24.2 linux/amd64",
+  "tools": [
+    {
+      "name": "comparator",
+      "repository": "https://github.com/leanprover/comparator",
+      "commit": "68a064109f01c08f47c8edc9f51d6a2bbffaa188",
+      "source_tree": "0bb408593d6e5f625db53b3be16e3f1cc91a7524",
+      "build_toolchain": "leanprover/lean4:v4.32.0"
+    },
+    {
+      "name": "lean4export",
+      "repository": "https://github.com/leanprover/lean4export",
+      "commit": "af5aa64bb914c3c2c781f378088dbd38acf4f804",
+      "source_tree": "5058a7945d24656600ca05917e3c8c174485bcf5",
+      "build_toolchain": "leanprover/lean4:v4.32.0"
+    },
+    {
+      "name": "landrun",
+      "repository": "https://github.com/Zouuup/landrun",
+      "commit": "5ed4a3db3a4ad930d577215c6b9abaa19df7f99f",
+      "source_tree": "890013a5099a92792cbacd2cfff91af3f13cec9c",
+      "build_toolchain": "go version go1.24.2 linux/amd64"
+    }
+  ],
+  "requires_github_hosted": true,
+  "requires_protected_ref": true,
+  "requires_non_root": true,
+  "requires_strict_landlock": true,
+  "requires_systemd_controls": true,
+  "requires_network_isolation": true,
+  "attestation_predicate_type": "https://slsa.dev/provenance/v1",
+  "attestation_verifier_version": "2.96.0",
+  "attestation_verifier_archive_sha256": "83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60",
+  "attestation_verifier_binary_sha256": "56b8bbbb27b066ecb33dbef9a256dc9d1314adaeff0908a752feba6c34053b40"
+}
