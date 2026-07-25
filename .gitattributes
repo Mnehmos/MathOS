@@ -8,6 +8,7 @@ scripts/comparator-network-probe.py text eol=lf
 schemas/mathcorpus/upstream-*/* -text
 schemas/mcip/v1/upstream-*/* -text
 fixtures/comparator/authority/* -text
+fixtures/bh_formalization/* text eol=lf
 
 # RL export embeds these schemas as deterministic member bytes on every platform.
 schemas/release/rl-*.schema.json text eol=lf

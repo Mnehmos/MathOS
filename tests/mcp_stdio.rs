@@ -1096,6 +1096,43 @@ fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs(
         "provenance_notes": "Exercises MCP mutation controls",
         "original_text": "Every prime number is odd."
     });
+    let mut missing_source_content = source_payload.clone();
+    missing_source_content["content_hash"] = json!("0".repeat(64));
+    let rejected_source_content = server.call(
+        9,
+        "source",
+        json!({
+            "action": "propose",
+            "payload": missing_source_content.clone(),
+            "searchable_text": "missing source content",
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-missing-source-content",
+            "dry_run": true
+        }),
+    );
+    assert_eq!(rejected_source_content["result"]["isError"], true);
+    assert_eq!(
+        rejected_source_content["result"]["structuredContent"]["code"],
+        "MCL_SOURCE_CONTENT_INVALID"
+    );
+    let rejected_persisted_source_content = server.call(
+        90,
+        "source",
+        json!({
+            "action": "propose",
+            "payload": missing_source_content.clone(),
+            "searchable_text": "missing persisted source content",
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-missing-persisted-source-content",
+            "dry_run": false
+        }),
+    );
+    assert_eq!(rejected_persisted_source_content["result"]["isError"], true);
+    assert_eq!(
+        rejected_persisted_source_content["result"]["structuredContent"]["code"],
+        "MCL_SOURCE_CONTENT_INVALID"
+    );
+
     let source_request = json!({
         "action": "propose",
         "payload": source_payload,
@@ -1129,6 +1166,44 @@ fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs(
     let source = &created["result"]["structuredContent"]["record"];
     let source_id = source["object_id"].as_str().expect("source object ID");
     let source_hash = source["version_hash"].as_str().expect("source hash");
+    let rejected_dry_run_source_version = server.call(
+        92,
+        "source",
+        json!({
+            "action": "version",
+            "object_id": source_id,
+            "expected_head": source_hash,
+            "payload": missing_source_content.clone(),
+            "searchable_text": "missing dry-run source version content",
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-missing-dry-run-source-version",
+            "dry_run": true
+        }),
+    );
+    assert_eq!(rejected_dry_run_source_version["result"]["isError"], true);
+    assert_eq!(
+        rejected_dry_run_source_version["result"]["structuredContent"]["code"],
+        "MCL_SOURCE_CONTENT_INVALID"
+    );
+    let rejected_persisted_source_version = server.call(
+        91,
+        "source",
+        json!({
+            "action": "version",
+            "object_id": source_id,
+            "expected_head": source_hash,
+            "payload": missing_source_content,
+            "searchable_text": "missing persisted source version content",
+            "actor": "mcp-test",
+            "idempotency_key": "mcp-missing-persisted-source-version",
+            "dry_run": false
+        }),
+    );
+    assert_eq!(rejected_persisted_source_version["result"]["isError"], true);
+    assert_eq!(
+        rejected_persisted_source_version["result"]["structuredContent"]["code"],
+        "MCL_SOURCE_CONTENT_INVALID"
+    );
 
     let cli_loaded = mcl(root.path(), &["source", "get", "--object-id", source_id]);
     assert!(cli_loaded.status.success());

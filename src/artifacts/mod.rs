@@ -21,7 +21,7 @@ pub struct ArtifactStoreScan {
 impl ArtifactStore {
     pub fn open(root: &Path) -> Result<Self, AppError> {
         if let Ok(metadata) = fs::symlink_metadata(root)
-            && metadata.file_type().is_symlink()
+            && is_link_or_reparse(&metadata)
         {
             return Err(AppError::new(
                 "MCL_ARTIFACT_ROOT_UNSAFE",
@@ -123,7 +123,7 @@ impl ArtifactStore {
         }
         let root_metadata = fs::symlink_metadata(workspace_root)
             .map_err(|error| AppError::io("inspect materialization workspace", error))?;
-        if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
+        if !root_metadata.is_dir() || is_link_or_reparse(&root_metadata) {
             return Err(AppError::new(
                 "MCL_ARTIFACT_MATERIALIZATION_UNSAFE",
                 "artifact materialization workspace must be a real existing directory",
@@ -137,7 +137,7 @@ impl ArtifactStore {
         let destination = workspace_root.join(file_name);
         if destination.exists()
             || fs::symlink_metadata(&destination)
-                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                .is_ok_and(|metadata| is_link_or_reparse(&metadata))
         {
             return Err(AppError::new(
                 "MCL_ARTIFACT_MATERIALIZATION_EXISTS",
@@ -185,7 +185,7 @@ impl ArtifactStore {
                 for artifact in read_directory(&second, "scan artifact objects")? {
                     let metadata = fs::symlink_metadata(&artifact)
                         .map_err(|error| AppError::io("inspect artifact scan entry", error))?;
-                    if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    if is_link_or_reparse(&metadata) || !metadata.is_file() {
                         return Err(AppError::new(
                             "MCL_ARTIFACT_PATH_UNSAFE",
                             format!("unsafe entry in artifact store: {}", artifact.display()),
@@ -280,7 +280,7 @@ impl ArtifactStore {
         for component in relative.components() {
             current.push(component);
             if let Ok(metadata) = fs::symlink_metadata(&current)
-                && metadata.file_type().is_symlink()
+                && is_link_or_reparse(&metadata)
             {
                 return Err(AppError::new(
                     "MCL_ARTIFACT_PATH_UNSAFE",
@@ -313,7 +313,7 @@ fn read_directory(path: &Path, operation: &'static str) -> Result<Vec<PathBuf>, 
 fn require_real_directory(path: &Path, label: &str) -> Result<(), AppError> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| AppError::io("inspect artifact directory", error))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    if is_link_or_reparse(&metadata) || !metadata.is_dir() {
         return Err(AppError::new(
             "MCL_ARTIFACT_PATH_UNSAFE",
             format!("{label} is not a real directory: {}", path.display()),
@@ -322,6 +322,21 @@ fn require_real_directory(path: &Path, label: &str) -> Result<(), AppError> {
         ));
     }
     Ok(())
+}
+
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
 }
 
 fn safe_file_name(path: &Path) -> Result<String, AppError> {
@@ -483,6 +498,47 @@ mod tests {
             store
                 .put(b"escape")
                 .expect_err("reject nested symlink")
+                .code,
+            "MCL_ARTIFACT_PATH_UNSAFE"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_inside_hash_path_is_rejected() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let outside = TempDir::new().expect("outside directory");
+        let store = ArtifactStore::open(temporary.path()).expect("artifact store");
+        let hash = format!("{:x}", Sha256::digest(b"escape"));
+        let sha_root = temporary.path().join("sha256");
+        fs::create_dir(&sha_root).expect("sha root");
+        let junction = sha_root.join(&hash[0..2]);
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(outside.path())
+            .output()
+            .expect("junction command runs");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let escaped_parent = outside.path().join(&hash[2..4]);
+        fs::create_dir(&escaped_parent).expect("outside hash parent");
+        fs::write(escaped_parent.join(&hash), b"escape").expect("outside artifact bytes");
+
+        assert_eq!(
+            store
+                .read(&hash)
+                .expect_err("reject read through nested junction")
+                .code,
+            "MCL_ARTIFACT_PATH_UNSAFE"
+        );
+        assert_eq!(
+            store
+                .put(b"escape")
+                .expect_err("reject nested junction")
                 .code,
             "MCL_ARTIFACT_PATH_UNSAFE"
         );

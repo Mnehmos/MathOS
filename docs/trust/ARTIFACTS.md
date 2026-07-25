@@ -38,6 +38,16 @@ mcl artifact verify --artifact-hash <sha256>
 
 Verification rereads the bytes from CAS, recomputes their hash, validates their media representation, and compares their size with canonical metadata. It establishes storage integrity only.
 
+## Source-content gate
+
+A non-null `source/1.content_hash` is accepted only after the exact CAS bytes verify and immutable
+metadata carries the reviewed `source_content` role with compatible provenance, license, and
+restriction. Null remains the explicit representation for source records without retained exact
+bytes. Portable releases carry and revalidate every non-null source artifact without SQLite.
+
+The complete contract is documented in [Exact source content](SOURCES.md) and
+[ADR-0017](../decisions/ADR-0017-source-content-is-a-verified-portable-binding.md).
+
 ## Formalization gate
 
 A formalization may name a module artifact only when that exact hash is registered with media type `text/x-lean`. A missing artifact and an artifact of another media type both fail before the formalization becomes canonical state.

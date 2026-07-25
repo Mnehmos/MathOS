@@ -403,7 +403,7 @@ if [[ "$CANDIDATE_MODE" == "refutation" ]]; then
     --arg repaired_declaration "MathOS.PilotA.every_prime_other_than_two_is_odd" \
     --arg commit "$PUBLICATION_SOURCE_COMMIT_SHA" \
     --arg tree "$PUBLICATION_SOURCE_TREE_SHA" \
-    '{schema_version:"artifact_metadata/1",media_type:"text/x-lean",creation_source:"user_ingest",license_expression:null,restriction:"private",semantic_metadata:{artifact_role:"publication_candidate_module",declaration_name:$declaration,repaired_declaration_name:$repaired_declaration,source_commit_sha:$commit,source_tree_sha:$tree}}')"
+    '{schema_version:"artifact_metadata/1",media_type:"text/x-lean",creation_source:"user_ingest",license_expression:null,restriction:"private",semantic_metadata:{artifact_role:"publication_candidate_module",source_role:"source_content",declaration_name:$declaration,repaired_declaration_name:$repaired_declaration,source_commit_sha:$commit,source_tree_sha:$tree}}')"
   run_mcl artifact ingest \
     --input-file "$closure_dir/module.lean" \
     --metadata-json "$artifact_metadata" \
@@ -462,6 +462,7 @@ else
     .artifact_hash == $hash and
     .byte_size == $size and
     .semantic_metadata.artifact_role == "publication_candidate_module" and
+    .semantic_metadata.source_role == "source_content" and
     .semantic_metadata.repaired_declaration_name == $declaration
   ' "$temporary_root/module.json" >/dev/null \
     || die "$EXIT_VALIDATION" "repaired proof module is not the exact original registered artifact"
@@ -753,6 +754,8 @@ run_protected_lean() {
   shift 4
   local -a lean_arguments=("$@")
   local status classification
+  # The unprivileged runner intentionally owns these bounded output files.
+  # shellcheck disable=SC2024
   if sudo -n /usr/bin/bwrap \
     --unshare-all \
     --die-with-parent \
