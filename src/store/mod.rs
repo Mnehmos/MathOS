@@ -6920,6 +6920,13 @@ fn read_comparator_ingestion_receipt(
                 "canonical Comparator receipt size cannot be represented",
             )
         })?;
+    validate_publication_input_size(
+        raw_verification_byte_size,
+        "stored raw Comparator verification",
+    )
+    .map_err(|error| comparator_receipt_integrity_error(error.to_string()))?;
+    validate_publication_input_size(receipt_byte_size, "stored Comparator receipt")
+        .map_err(|error| comparator_receipt_integrity_error(error.to_string()))?;
     if !is_lower_hex(receipt_hash, 64)
         || computed_receipt_hash != receipt_hash
         || canonical_verification_json != verification_json
@@ -6930,8 +6937,6 @@ fn read_comparator_ingestion_receipt(
         || stored_raw_hash != verification.raw_verification_hash
         || stored_authoritative != 0
         || verification.authoritative
-        || raw_verification_byte_size == 0
-        || raw_verification_byte_size > MAX_PUBLICATION_INPUT_BYTES
         || created_by.trim().is_empty()
         || created_by.chars().count() > 256
     {

@@ -3801,9 +3801,6 @@ impl Application {
                     "MCL_COMPARATOR_AUTHORITY_RELEASE_BINDING_CHANGED" => {
                         Some(ComparatorAuthorityStaleReason::ReleaseBindingChanged)
                     }
-                    "MCL_COMPARATOR_AUTHORITY_POLICY_CHANGED" => {
-                        Some(ComparatorAuthorityStaleReason::PolicyChanged)
-                    }
                     _ => return Err(error),
                 },
             };

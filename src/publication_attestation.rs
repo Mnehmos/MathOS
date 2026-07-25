@@ -594,6 +594,7 @@ fn is_rfc3339_utc_timestamp(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
+    use sha2::{Digest, Sha256};
 
     use super::*;
     use crate::domain::publication::committed_publication_policy;
@@ -609,14 +610,23 @@ mod tests {
             "../fixtures/comparator/authority/pilot-a-report.json"
         ))
         .expect("protected Comparator report parses");
-        let bundle: Value = serde_json::from_slice(include_bytes!(
-            "../fixtures/comparator/authority/pilot-a-attestation.json"
-        ))
-        .expect("protected Comparator bundle parses");
+        let bundle_bytes =
+            include_bytes!("../fixtures/comparator/authority/pilot-a-attestation.json");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(bundle_bytes)),
+            "a447696ceeb6e537c0bc6e5ebf81ab95d2e91006df57aa2bb632edc60d4cf0a5"
+        );
+        let bundle: Value =
+            serde_json::from_slice(bundle_bytes).expect("protected Comparator bundle parses");
+        let raw_verification = include_bytes!(
+            "../fixtures/comparator/authority/pilot-a-attestation-verification-raw.json"
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(raw_verification)),
+            "435fa463fd17ebfb0a8962fc5919e990ccc95d4055bdf6f8f1a84339d3b003ae"
+        );
         let parsed = validate_comparator_gh_attestation_output(
-            include_bytes!(
-                "../fixtures/comparator/authority/pilot-a-attestation-verification-raw.json"
-            ),
+            raw_verification,
             &bundle,
             &report,
             &committed_comparator_authority_policy().expect("Comparator policy"),

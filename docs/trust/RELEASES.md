@@ -82,5 +82,7 @@ package, run report, workflow result, nor attestation alone grants authority.
 
 - A successful build means the exported directory matched canonical state at build time.
 - A successful offline verification means the copied directory is internally complete and its Lean artifact replays under the declared toolchain.
-- Neither result creates authority. Authority remains the exact protected receipt-bound `evidence/2` chain included in the release.
+- Neither result creates portable-release publication/proof authority. That authority remains the
+  exact protected receipt-bound `evidence/2` chain included in the release. Comparator result
+  authority is a separate receipt-bound `evidence/3` gate.
 - Transport ZIP or tar hashes may be retained operationally, but they are not the canonical release identity.

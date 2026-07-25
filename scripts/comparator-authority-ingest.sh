@@ -122,6 +122,8 @@ ingest_args=(
   --idempotency-key "comparator-authority-ingestion:$stage_hash"
 )
 "$mcl_bin" --root "$state_root" --json verify ingest-comparator-authority \
+  "${ingest_args[@]}" --dry-run >"$output_dir/ingestion-dry-run.json"
+"$mcl_bin" --root "$state_root" --json verify ingest-comparator-authority \
   "${ingest_args[@]}" >"$output_dir/ingestion.json"
 "$mcl_bin" --root "$state_root" --json verify ingest-comparator-authority \
   "${ingest_args[@]}" >"$output_dir/ingestion-retry.json"
