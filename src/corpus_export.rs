@@ -2122,6 +2122,7 @@ mod tests {
                 environment_path: "replay/environment.json".to_owned(),
                 declaration_name: "Fixture.theorem".to_owned(),
             },
+            trust: None,
             members,
         };
         let manifest_hash = manifest.manifest_hash().expect("valid synthetic manifest");

@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mnehmos.ai/mathos/schemas/trust/status/1",
+  "title": "MathOS Multidimensional Trust Status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "formalization", "kernel", "fidelity", "definition", "reuse", "coverage", "promotion"],
+  "properties": {
+    "schema_version": {"const": "trust_status/1"},
+    "formalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "version_hash"],
+      "properties": {
+        "object_id": {"type": "string", "format": "uuid"},
+        "version_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "kernel": {"$ref": "#/$defs/kernel_axis"},
+    "fidelity": {"$ref": "#/$defs/fidelity_axis"},
+    "definition": {"$ref": "#/$defs/definition_axis"},
+    "reuse": {"$ref": "#/$defs/reuse_axis"},
+    "coverage": {"$ref": "#/$defs/coverage_axis"},
+    "promotion": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"$ref": "#/$defs/evaluation"}
+    }
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision_id", "decision_hash", "from_status", "to_status", "decided_at", "reviewer_identity", "evidence_artifact_hashes", "reason"],
+      "properties": {
+        "decision_id": {"type": "string", "format": "uuid"},
+        "decision_hash": {"$ref": "#/$defs/hash"},
+        "from_status": {"type": "string", "minLength": 1, "maxLength": 64},
+        "to_status": {"type": "string", "minLength": 1, "maxLength": 64},
+        "decided_at": {"type": "integer", "minimum": 0},
+        "reviewer_identity": {"type": "string", "minLength": 1, "maxLength": 256},
+        "evidence_artifact_hashes": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/hash"}
+        },
+        "reason": {"type": "string", "minLength": 1, "maxLength": 4096}
+      }
+    },
+    "kernel_axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "head_decision_id", "head_decision_hash", "history"],
+      "properties": {
+        "status": {"enum": ["unverified", "lean_checked", "kernel_verified", "failed"]},
+        "head_decision_id": {"type": ["string", "null"], "format": "uuid"},
+        "head_decision_hash": {
+          "oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]
+        },
+        "history": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {"$ref": "#/$defs/decision"}
+        }
+      }
+    },
+    "fidelity_axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "head_decision_id", "head_decision_hash", "history"],
+      "properties": {
+        "status": {"enum": ["unreviewed", "source_mapped", "reviewer_checked", "expert_approved", "rejected"]},
+        "head_decision_id": {"type": ["string", "null"], "format": "uuid"},
+        "head_decision_hash": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "history": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/decision"}}
+      }
+    },
+    "definition_axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "head_decision_id", "head_decision_hash", "history"],
+      "properties": {
+        "status": {"enum": ["ungrounded", "source_grounded", "project_approved", "upstream_accepted"]},
+        "head_decision_id": {"type": ["string", "null"], "format": "uuid"},
+        "head_decision_hash": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "history": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/decision"}}
+      }
+    },
+    "reuse_axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "head_decision_id", "head_decision_hash", "history"],
+      "properties": {
+        "status": {"enum": ["experimental", "campaign_specific", "candidate", "review_ready", "upstreamed"]},
+        "head_decision_id": {"type": ["string", "null"], "format": "uuid"},
+        "head_decision_hash": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "history": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/decision"}}
+      }
+    },
+    "coverage_axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "head_decision_id", "head_decision_hash", "history"],
+      "properties": {
+        "status": {"enum": ["unknown", "statement_only", "analytical_core", "supporting_lemma", "finite_specialization", "asymptotic_component", "full_theorem"]},
+        "head_decision_id": {"type": ["string", "null"], "format": "uuid"},
+        "head_decision_hash": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "history": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/decision"}}
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dimension", "current_status", "accepted_statuses"],
+      "properties": {
+        "dimension": {"enum": ["kernel", "fidelity", "definition", "reuse", "coverage"]},
+        "current_status": {"type": "string", "minLength": 1, "maxLength": 64},
+        "accepted_statuses": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 64}
+        }
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "eligible", "blockers"],
+      "properties": {
+        "profile": {"enum": ["experimental", "publication", "upstream"]},
+        "eligible": {"type": "boolean"},
+        "blockers": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {"$ref": "#/$defs/blocker"}
+        }
+      }
+    }
+  }
+}

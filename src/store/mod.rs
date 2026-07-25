@@ -27,7 +27,8 @@ use crate::domain::{
     EvidenceSnapshot, LeanAuditJobSnapshot, LeanAuditRequest, PublicationAttestationVerification,
     PublicationIngestionReceiptSnapshot, PublicationOutcome, PublicationRequest,
     PublicationRetainedArtifactRole, PublicationStage, PublicationStageSnapshot, RecordDraft,
-    RecordKind, RecordSnapshot, ReleasePublicationBinding, VerifierJobRequest, VerifierJobSnapshot,
+    RecordKind, RecordSnapshot, ReleasePublicationBinding, ReviewedTrustStatus,
+    TrustTransitionRequest, TrustTransitionSnapshot, VerifierJobRequest, VerifierJobSnapshot,
     VerifierJobState, committed_comparator_authority_policy,
 };
 use crate::error::AppError;
@@ -48,6 +49,7 @@ const MIGRATION_0010: &str = include_str!("../../migrations/0010_publication_ing
 const MIGRATION_0011: &str = include_str!("../../migrations/0011_publication_authority.sql");
 const MIGRATION_0012: &str = include_str!("../../migrations/0012_comparator_authority.sql");
 const MIGRATION_0013: &str = include_str!("../../migrations/0013_source_content_closure.sql");
+const MIGRATION_0014: &str = include_str!("../../migrations/0014_multidimensional_trust.sql");
 const MAX_CLAIM_STATUS_FORMALIZATIONS: usize = 256;
 const MAX_CLAIM_STATUS_EVIDENCE_PER_FORMALIZATION: usize = 256;
 const MAX_PUBLICATION_INPUT_BYTES: u64 = 16 * 1_048_576;
@@ -58,6 +60,7 @@ const COMPARATOR_STAGE_OPERATION: &str = "comparator_authority.stage.register";
 const COMPARATOR_INGESTION_OPERATION: &str = "comparator_authority.receipt.register";
 const COMPARATOR_AUTHORITY_OPERATION: &str = "evidence.create_comparator_authority";
 const COUNTEREXAMPLE_REPAIR_OPERATION: &str = "counterexample.repair";
+const TRUST_TRANSITION_OPERATION: &str = "trust.transition";
 const REQUIRED_TABLES: &[&str] = &[
     "artifacts",
     "edges",
@@ -75,6 +78,7 @@ const REQUIRED_TABLES: &[&str] = &[
     "run_events",
     "runs",
     "schema_migrations",
+    "trust_transitions",
 ];
 type RawRecordRow = (
     String,
@@ -521,6 +525,24 @@ impl Store {
                     params![13_i64, "source content closure"],
                 )
                 .map_err(|error| AppError::database("record migration 0013", error))?;
+        }
+        let migration_0014_applied: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 14)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::database("inspect migration 0014", error))?;
+        if !migration_0014_applied {
+            transaction
+                .execute_batch(MIGRATION_0014)
+                .map_err(|error| AppError::database("apply migration 0014", error))?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, unixepoch())",
+                    params![14_i64, "multidimensional trust"],
+                )
+                .map_err(|error| AppError::database("record migration 0014", error))?;
         }
         transaction
             .commit()
@@ -2849,6 +2871,204 @@ impl Store {
             .commit()
             .map_err(|error| AppError::database("commit audit evidence", error))?;
         Ok(snapshots)
+    }
+
+    pub fn validate_trust_transition(
+        &self,
+        request: &TrustTransitionRequest,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<String, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        request.validate()?;
+        validate_trust_transition_head(&self.connection, request)?;
+        validate_trust_transition_artifacts(&self.connection, request)?;
+        request.transition_hash()
+    }
+
+    pub fn create_trust_transition(
+        &mut self,
+        request: &TrustTransitionRequest,
+        actor: &str,
+        idempotency_key: &str,
+    ) -> Result<TrustTransitionSnapshot, AppError> {
+        validate_mutation_inputs(actor, idempotency_key)?;
+        request.validate()?;
+        let transition_hash = request.transition_hash()?;
+        let input_hash = value_hash(&json!({
+            "operation": TRUST_TRANSITION_OPERATION,
+            "request": request,
+            "actor": actor,
+        }))?;
+        let request_value = serde_json::to_value(request).map_err(|error| {
+            AppError::new(
+                "MCL_TRUST_TRANSITION_INVALID",
+                error.to_string(),
+                false,
+                "Report this deterministic trust-transition serialization defect.",
+            )
+        })?;
+        let request_json = String::from_utf8(canonical_json(&request_value)?).map_err(|error| {
+            AppError::new(
+                "MCL_CANONICAL_JSON_INVALID",
+                error.to_string(),
+                false,
+                "Report this canonical trust-transition encoding defect.",
+            )
+        })?;
+        let evidence_artifact_hashes_json =
+            serde_json::to_string(&request.evidence_artifact_hashes).map_err(|error| {
+                AppError::new(
+                    "MCL_TRUST_TRANSITION_INVALID",
+                    error.to_string(),
+                    false,
+                    "Report this trust-transition evidence serialization defect.",
+                )
+            })?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| AppError::database("start trust transition", error))?;
+        if let Some(existing) = read_idempotent_result::<TrustTransitionSnapshot>(
+            &transaction,
+            TRUST_TRANSITION_OPERATION,
+            idempotency_key,
+            &input_hash,
+        )? {
+            let stored = read_trust_transition(&transaction, &existing.transition_id)?;
+            if existing != stored
+                || stored.transition_hash != transition_hash
+                || stored.request != *request
+                || stored.created_by != actor
+            {
+                return Err(trust_transition_integrity_error(
+                    "stored idempotency result disagrees with the immutable trust transition",
+                ));
+            }
+            return Ok(stored);
+        }
+        validate_trust_transition_head(&transaction, request)?;
+        validate_trust_transition_artifacts(&transaction, request)?;
+        if transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM trust_transitions WHERE transition_hash = ?1)",
+                [&transition_hash],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::database("search trust transition", error))?
+        {
+            return Err(AppError::new(
+                "MCL_TRUST_TRANSITION_EXISTS",
+                format!("trust transition {transition_hash} already exists"),
+                false,
+                "Retrieve the existing transition or retry with its original idempotency key.",
+            ));
+        }
+        let transition_id = Uuid::now_v7().to_string();
+        transaction
+            .execute(
+                "INSERT INTO trust_transitions(transition_id, transition_hash, subject_object_id, subject_version_hash, dimension, from_status, to_status, reviewer_identity, evidence_artifact_hashes_json, reason, predecessor_transition_id, request_json, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, unixepoch(), ?13)",
+                params![
+                    transition_id,
+                    transition_hash,
+                    request.formalization.object_id,
+                    request.formalization.version_hash,
+                    request.dimension.as_str(),
+                    request.from_status.as_str(),
+                    request.to_status.as_str(),
+                    request.reviewer_identity,
+                    evidence_artifact_hashes_json,
+                    request.reason,
+                    request.predecessor_transition_id,
+                    request_json,
+                    actor,
+                ],
+            )
+            .map_err(|error| AppError::database("insert trust transition", error))?;
+        let snapshot = read_trust_transition(&transaction, &transition_id)?;
+        write_idempotent_result(
+            &transaction,
+            TRUST_TRANSITION_OPERATION,
+            idempotency_key,
+            &input_hash,
+            &snapshot,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| AppError::database("commit trust transition", error))?;
+        Ok(snapshot)
+    }
+
+    pub fn list_trust_transitions(
+        &self,
+        subject: &ExactVersionReference,
+    ) -> Result<Vec<TrustTransitionSnapshot>, AppError> {
+        validate_uuid(&subject.object_id, "trust subject object")?;
+        validate_hash(&subject.version_hash, "trust subject version")?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT transition_id FROM trust_transitions WHERE subject_object_id = ?1 AND subject_version_hash = ?2 ORDER BY created_at, transition_id LIMIT ?3",
+            )
+            .map_err(|error| AppError::database("prepare trust transition list", error))?;
+        let ids = statement
+            .query_map(
+                params![
+                    subject.object_id,
+                    subject.version_hash,
+                    (crate::domain::trust::MAX_TRUST_HISTORY + 1) as i64
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| AppError::database("list trust transitions", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AppError::database("read trust transition list", error))?;
+        if ids.len() > crate::domain::trust::MAX_TRUST_HISTORY {
+            return Err(AppError::new(
+                "MCL_TRUST_HISTORY_LIMIT",
+                "trust transition history exceeds its reviewed bound",
+                false,
+                "Create a new formalization version rather than extending an unbounded review history.",
+            ));
+        }
+        ids.iter()
+            .map(|transition_id| read_trust_transition(&self.connection, transition_id))
+            .collect()
+    }
+
+    pub(crate) fn list_kernel_trust_evidence(
+        &self,
+        subject: &ExactVersionReference,
+    ) -> Result<Vec<EvidenceSnapshot>, AppError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT evidence_id FROM evidence WHERE subject_object_id = ?1 AND subject_version_hash = ?2 AND evidence_kind IN ('lean_elaboration', 'lean_kernel_proof', 'lean_kernel_refutation') ORDER BY created_at, evidence_id LIMIT ?3",
+            )
+            .map_err(|error| AppError::database("prepare kernel trust evidence list", error))?;
+        let ids = statement
+            .query_map(
+                params![
+                    subject.object_id,
+                    subject.version_hash,
+                    (crate::domain::trust::MAX_TRUST_HISTORY + 1) as i64
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| AppError::database("list kernel trust evidence", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AppError::database("read kernel trust evidence list", error))?;
+        if ids.len() > crate::domain::trust::MAX_TRUST_HISTORY {
+            return Err(AppError::new(
+                "MCL_TRUST_HISTORY_LIMIT",
+                "kernel trust evidence history exceeds its reviewed bound",
+                false,
+                "Create a new formalization version rather than deriving trust from an unbounded evidence history.",
+            ));
+        }
+        ids.iter()
+            .map(|evidence_id| read_evidence(&self.connection, evidence_id))
+            .collect()
     }
 
     pub fn get_evidence(&self, evidence_id: &str) -> Result<EvidenceSnapshot, AppError> {
@@ -5905,6 +6125,218 @@ fn validate_diagnostic_evidence_references(
     Ok(())
 }
 
+fn validate_trust_transition_head(
+    connection: &Connection,
+    request: &TrustTransitionRequest,
+) -> Result<(), AppError> {
+    let exact_formalization = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM record_versions AS version JOIN records AS record ON record.object_id = version.object_id WHERE version.version_hash = ?1 AND version.object_id = ?2 AND record.record_type = 'formalization')",
+            params![
+                request.formalization.version_hash,
+                request.formalization.object_id
+            ],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| AppError::database("validate trust transition subject", error))?;
+    if !exact_formalization {
+        return Err(AppError::new(
+            "MCL_TRUST_SUBJECT_INVALID",
+            "trust transition subject is not the requested exact formalization version",
+            false,
+            "Use one exact canonical formalization object and version.",
+        ));
+    }
+    let current: Option<(String, String)> = connection
+        .query_row(
+            "SELECT head.transition_id, head.to_status FROM trust_transitions AS head WHERE head.subject_object_id = ?1 AND head.subject_version_hash = ?2 AND head.dimension = ?3 AND NOT EXISTS (SELECT 1 FROM trust_transitions AS successor WHERE successor.predecessor_transition_id = head.transition_id)",
+            params![
+                request.formalization.object_id,
+                request.formalization.version_hash,
+                request.dimension.as_str()
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| AppError::database("read current trust transition head", error))?;
+    let matches = match current {
+        Some((transition_id, status)) => {
+            request.predecessor_transition_id.as_deref() == Some(transition_id.as_str())
+                && request.from_status.as_str() == status
+        }
+        None => {
+            request.predecessor_transition_id.is_none()
+                && request.from_status == ReviewedTrustStatus::initial(request.dimension)
+        }
+    };
+    if !matches {
+        return Err(AppError::new(
+            "MCL_TRUST_TRANSITION_CONFLICT",
+            "trust transition does not extend the exact current dimension head",
+            true,
+            "Reload multidimensional trust status and retry with its current status and predecessor transition.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_trust_transition_artifacts(
+    connection: &Connection,
+    request: &TrustTransitionRequest,
+) -> Result<(), AppError> {
+    for artifact_hash in &request.evidence_artifact_hashes {
+        let exists = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM artifacts WHERE artifact_hash = ?1)",
+                [artifact_hash],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::database("validate trust transition artifact", error))?;
+        if !exists {
+            return Err(AppError::new(
+                "MCL_TRUST_EVIDENCE_INVALID",
+                format!("trust transition evidence artifact {artifact_hash} is not registered"),
+                false,
+                "Register and verify every exact review artifact before changing a trust dimension.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn read_trust_transition(
+    connection: &Connection,
+    transition_id: &str,
+) -> Result<TrustTransitionSnapshot, AppError> {
+    let row = connection
+        .query_row(
+            "SELECT transition_hash, request_json, created_at, created_by, subject_object_id, subject_version_hash, dimension, from_status, to_status, reviewer_identity, evidence_artifact_hashes_json, reason, predecessor_transition_id FROM trust_transitions WHERE transition_id = ?1",
+            [transition_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| AppError::database("read trust transition", error))?;
+    let Some((
+        transition_hash,
+        request_json,
+        created_at,
+        created_by,
+        subject_object_id,
+        subject_version_hash,
+        dimension,
+        from_status,
+        to_status,
+        reviewer_identity,
+        evidence_artifact_hashes_json,
+        reason,
+        predecessor_transition_id,
+    )) = row
+    else {
+        return Err(AppError::new(
+            "MCL_TRUST_TRANSITION_NOT_FOUND",
+            format!("trust transition {transition_id} does not exist"),
+            false,
+            "Use an exact transition ID returned by the canonical trust status.",
+        ));
+    };
+    let request: TrustTransitionRequest = serde_json::from_str(&request_json).map_err(|error| {
+        trust_transition_integrity_error(format!(
+            "stored trust transition request is invalid: {error}"
+        ))
+    })?;
+    request
+        .validate()
+        .map_err(|error| trust_transition_integrity_error(error.message))?;
+    let canonical_request = canonical_json(&serde_json::to_value(&request).map_err(|error| {
+        trust_transition_integrity_error(format!(
+            "stored trust transition cannot be serialized: {error}"
+        ))
+    })?)?;
+    let evidence_artifact_hashes: Vec<String> =
+        serde_json::from_str(&evidence_artifact_hashes_json).map_err(|error| {
+            trust_transition_integrity_error(format!(
+                "stored trust evidence projection is invalid: {error}"
+            ))
+        })?;
+    if canonical_request != request_json.as_bytes()
+        || request.formalization.object_id != subject_object_id
+        || request.formalization.version_hash != subject_version_hash
+        || request.dimension.as_str() != dimension
+        || request.from_status.as_str() != from_status
+        || request.to_status.as_str() != to_status
+        || request.reviewer_identity != reviewer_identity
+        || request.evidence_artifact_hashes != evidence_artifact_hashes
+        || request.reason != reason
+        || request.predecessor_transition_id != predecessor_transition_id
+    {
+        return Err(trust_transition_integrity_error(
+            "stored trust transition projections disagree with the canonical request",
+        ));
+    }
+    validate_trust_transition_artifacts(connection, &request)
+        .map_err(|error| trust_transition_integrity_error(error.message))?;
+    if let Some(predecessor_id) = &request.predecessor_transition_id {
+        let predecessor_matches = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM trust_transitions WHERE transition_id = ?1 AND subject_object_id = ?2 AND subject_version_hash = ?3 AND dimension = ?4 AND to_status = ?5)",
+                params![
+                    predecessor_id,
+                    request.formalization.object_id,
+                    request.formalization.version_hash,
+                    request.dimension.as_str(),
+                    request.from_status.as_str()
+                ],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| AppError::database("validate stored trust predecessor", error))?;
+        if !predecessor_matches {
+            return Err(trust_transition_integrity_error(
+                "stored trust transition predecessor does not match its exact subject, dimension, or prior status",
+            ));
+        }
+    } else if request.from_status != ReviewedTrustStatus::initial(request.dimension) {
+        return Err(trust_transition_integrity_error(
+            "initial trust transition does not start from the conservative default",
+        ));
+    }
+    let snapshot = TrustTransitionSnapshot {
+        transition_id: transition_id.to_owned(),
+        transition_hash,
+        request,
+        created_at,
+        created_by,
+    };
+    snapshot
+        .validate()
+        .map_err(|error| trust_transition_integrity_error(error.message))?;
+    Ok(snapshot)
+}
+
+fn trust_transition_integrity_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_TRUST_TRANSITION_INTEGRITY_FAILED",
+        message,
+        false,
+        "Quarantine the trust history and restore the exact immutable review records and artifacts.",
+    )
+}
+
 fn read_evidence(connection: &Connection, evidence_id: &str) -> Result<EvidenceSnapshot, AppError> {
     let row = connection
         .query_row(
@@ -7398,7 +7830,7 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("migration succeeds");
 
-        assert_eq!(store.migration_version().expect("migration version"), 13);
+        assert_eq!(store.migration_version().expect("migration version"), 14);
         assert_eq!(store.journal_mode().expect("journal mode"), "wal");
         assert_eq!(store.integrity_check().expect("integrity"), "ok");
         store.schema_check().expect("required schema exists");
@@ -7412,7 +7844,210 @@ mod tests {
         let mut store = Store::open(&database).expect("database opens");
         store.migrate().expect("first migration succeeds");
         store.migrate().expect("second migration succeeds");
-        assert_eq!(store.migration_version().expect("migration version"), 13);
+        assert_eq!(store.migration_version().expect("migration version"), 14);
+    }
+
+    #[test]
+    fn trust_transitions_are_evidence_backed_predecessor_guarded_and_immutable() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let database = temporary.path().join("state.sqlite3");
+        let mut store = Store::open(&database).expect("database opens");
+        store.migrate().expect("migration succeeds");
+        let claim = store
+            .create_record(
+                &claim("Trust transition fixture"),
+                "trust-author",
+                "trust-claim",
+            )
+            .expect("claim creates");
+        let environment = store
+            .register_environment(&environment_manifest(), "trust-author", "trust-environment")
+            .expect("environment registers");
+        let module = register_lean_artifact(
+            &mut store,
+            b"theorem trustFixture : True := by trivial\n",
+            "trust-module",
+        );
+        let formalization = store
+            .create_record(
+                &formalization(
+                    &claim,
+                    "True",
+                    &environment.environment_hash,
+                    &module.artifact_hash,
+                    &[],
+                ),
+                "trust-formalizer",
+                "trust-formalization",
+            )
+            .expect("formalization creates");
+        let subject = ExactVersionReference {
+            object_id: formalization.object_id,
+            version_hash: formalization.version_hash,
+        };
+        assert!(
+            store
+                .list_trust_transitions(&subject)
+                .expect("conservative transition history")
+                .is_empty()
+        );
+        let first_request = TrustTransitionRequest {
+            schema_version: crate::domain::TRUST_TRANSITION_SCHEMA_VERSION.to_owned(),
+            formalization: subject.clone(),
+            dimension: crate::domain::ReviewedTrustDimension::Definition,
+            from_status: ReviewedTrustStatus::Ungrounded,
+            to_status: ReviewedTrustStatus::SourceGrounded,
+            reviewer_identity: "definition-reviewer".to_owned(),
+            evidence_artifact_hashes: vec![module.artifact_hash.clone()],
+            reason: "The exact reviewed source maps this formal definition.".to_owned(),
+            predecessor_transition_id: None,
+        };
+        assert_eq!(
+            store
+                .validate_trust_transition(
+                    &first_request,
+                    "definition-reviewer",
+                    "trust-first-preview"
+                )
+                .expect("first transition previews"),
+            first_request
+                .transition_hash()
+                .expect("first transition identity")
+        );
+        let first = store
+            .create_trust_transition(&first_request, "definition-reviewer", "trust-first")
+            .expect("first transition persists");
+        assert_eq!(
+            store
+                .create_trust_transition(&first_request, "definition-reviewer", "trust-first")
+                .expect("exact retry returns stored transition"),
+            first
+        );
+        let second_request = TrustTransitionRequest {
+            from_status: ReviewedTrustStatus::SourceGrounded,
+            to_status: ReviewedTrustStatus::ProjectApproved,
+            predecessor_transition_id: Some(first.transition_id.clone()),
+            reason: "Project review approved the exact grounded definition.".to_owned(),
+            ..first_request.clone()
+        };
+        let second = store
+            .create_trust_transition(&second_request, "definition-reviewer", "trust-second")
+            .expect("adjacent promotion persists");
+        let fork = TrustTransitionRequest {
+            to_status: ReviewedTrustStatus::Ungrounded,
+            reason: "A competing review attempts to fork the prior head.".to_owned(),
+            ..second_request.clone()
+        };
+        assert_eq!(
+            store
+                .create_trust_transition(&fork, "definition-reviewer", "trust-fork")
+                .expect_err("stale predecessor cannot fork history")
+                .code,
+            "MCL_TRUST_TRANSITION_CONFLICT"
+        );
+        assert_eq!(
+            store
+                .list_trust_transitions(&subject)
+                .expect("complete transition history"),
+            [first.clone(), second.clone()]
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "UPDATE trust_transitions SET reason = 'rewritten' WHERE transition_id = ?1",
+                    [&second.transition_id],
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "DELETE FROM trust_transitions WHERE transition_id = ?1",
+                    [&first.transition_id],
+                )
+                .is_err()
+        );
+
+        let forged_request = TrustTransitionRequest {
+            dimension: crate::domain::ReviewedTrustDimension::Coverage,
+            from_status: ReviewedTrustStatus::StatementOnly,
+            to_status: ReviewedTrustStatus::FullTheorem,
+            predecessor_transition_id: None,
+            reason: "Attempts to bypass the conservative unknown default.".to_owned(),
+            ..first_request
+        };
+        let missing_predecessor_request = TrustTransitionRequest {
+            from_status: ReviewedTrustStatus::Unknown,
+            reason: "Attempts to omit a required closed request field.".to_owned(),
+            ..forged_request.clone()
+        };
+        let mut missing_predecessor_value = serde_json::to_value(&missing_predecessor_request)
+            .expect("missing-field request serializes");
+        missing_predecessor_value
+            .as_object_mut()
+            .expect("trust request is an object")
+            .remove("predecessor_transition_id");
+        let missing_predecessor_json = String::from_utf8(
+            canonical_json(&missing_predecessor_value)
+                .expect("missing-field request canonicalizes"),
+        )
+        .expect("canonical request is UTF-8");
+        let forged_json = String::from_utf8(
+            canonical_json(
+                &serde_json::to_value(&forged_request).expect("forged request serializes"),
+            )
+            .expect("forged request canonicalizes"),
+        )
+        .expect("canonical request is UTF-8");
+        let evidence_json = serde_json::to_string(&forged_request.evidence_artifact_hashes)
+            .expect("evidence serializes");
+        assert!(
+            store
+                .connection
+                .execute(
+                    "INSERT INTO trust_transitions(transition_id, transition_hash, subject_object_id, subject_version_hash, dimension, from_status, to_status, reviewer_identity, evidence_artifact_hashes_json, reason, predecessor_transition_id, request_json, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, unixepoch(), 'forger')",
+                    params![
+                        Uuid::now_v7().to_string(),
+                        "e".repeat(64),
+                        forged_request.formalization.object_id,
+                        forged_request.formalization.version_hash,
+                        forged_request.dimension.as_str(),
+                        forged_request.from_status.as_str(),
+                        forged_request.to_status.as_str(),
+                        forged_request.reviewer_identity,
+                        evidence_json,
+                        forged_request.reason,
+                        forged_json,
+                    ],
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "INSERT INTO trust_transitions(transition_id, transition_hash, subject_object_id, subject_version_hash, dimension, from_status, to_status, reviewer_identity, evidence_artifact_hashes_json, reason, predecessor_transition_id, request_json, created_at, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, unixepoch(), 'forger')",
+                    params![
+                        Uuid::now_v7().to_string(),
+                        "d".repeat(64),
+                        missing_predecessor_request.formalization.object_id,
+                        missing_predecessor_request.formalization.version_hash,
+                        missing_predecessor_request.dimension.as_str(),
+                        missing_predecessor_request.from_status.as_str(),
+                        missing_predecessor_request.to_status.as_str(),
+                        missing_predecessor_request.reviewer_identity,
+                        serde_json::to_string(
+                            &missing_predecessor_request.evidence_artifact_hashes
+                        )
+                        .expect("evidence serializes"),
+                        missing_predecessor_request.reason,
+                        missing_predecessor_json,
+                    ],
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -7527,7 +8162,10 @@ mod tests {
             .expect("test restores the version-12 trigger set");
         store
             .connection
-            .execute("DELETE FROM schema_migrations WHERE version = 13", [])
+            .execute(
+                "DELETE FROM schema_migrations WHERE version IN (13, 14)",
+                [],
+            )
             .expect("test restores the version-12 migration ledger");
         assert_eq!(store.migration_version().expect("legacy version"), 12);
 
@@ -7617,7 +8255,7 @@ mod tests {
         assert_eq!(store.migration_version().expect("legacy version"), 7);
 
         store.migrate().expect("forward migration succeeds");
-        assert_eq!(store.migration_version().expect("current version"), 13);
+        assert_eq!(store.migration_version().expect("current version"), 14);
         assert!(
             store
                 .connection

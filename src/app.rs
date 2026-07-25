@@ -31,18 +31,22 @@ use crate::domain::{
     ComparatorAuthorityStaleReason, ComparatorAuthorityStatus, ComparatorIngestionReceiptSnapshot,
     CounterexampleCheckerBinding, CounterexamplePackage, CounterexampleRepairRequest,
     CounterexampleRepairSnapshot, CounterexampleSearchProvenance, CounterexampleSearchResult,
-    EdgeDraft, EdgeKind, EdgeSnapshot, EnvironmentManifest, EnvironmentSnapshot,
-    EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult, EvidenceSnapshot,
-    FidelityReviewHistoryEntry, FidelityReviewReport, FidelityStatus, FidelityStatusSnapshot,
-    FidelityVerdict, GraphTraversalHit, GraphTraversalRequest, LeanAuditClassification,
-    LeanAuditJobSnapshot, LeanAuditReport, LeanAuditRequest, ProposedRepairedClaim,
-    PublicationAttestationVerification, PublicationAuthorityBinding, PublicationClassification,
-    PublicationIngestionReceiptSnapshot, PublicationOutcome, PublicationReport, PublicationRequest,
-    PublicationRetainedArtifactRole, PublicationRetainedClosure, PublicationStage,
-    PublicationStageArtifact, PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot,
-    ResearchStatus, RunChainReport, RunEventDraft, RunEventSnapshot, RunKind, RunSnapshot,
-    RunState, TraversalDirection, VerifierExecutionClassification, VerifierExecutionReport,
-    VerifierJobRequest, VerifierJobSnapshot, VerifierJobState,
+    CoverageTrustStatus, DefinitionTrustStatus, EdgeDraft, EdgeKind, EdgeSnapshot,
+    EnvironmentManifest, EnvironmentSnapshot, EvidenceAuthorityClass, EvidenceKind,
+    EvidencePayload, EvidenceResult, EvidenceSnapshot, FidelityReviewHistoryEntry,
+    FidelityReviewLevel, FidelityReviewReport, FidelityStatus, FidelityStatusSnapshot,
+    FidelityTrustStatus, FidelityVerdict, GraphTraversalHit, GraphTraversalRequest,
+    KernelTrustStatus, LeanAuditClassification, LeanAuditJobSnapshot, LeanAuditReport,
+    LeanAuditRequest, ProposedRepairedClaim, PublicationAttestationVerification,
+    PublicationAuthorityBinding, PublicationClassification, PublicationIngestionReceiptSnapshot,
+    PublicationOutcome, PublicationReport, PublicationRequest, PublicationRetainedArtifactRole,
+    PublicationRetainedClosure, PublicationStage, PublicationStageArtifact,
+    PublicationStageSnapshot, RecordDraft, RecordKind, RecordSnapshot, ResearchStatus,
+    ReuseTrustStatus, ReviewedTrustDimension, ReviewedTrustStatus, RunChainReport, RunEventDraft,
+    RunEventSnapshot, RunKind, RunSnapshot, RunState, TraversalDirection, TrustAxisSnapshot,
+    TrustDecision, TrustStatusSnapshot, TrustTransitionRequest, TrustTransitionSnapshot,
+    VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
+    VerifierJobSnapshot, VerifierJobState,
 };
 use crate::error::AppError;
 use crate::store::{
@@ -301,6 +305,13 @@ pub struct FidelityReviewOutcome {
     pub proposed_evidence_hash: String,
     pub report: crate::domain::fidelity::VersionedFidelityReviewReport,
     pub evidence: Option<EvidenceSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrustTransitionOutcome {
+    pub dry_run: bool,
+    pub proposed_transition_hash: String,
+    pub transition: Option<TrustTransitionSnapshot>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1238,6 +1249,157 @@ impl Application {
             head_evidence_id: Some(head_evidence_id),
             history,
         })
+    }
+
+    pub fn transition_trust(
+        &mut self,
+        request: &TrustTransitionRequest,
+        actor: &str,
+        idempotency_key: &str,
+        dry_run: bool,
+    ) -> Result<TrustTransitionOutcome, AppError> {
+        validate_attribution(actor, idempotency_key)?;
+        request.validate()?;
+        self.read_validated_exact_record(
+            &request.formalization,
+            RecordKind::Formalization,
+            "trust-transition formalization",
+        )?;
+        for artifact_hash in &request.evidence_artifact_hashes {
+            self.verify_artifact(artifact_hash).map_err(|error| {
+                AppError::new(
+                    "MCL_TRUST_EVIDENCE_INVALID",
+                    format!(
+                        "trust transition evidence artifact {artifact_hash} failed verification: {}",
+                        error.message
+                    ),
+                    false,
+                    "Restore and verify every exact review artifact before changing a trust dimension.",
+                )
+            })?;
+        }
+        let proposed_transition_hash = request.transition_hash()?;
+        let transition = if dry_run {
+            self.store
+                .validate_trust_transition(request, actor, idempotency_key)?;
+            None
+        } else {
+            Some(
+                self.store
+                    .create_trust_transition(request, actor, idempotency_key)?,
+            )
+        };
+        Ok(TrustTransitionOutcome {
+            dry_run,
+            proposed_transition_hash,
+            transition,
+        })
+    }
+
+    pub fn trust_status(
+        &mut self,
+        formalization: &ExactVersionReference,
+    ) -> Result<TrustStatusSnapshot, AppError> {
+        self.read_validated_exact_record(
+            formalization,
+            RecordKind::Formalization,
+            "trust-status formalization",
+        )?;
+        let kernel_evidence = self.store.list_kernel_trust_evidence(formalization)?;
+        let fidelity_evidence = self.store.list_fidelity_evidence(formalization)?;
+        let transitions = self.store.list_trust_transitions(formalization)?;
+
+        let mut authority_kinds = BTreeSet::new();
+        for evidence in &kernel_evidence {
+            if matches!(
+                evidence.payload.evidence_kind,
+                EvidenceKind::LeanKernelProof | EvidenceKind::LeanKernelRefutation
+            ) {
+                let commit = self.revalidate_publication_authority_evidence(evidence)?;
+                let expected_kind = match commit.outcome {
+                    PublicationOutcome::Proof => EvidenceKind::LeanKernelProof,
+                    PublicationOutcome::Refutation => EvidenceKind::LeanKernelRefutation,
+                };
+                if evidence.payload.subject != *formalization
+                    || evidence.payload.evidence_kind != expected_kind
+                {
+                    return Err(trust_status_integrity_error(
+                        "kernel authority history is contradictory or attached to a different formalization",
+                    ));
+                }
+                authority_kinds.insert(expected_kind.as_str());
+            } else {
+                for artifact_hash in &evidence.payload.artifact_hashes {
+                    self.verify_artifact(artifact_hash).map_err(|error| {
+                        trust_status_integrity_error(format!(
+                            "kernel trust evidence artifact {artifact_hash} failed verification: {}",
+                            error.message
+                        ))
+                    })?;
+                }
+            }
+        }
+        for transition in &transitions {
+            for artifact_hash in &transition.request.evidence_artifact_hashes {
+                self.verify_artifact(artifact_hash).map_err(|error| {
+                    trust_status_integrity_error(format!(
+                        "reviewed trust evidence artifact {artifact_hash} failed verification: {}",
+                        error.message
+                    ))
+                })?;
+            }
+        }
+        if authority_kinds.len() > 1 {
+            return Err(trust_status_integrity_error(
+                "one exact formalization has both proof and refutation kernel authority",
+            ));
+        }
+
+        let fidelity =
+            self.fidelity_status_from_evidence(formalization, fidelity_evidence.clone())?;
+        let definition = reviewed_trust_axis(
+            &transitions,
+            ReviewedTrustDimension::Definition,
+            DefinitionTrustStatus::Ungrounded,
+            definition_trust_status,
+        )?;
+        let reuse = reviewed_trust_axis(
+            &transitions,
+            ReviewedTrustDimension::Reuse,
+            ReuseTrustStatus::Experimental,
+            reuse_trust_status,
+        )?;
+        let coverage = reviewed_trust_axis(
+            &transitions,
+            ReviewedTrustDimension::Coverage,
+            CoverageTrustStatus::Unknown,
+            coverage_trust_status,
+        )?;
+        let mut snapshot = TrustStatusSnapshot {
+            schema_version: crate::domain::TRUST_STATUS_SCHEMA_VERSION.to_owned(),
+            formalization: formalization.clone(),
+            kernel: kernel_trust_axis(&kernel_evidence)?,
+            fidelity: fidelity_trust_axis(&fidelity)?,
+            definition,
+            reuse,
+            coverage,
+            promotion: Vec::new(),
+        };
+        snapshot.promotion = crate::domain::promotion_evaluations(&snapshot);
+        snapshot.validate()?;
+
+        if self.store.list_kernel_trust_evidence(formalization)? != kernel_evidence
+            || self.store.list_fidelity_evidence(formalization)? != fidelity_evidence
+            || self.store.list_trust_transitions(formalization)? != transitions
+        {
+            return Err(AppError::new(
+                "MCL_TRUST_STATUS_READ_CONFLICT",
+                "trust evidence or reviewed transition inputs changed while status was derived",
+                true,
+                "Retry the multidimensional trust read against the new immutable evidence heads.",
+            ));
+        }
+        Ok(snapshot)
     }
 
     pub fn claim_research_status(
@@ -3959,6 +4121,48 @@ impl Application {
                 "Retry against an unchanged current canonical witness.",
             ));
         }
+        let trust_status = self.trust_status(&validated.report.request.subject)?;
+        let promotion_assessment = trust_status.assessment(profile.promotion_profile())?;
+        if !promotion_assessment.eligible {
+            let blockers = promotion_assessment
+                .blockers
+                .iter()
+                .map(|blocker| {
+                    format!(
+                        "{}={} requires [{}]",
+                        blocker.dimension.as_str(),
+                        blocker.current_status,
+                        blocker.accepted_statuses.join(",")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(release_build_error(
+                "MCL_RELEASE_TRUST_POLICY_BLOCKED",
+                format!(
+                    "{} release promotion is blocked by incomplete trust dimensions: {blockers}",
+                    profile.promotion_profile().as_str()
+                ),
+                "Complete independent evidence-backed trust reviews for the requested profile or select an honest lower profile.",
+            ));
+        }
+        if !trust_status.kernel.history.iter().any(|decision| {
+            decision.decision_id == authority_evidence.evidence_id
+                && decision.decision_hash == authority_evidence.evidence_hash
+                && decision.to_status == KernelTrustStatus::KernelVerified.as_str()
+        }) || trust_status.fidelity.head_decision_id.as_deref()
+            != Some(fidelity_entry.evidence.evidence_id.as_str())
+            || trust_status.fidelity.head_decision_hash.as_deref()
+                != Some(fidelity_entry.evidence.evidence_hash.as_str())
+        {
+            return Err(release_build_error(
+                "MCL_RELEASE_TRUST_POLICY_BLOCKED",
+                "promotion assessment does not retain the exact release authority and fidelity heads",
+                "Retry against an unchanged exact multidimensional trust snapshot.",
+            ));
+        }
+        let trust_binding =
+            crate::domain::ReleaseTrustBinding::from_assessment(&promotion_assessment)?;
         let mut fidelity_entries = fidelity_status
             .history
             .iter()
@@ -4159,6 +4363,17 @@ impl Application {
         for snapshot in evidence.values() {
             artifact_hashes.extend(snapshot.payload.artifact_hashes.iter().cloned());
             environment_hashes.extend(snapshot.payload.environment_hash.iter().cloned());
+        }
+        for decision in trust_status
+            .kernel
+            .history
+            .iter()
+            .chain(&trust_status.fidelity.history)
+            .chain(&trust_status.definition.history)
+            .chain(&trust_status.reuse.history)
+            .chain(&trust_status.coverage.history)
+        {
+            artifact_hashes.extend(decision.evidence_artifact_hashes.iter().cloned());
         }
         for edge in edges.values() {
             if edge.kind == EdgeKind::ResearchRepairs {
@@ -4376,6 +4591,14 @@ impl Application {
                 artifact_metadata: None,
             },
         )?;
+        insert_release_file(
+            &mut files,
+            "reports/promotion-assessment.json".to_owned(),
+            generated_release_json(
+                &promotion_assessment,
+                crate::domain::ReleaseMemberKind::Report,
+            )?,
+        )?;
 
         let license_entries = files
             .iter()
@@ -4401,7 +4624,7 @@ impl Application {
         )?;
 
         let manifest = crate::domain::ReleaseManifest {
-            schema_version: crate::domain::RELEASE_MANIFEST_SCHEMA_VERSION.to_owned(),
+            schema_version: crate::domain::RELEASE_MANIFEST_V2_SCHEMA_VERSION.to_owned(),
             profile,
             publication: crate::domain::ReleasePublicationBinding {
                 ingestion_receipt_hash: validated.commit.binding.ingestion_receipt_hash.clone(),
@@ -4433,6 +4656,7 @@ impl Application {
             },
             pedagogy,
             replay,
+            trust: Some(trust_binding),
             members: files
                 .iter()
                 .map(|(path, file)| file.member(path.clone()))
@@ -8408,6 +8632,236 @@ fn failed_check(
     }
 }
 
+fn kernel_trust_axis(
+    evidence: &[EvidenceSnapshot],
+) -> Result<TrustAxisSnapshot<KernelTrustStatus>, AppError> {
+    let mut history = Vec::new();
+    let mut status = KernelTrustStatus::Unverified;
+    for entry in evidence {
+        let (observed, reason) = if matches!(
+            entry.payload.evidence_kind,
+            EvidenceKind::LeanKernelProof | EvidenceKind::LeanKernelRefutation
+        ) {
+            (
+                KernelTrustStatus::KernelVerified,
+                "accepted receipt-bound Lean kernel authority",
+            )
+        } else if entry.payload.stale {
+            (
+                KernelTrustStatus::Unverified,
+                "Lean elaboration evidence is stale",
+            )
+        } else {
+            match entry.payload.result {
+                EvidenceResult::Accepted => (
+                    KernelTrustStatus::LeanChecked,
+                    "accepted controlled Lean elaboration evidence",
+                ),
+                EvidenceResult::Rejected | EvidenceResult::Failed => (
+                    KernelTrustStatus::Failed,
+                    "controlled Lean elaboration failed or was rejected",
+                ),
+                EvidenceResult::Inconclusive => (
+                    KernelTrustStatus::Unverified,
+                    "controlled Lean elaboration was inconclusive",
+                ),
+            }
+        };
+        let next = if status == KernelTrustStatus::KernelVerified {
+            KernelTrustStatus::KernelVerified
+        } else {
+            observed
+        };
+        history.push(TrustDecision {
+            decision_id: entry.evidence_id.clone(),
+            decision_hash: entry.evidence_hash.clone(),
+            from_status: status.as_str().to_owned(),
+            to_status: next.as_str().to_owned(),
+            decided_at: entry.created_at,
+            reviewer_identity: entry.payload.verifier_or_reviewer_identity.clone(),
+            evidence_artifact_hashes: entry.payload.artifact_hashes.clone(),
+            reason: reason.to_owned(),
+        });
+        status = next;
+    }
+    let (head_decision_id, head_decision_hash) = decision_head(&history);
+    Ok(TrustAxisSnapshot {
+        status,
+        head_decision_id,
+        head_decision_hash,
+        history,
+    })
+}
+
+fn fidelity_trust_axis(
+    fidelity: &FidelityStatusSnapshot,
+) -> Result<TrustAxisSnapshot<FidelityTrustStatus>, AppError> {
+    let mut entries = fidelity.history.iter().collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        left.evidence
+            .created_at
+            .cmp(&right.evidence.created_at)
+            .then_with(|| left.evidence.evidence_id.cmp(&right.evidence.evidence_id))
+    });
+    let mut history = Vec::with_capacity(entries.len());
+    let mut status = FidelityTrustStatus::Unreviewed;
+    for entry in entries {
+        let request = entry.report.request();
+        let next = fidelity_trust_status(&request);
+        history.push(TrustDecision {
+            decision_id: entry.evidence.evidence_id.clone(),
+            decision_hash: entry.evidence.evidence_hash.clone(),
+            from_status: status.as_str().to_owned(),
+            to_status: next.as_str().to_owned(),
+            decided_at: entry.evidence.created_at,
+            reviewer_identity: request.reviewer_identity().to_owned(),
+            evidence_artifact_hashes: entry.evidence.payload.artifact_hashes.clone(),
+            reason: format!(
+                "fidelity review recorded `{}` at `{}` level",
+                fidelity_verdict_name(request.verdict()),
+                fidelity_review_level_name(request.review_level())
+            ),
+        });
+        status = next;
+    }
+    let (head_decision_id, head_decision_hash) = decision_head(&history);
+    Ok(TrustAxisSnapshot {
+        status,
+        head_decision_id,
+        head_decision_hash,
+        history,
+    })
+}
+
+fn fidelity_trust_status(
+    request: &crate::domain::VersionedFidelityReviewRequest,
+) -> FidelityTrustStatus {
+    match request.verdict() {
+        FidelityVerdict::Attested | FidelityVerdict::BenchmarkAligned => {
+            FidelityTrustStatus::SourceMapped
+        }
+        FidelityVerdict::Verified
+            if request.review_level() == FidelityReviewLevel::ExpertDomainReview =>
+        {
+            FidelityTrustStatus::ExpertApproved
+        }
+        FidelityVerdict::Verified => FidelityTrustStatus::ReviewerChecked,
+        FidelityVerdict::Rejected => FidelityTrustStatus::Rejected,
+    }
+}
+
+fn fidelity_verdict_name(verdict: FidelityVerdict) -> &'static str {
+    match verdict {
+        FidelityVerdict::Attested => "attested",
+        FidelityVerdict::BenchmarkAligned => "benchmark_aligned",
+        FidelityVerdict::Verified => "verified",
+        FidelityVerdict::Rejected => "rejected",
+    }
+}
+
+fn fidelity_review_level_name(level: FidelityReviewLevel) -> &'static str {
+    match level {
+        FidelityReviewLevel::SurfaceSyntax => "surface_syntax",
+        FidelityReviewLevel::MathematicalStatement => "mathematical_statement",
+        FidelityReviewLevel::DefinitionMapping => "definition_mapping",
+        FidelityReviewLevel::SourcePaperCorrespondence => "source_paper_correspondence",
+        FidelityReviewLevel::BenchmarkHashAlignment => "benchmark_hash_alignment",
+        FidelityReviewLevel::ExpertDomainReview => "expert_domain_review",
+    }
+}
+
+fn reviewed_trust_axis<T: Copy>(
+    transitions: &[TrustTransitionSnapshot],
+    dimension: ReviewedTrustDimension,
+    default: T,
+    convert: fn(ReviewedTrustStatus) -> Option<T>,
+) -> Result<TrustAxisSnapshot<T>, AppError> {
+    let mut status = default;
+    let mut history = Vec::new();
+    for transition in transitions
+        .iter()
+        .filter(|transition| transition.request.dimension == dimension)
+    {
+        let next = convert(transition.request.to_status).ok_or_else(|| {
+            trust_status_integrity_error(
+                "reviewed trust transition status does not belong to its projected dimension",
+            )
+        })?;
+        history.push(TrustDecision {
+            decision_id: transition.transition_id.clone(),
+            decision_hash: transition.transition_hash.clone(),
+            from_status: transition.request.from_status.as_str().to_owned(),
+            to_status: transition.request.to_status.as_str().to_owned(),
+            decided_at: transition.created_at,
+            reviewer_identity: transition.request.reviewer_identity.clone(),
+            evidence_artifact_hashes: transition.request.evidence_artifact_hashes.clone(),
+            reason: transition.request.reason.clone(),
+        });
+        status = next;
+    }
+    let (head_decision_id, head_decision_hash) = decision_head(&history);
+    Ok(TrustAxisSnapshot {
+        status,
+        head_decision_id,
+        head_decision_hash,
+        history,
+    })
+}
+
+fn definition_trust_status(status: ReviewedTrustStatus) -> Option<DefinitionTrustStatus> {
+    match status {
+        ReviewedTrustStatus::Ungrounded => Some(DefinitionTrustStatus::Ungrounded),
+        ReviewedTrustStatus::SourceGrounded => Some(DefinitionTrustStatus::SourceGrounded),
+        ReviewedTrustStatus::ProjectApproved => Some(DefinitionTrustStatus::ProjectApproved),
+        ReviewedTrustStatus::UpstreamAccepted => Some(DefinitionTrustStatus::UpstreamAccepted),
+        _ => None,
+    }
+}
+
+fn reuse_trust_status(status: ReviewedTrustStatus) -> Option<ReuseTrustStatus> {
+    match status {
+        ReviewedTrustStatus::Experimental => Some(ReuseTrustStatus::Experimental),
+        ReviewedTrustStatus::CampaignSpecific => Some(ReuseTrustStatus::CampaignSpecific),
+        ReviewedTrustStatus::Candidate => Some(ReuseTrustStatus::Candidate),
+        ReviewedTrustStatus::ReviewReady => Some(ReuseTrustStatus::ReviewReady),
+        ReviewedTrustStatus::Upstreamed => Some(ReuseTrustStatus::Upstreamed),
+        _ => None,
+    }
+}
+
+fn coverage_trust_status(status: ReviewedTrustStatus) -> Option<CoverageTrustStatus> {
+    match status {
+        ReviewedTrustStatus::Unknown => Some(CoverageTrustStatus::Unknown),
+        ReviewedTrustStatus::StatementOnly => Some(CoverageTrustStatus::StatementOnly),
+        ReviewedTrustStatus::AnalyticalCore => Some(CoverageTrustStatus::AnalyticalCore),
+        ReviewedTrustStatus::SupportingLemma => Some(CoverageTrustStatus::SupportingLemma),
+        ReviewedTrustStatus::FiniteSpecialization => {
+            Some(CoverageTrustStatus::FiniteSpecialization)
+        }
+        ReviewedTrustStatus::AsymptoticComponent => Some(CoverageTrustStatus::AsymptoticComponent),
+        ReviewedTrustStatus::FullTheorem => Some(CoverageTrustStatus::FullTheorem),
+        _ => None,
+    }
+}
+
+fn decision_head(history: &[TrustDecision]) -> (Option<String>, Option<String>) {
+    history.last().map_or((None, None), |decision| {
+        (
+            Some(decision.decision_id.clone()),
+            Some(decision.decision_hash.clone()),
+        )
+    })
+}
+
+fn trust_status_integrity_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_TRUST_STATUS_INTEGRITY_FAILED",
+        message,
+        false,
+        "Quarantine the affected formalization trust history and restore its exact evidence-backed records.",
+    )
+}
+
 fn report(profile: &'static str, checks: Vec<Check>) -> DiagnosticReport {
     DiagnosticReport {
         healthy: checks.iter().all(|check| check.healthy),
@@ -9611,6 +10065,32 @@ mod tests {
         assert!(bundle.join("manifest.json").is_file());
         let verified = crate::release::verify_release_bundle_integrity(&bundle)?;
         assert_eq!(verified.manifest_hash, built.manifest_hash);
+        assert_eq!(
+            verified.manifest.schema_version,
+            crate::domain::RELEASE_MANIFEST_V2_SCHEMA_VERSION
+        );
+        let trust = verified.manifest.trust.as_ref().expect("v2 trust binding");
+        assert_eq!(trust.profile, crate::domain::PromotionProfile::Experimental);
+        assert_eq!(
+            trust.kernel_status,
+            crate::domain::KernelTrustStatus::KernelVerified
+        );
+        assert_eq!(
+            trust.fidelity_status,
+            crate::domain::FidelityTrustStatus::ReviewerChecked
+        );
+        assert_eq!(
+            trust.definition_status,
+            crate::domain::DefinitionTrustStatus::Ungrounded
+        );
+        assert_eq!(
+            trust.reuse_status,
+            crate::domain::ReuseTrustStatus::Experimental
+        );
+        assert_eq!(
+            trust.coverage_status,
+            crate::domain::CoverageTrustStatus::Unknown
+        );
         assert_eq!(verified.manifest.pedagogy.root, root_ref);
         let bh_artifact_path = format!("artifacts/{}", bh_source_content.artifact_hash);
         assert_eq!(
@@ -9703,9 +10183,9 @@ mod tests {
         );
         assert_eq!(
             blocked
-                .expect_err("private inputs block public export")
+                .expect_err("incomplete publication trust blocks public export")
                 .code,
-            "MCL_RELEASE_PUBLIC_POLICY_BLOCKED"
+            "MCL_RELEASE_TRUST_POLICY_BLOCKED"
         );
 
         drop(fixture.application);
@@ -9748,6 +10228,29 @@ mod tests {
         let mut changed_metadata_manifest: crate::domain::ReleaseManifest =
             serde_json::from_slice(&exact_restarted_manifest)
                 .expect("restarted manifest decodes for adversarial test");
+        changed_metadata_manifest
+            .trust
+            .as_mut()
+            .expect("v2 trust binding mutates in adversarial copy")
+            .assessment_hash = "0".repeat(64);
+        fs::write(
+            &restarted_manifest_path,
+            canonical_json(
+                &serde_json::to_value(&changed_metadata_manifest)
+                    .expect("changed trust binding serializes"),
+            )?,
+        )
+        .expect("changed trust binding writes");
+        assert_eq!(
+            crate::release::verify_release_bundle_integrity(&restarted_bundle)
+                .expect_err("changed trust assessment binding must fail offline")
+                .code,
+            "MCL_RELEASE_SEMANTIC_CLOSURE_INVALID"
+        );
+        fs::write(&restarted_manifest_path, &exact_restarted_manifest)
+            .expect("exact restarted manifest restores after trust attack");
+        changed_metadata_manifest = serde_json::from_slice(&exact_restarted_manifest)
+            .expect("restarted manifest decodes for metadata attack");
         changed_metadata_manifest
             .members
             .iter_mut()

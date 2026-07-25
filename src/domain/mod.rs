@@ -21,6 +21,7 @@ pub mod release;
 pub mod research_status;
 pub mod rl;
 pub mod schemas;
+pub mod trust;
 pub mod verifier;
 
 pub use artifact::{
@@ -104,9 +105,10 @@ pub use publication::{
     PublicationStageArtifact, PublicationStageSnapshot,
 };
 pub use release::{
-    RELEASE_MANIFEST_SCHEMA_VERSION, ReleaseManifest, ReleaseMember, ReleaseMemberKind,
-    ReleasePedagogyBinding, ReleasePedagogyMode, ReleaseProfile, ReleasePublicationBinding,
-    ReleaseReplayBinding,
+    RELEASE_MANIFEST_SCHEMA_VERSION, RELEASE_MANIFEST_V2_SCHEMA_VERSION, ReleaseManifest,
+    ReleaseMember, ReleaseMemberKind, ReleasePedagogyBinding, ReleasePedagogyMode, ReleaseProfile,
+    ReleasePublicationBinding, ReleaseReplayBinding, ReleaseTrustBinding,
+    release_manifest_v2_schema,
 };
 pub use research_status::{
     ClaimResearchStatusNonqualification, ClaimResearchStatusNonqualificationReason,
@@ -120,6 +122,15 @@ pub use rl::{
     RlExportMemberKind, RlExportPlan, RlExportSourceBinding, RlLeakageComponent, RlLeakageLabels,
     RlLeakageReport, RlPlanRelease, RlSplit, RlTask, RlTaskEvidenceReference, RlTaskFamily,
     RlTaskFamilySummary, RlTaskPolicy, RlTaskTrust,
+};
+pub use trust::{
+    CoverageTrustStatus, DefinitionTrustStatus, FidelityTrustStatus, KernelTrustStatus,
+    PROMOTION_ASSESSMENT_SCHEMA_VERSION, PromotionAssessment, PromotionBlocker,
+    PromotionEvaluation, PromotionProfile, ReuseTrustStatus, ReviewedTrustDimension,
+    ReviewedTrustStatus, TRUST_STATUS_SCHEMA_VERSION, TRUST_TRANSITION_SCHEMA_VERSION,
+    TrustAxisSnapshot, TrustDecision, TrustDimension, TrustStatusSnapshot, TrustTransitionRequest,
+    TrustTransitionSnapshot, promotion_assessment_schema, promotion_evaluation,
+    promotion_evaluations, trust_status_schema, trust_transition_schema,
 };
 pub use verifier::{
     VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,

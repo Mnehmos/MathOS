@@ -611,9 +611,74 @@ fn validate_semantic_closure(
         &environments,
         &repair_witnesses,
     )?;
+    validate_promotion_assessment(manifest, files, &artifact_hashes)?;
     validate_publication_reports(manifest, files, &artifact_hashes)?;
     validate_license_index(manifest, files)?;
     validate_replay_bindings(manifest, files)?;
+    Ok(())
+}
+
+fn validate_promotion_assessment(
+    manifest: &ReleaseManifest,
+    files: &BTreeMap<String, Vec<u8>>,
+    artifact_hashes: &BTreeSet<String>,
+) -> Result<(), AppError> {
+    if manifest.schema_version == crate::domain::RELEASE_MANIFEST_SCHEMA_VERSION {
+        if manifest.profile == ReleaseProfile::Public {
+            return Err(invalid_semantics(
+                "legacy public release has no multidimensional trust assessment",
+            ));
+        }
+        return Ok(());
+    }
+    let binding = manifest
+        .trust
+        .as_ref()
+        .ok_or_else(|| invalid_semantics("release trust binding is absent"))?;
+    let assessment: crate::domain::PromotionAssessment = decode_canonical(
+        required(files, "reports/promotion-assessment.json")?,
+        "promotion assessment",
+    )?;
+    assessment.validate()?;
+    let trust = &assessment.trust;
+    let kernel_authority_retained = trust.kernel.history.iter().any(|decision| {
+        decision.decision_id == manifest.publication.authority_evidence_id
+            && decision.decision_hash == manifest.publication.authority_evidence_hash
+            && decision.to_status == crate::domain::KernelTrustStatus::KernelVerified.as_str()
+    });
+    let trust_artifacts_complete = trust
+        .kernel
+        .history
+        .iter()
+        .chain(&trust.fidelity.history)
+        .chain(&trust.definition.history)
+        .chain(&trust.reuse.history)
+        .chain(&trust.coverage.history)
+        .flat_map(|decision| &decision.evidence_artifact_hashes)
+        .all(|hash| artifact_hashes.contains(hash));
+    if assessment.assessment_hash()? != binding.assessment_hash
+        || assessment.profile != binding.profile
+        || assessment.profile != manifest.profile.promotion_profile()
+        || !assessment.eligible
+        || trust.formalization != manifest.publication.subject
+        || trust.kernel.status != binding.kernel_status
+        || trust.fidelity.status != binding.fidelity_status
+        || trust.definition.status != binding.definition_status
+        || trust.reuse.status != binding.reuse_status
+        || trust.coverage.status != binding.coverage_status
+        || binding.subject != trust.formalization
+        || !binding.eligible
+        || !kernel_authority_retained
+        || trust.fidelity.head_decision_id.as_deref()
+            != Some(manifest.publication.fidelity_evidence_id.as_str())
+        || trust.fidelity.head_decision_hash.as_deref()
+            != Some(manifest.publication.fidelity_evidence_hash.as_str())
+        || !trust_artifacts_complete
+    {
+        return Err(invalid_semantics(
+            "promotion assessment, release trust binding, evidence heads, or retained review artifacts differ",
+        ));
+    }
     Ok(())
 }
 

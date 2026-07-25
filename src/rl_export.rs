@@ -2116,6 +2116,7 @@ mod tests {
                         environment_path: "replay/environment.json".to_owned(),
                         declaration_name: "Fixture.theorem".to_owned(),
                     },
+                    trust: None,
                     members: Vec::new(),
                 },
                 manifest_hash: hash,
@@ -2264,6 +2265,7 @@ mod tests {
                 environment_path: "replay/environment.json".to_owned(),
                 declaration_name: "Fixture.theorem".to_owned(),
             },
+            trust: None,
             members,
         };
         manifest.validate().expect("valid source manifest");
