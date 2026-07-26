@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use crate::canonical::value_hash;
 use crate::domain::TrustProfile;
 use crate::domain::schemas::ExactVersionReference;
-use crate::domain::verifier::VerifierJobState;
+use crate::domain::verifier::{LeanProjectBinding, VerifierJobState};
 use crate::error::AppError;
 
 pub const AUDIT_POLICY_SCHEMA_VERSION: &str = "audit_policy/1";
@@ -31,6 +31,8 @@ pub struct LeanAuditRequest {
     pub diagnostic_evidence_hash: String,
     pub environment_hash: String,
     pub module_artifact_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<LeanProjectBinding>,
     pub declaration_name: String,
     pub policy_hash: String,
 }
@@ -54,10 +56,14 @@ pub struct LeanAuditReport {
     pub diagnostic_evidence_hash: String,
     pub environment_hash: String,
     pub module_artifact_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<LeanProjectBinding>,
     pub declaration_name: String,
     pub policy_hash: String,
     pub classification: LeanAuditClassification,
     pub source_forbidden_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_forbidden_path: Option<String>,
     pub observed_axioms: Vec<String>,
     pub unexpected_axioms: Vec<String>,
     pub stdout_artifact_hash: Option<String>,
@@ -131,6 +137,10 @@ impl LeanAuditRequest {
             || !is_hash(&self.diagnostic_evidence_hash)
             || !is_hash(&self.environment_hash)
             || !is_hash(&self.module_artifact_hash)
+            || self
+                .project
+                .as_ref()
+                .is_some_and(|project| project.validate().is_err())
             || !is_hash(&self.policy_hash)
             || !is_lean_name(&self.declaration_name)
             || self.declaration_name.len() > 256
@@ -165,6 +175,13 @@ impl LeanAuditReport {
         let rejected_shape = self.classification != LeanAuditClassification::Rejected
             || self.source_forbidden_token.is_some()
             || !self.unexpected_axioms.is_empty();
+        let controls_shape = match self.trust_profile {
+            TrustProfile::Local => !self.memory_limit_enforced && !self.network_isolation_enforced,
+            TrustProfile::Publication => {
+                self.classification != LeanAuditClassification::Passed
+                    || (self.memory_limit_enforced && self.network_isolation_enforced)
+            }
+        };
         if self.schema_version != AUDIT_REPORT_SCHEMA_VERSION
             || uuid::Uuid::parse_str(&self.job_id).is_err()
             || uuid::Uuid::parse_str(&self.subject.object_id).is_err()
@@ -173,6 +190,10 @@ impl LeanAuditReport {
             || !is_hash(&self.diagnostic_evidence_hash)
             || !is_hash(&self.environment_hash)
             || !is_hash(&self.module_artifact_hash)
+            || self
+                .project
+                .as_ref()
+                .is_some_and(|project| project.validate().is_err())
             || !is_hash(&self.policy_hash)
             || !is_lean_name(&self.declaration_name)
             || self.declaration_name.len() > 256
@@ -192,6 +213,11 @@ impl LeanAuditReport {
                 .as_deref()
                 .is_some_and(|token| !is_lean_name(token) || token.len() > 64)
             || self
+                .source_forbidden_path
+                .as_deref()
+                .is_some_and(|path| !is_safe_source_path(path))
+            || (self.project.is_none() && self.source_forbidden_path.is_some())
+            || self
                 .stdout_artifact_hash
                 .as_deref()
                 .is_some_and(|hash| !is_hash(hash))
@@ -206,6 +232,7 @@ impl LeanAuditReport {
             || self.authoritative
             || !passed_shape
             || !rejected_shape
+            || !controls_shape
         {
             return Err(audit_error(
                 "MCL_AUDIT_REPORT_INVALID",
@@ -288,6 +315,7 @@ pub fn audit_request_schema() -> Value {
             "diagnostic_evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "module_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "project": project_binding_schema(),
             "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256},
             "policy_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
         }
@@ -310,10 +338,12 @@ pub fn audit_report_schema() -> Value {
             "diagnostic_evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "module_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "project": project_binding_schema(),
             "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256},
             "policy_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "classification": {"enum": ["passed", "rejected", "inconclusive", "failed"]},
             "source_forbidden_token": {"type": ["string", "null"], "minLength": 1, "maxLength": 64},
+            "source_forbidden_path": {"type": "string", "minLength": 1, "maxLength": 512},
             "observed_axioms": {"type": "array", "maxItems": MAX_AXIOMS, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
             "unexpected_axioms": {"type": "array", "maxItems": MAX_AXIOMS, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
             "stdout_artifact_hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
@@ -324,6 +354,19 @@ pub fn audit_report_schema() -> Value {
             "memory_limit_enforced": {"type": "boolean"},
             "network_isolation_enforced": {"type": "boolean"},
             "authoritative": {"const": false}
+        }
+    })
+}
+
+fn project_binding_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["archive_artifact_hash", "archive_root", "module_path"],
+        "properties": {
+            "archive_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "archive_root": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$"},
+            "module_path": {"type": "string", "minLength": 6, "maxLength": 512, "pattern": "^[A-Za-z0-9_']+(/[A-Za-z0-9_']+)*\\.lean$"}
         }
     })
 }
@@ -348,6 +391,22 @@ fn is_hash(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_safe_source_path(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && !value.starts_with('/')
+        && !value.ends_with('/')
+        && !value.contains('\\')
+        && value.split('/').all(|component| {
+            !component.is_empty()
+                && component != "."
+                && component != ".."
+                && component.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'\'')
+                })
+        })
 }
 
 fn is_lean_name(value: &str) -> bool {
@@ -394,10 +453,12 @@ mod tests {
             diagnostic_evidence_hash: "c".repeat(64),
             environment_hash: "d".repeat(64),
             module_artifact_hash: "e".repeat(64),
+            project: None,
             declaration_name: "MathOS.truth".to_owned(),
             policy_hash: policy.policy_hash().expect("policy hash"),
             classification: LeanAuditClassification::Passed,
             source_forbidden_token: None,
+            source_forbidden_path: None,
             observed_axioms: vec!["Classical.choice".to_owned()],
             unexpected_axioms: Vec::new(),
             stdout_artifact_hash: None,
@@ -456,6 +517,21 @@ mod tests {
         report()
             .validate_against_policy(&policy)
             .expect("diagnostic audit report validates");
+        let mut publication = report();
+        publication.trust_profile = TrustProfile::Publication;
+        assert_eq!(
+            publication
+                .validate()
+                .expect_err("unisolated passed publication audit rejected")
+                .code,
+            "MCL_AUDIT_REPORT_INVALID"
+        );
+        publication.memory_limit_enforced = true;
+        publication.network_isolation_enforced = true;
+        publication
+            .validate_against_policy(&policy)
+            .expect("controlled publication audit validates");
+
         let mut authority = report();
         authority.authoritative = true;
         assert_eq!(

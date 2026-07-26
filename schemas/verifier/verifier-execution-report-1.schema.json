@@ -43,6 +43,33 @@
       "minLength": 1,
       "maxLength": 256
     },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "archive_artifact_hash",
+        "archive_root",
+        "module_path"
+      ],
+      "properties": {
+        "archive_artifact_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "archive_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "module_path": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9_']+(/[A-Za-z0-9_']+)*\\.lean$"
+        }
+      }
+    },
     "classification": {
       "enum": [
         "elaborated",
@@ -51,7 +78,8 @@
         "output_limit_exceeded",
         "toolchain_mismatch",
         "launch_failed",
-        "unsafe_source"
+        "unsafe_source",
+        "project_invalid"
       ]
     },
     "exit_code": {
@@ -86,6 +114,15 @@
       "minLength": 1,
       "maxLength": 256
     },
+    "observed_axioms": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
     "forbidden_source_token": {
       "type": [
         "string",
@@ -93,6 +130,11 @@
       ],
       "minLength": 1,
       "maxLength": 64
+    },
+    "forbidden_source_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
     },
     "trust_profile": {
       "enum": [

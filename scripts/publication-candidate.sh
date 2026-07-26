@@ -15,16 +15,23 @@ readonly REPOSITORY="Mnehmos/MathOS"
 readonly WORKFLOW_PATH=".github/workflows/publication.yml"
 readonly SOURCE_REF="refs/heads/main"
 readonly REPORT_RUNNER_ENVIRONMENT="github_hosted"
-readonly LEAN_TOOLCHAIN="leanprover/lean4:v4.32.0"
-readonly MODULE_FIXTURE="fixtures/publication/PilotARefutation.lean"
-readonly ENVIRONMENT_FIXTURE="fixtures/environment/lean-4.32-no-imports-local.json"
-readonly ENVIRONMENT_HASH_FIXTURE="fixtures/environment/lean-4.32-no-imports-local.sha256"
-readonly PUBLICATION_POLICY="policies/lean-publication-1.json"
-readonly PUBLICATION_POLICY_HASH="policies/lean-publication-1.sha256"
 readonly AUDIT_POLICY="policies/lean-local-audit-1.json"
+readonly BH_FORMALIZATION_REPOSITORY="https://github.com/Mnehmos/BHFormalization.git"
+readonly BH_FORMALIZATION_COMMIT="8875bef812375d7e6fd00bff95764cd5c057c7fe"
+readonly BH_FORMALIZATION_TREE="600f3e1230ca88f9784837933e2417c319aaad3e"
+readonly BH_FORMALIZATION_ARCHIVE_HASH="d0b9cd41dbf684c6ef20a61747b70b333596ba21f67e843e0dc7ad3c11e06ac4"
+readonly BH_PROJECT_TREE="8688e0be616b809cc247a5d667e264d9a36db567"
+readonly BH_PROJECT_ARCHIVE_HASH="512d6ea1ac29b7263f5b3e8d2893dc1feecd9e54f50b805f98922b72f628353f"
+readonly BH_MODULE_HASH="12b0b9e31e85e6f82ee46db6edc846d0419b460476de817b39618ddaa7fb1302"
+readonly BH_REPRODUCTION_REPOSITORY="https://github.com/dobriban/BH.git"
+readonly BH_REPRODUCTION_COMMIT="bc23a801100e18d6c9ab278dd210c194fc1c5333"
+readonly BH_REPRODUCTION_TREE="7c42242497ad067241b7038edf92362e3ea292ac"
+readonly BH_REPRODUCTION_ARCHIVE_HASH="192f7845167c93075a1fb5b95bcd3b3c369ddf438718a968e5cb851b6f5bde18"
+readonly BH_PAPER_URL="https://arxiv.org/pdf/2607.12208v1"
+readonly BH_PAPER_HASH="de1db8081da57ddbb5b2af5574a35b90c1a23c0e27fe0d4f9f1dba4209cc45f7"
 
 if [[ $# -lt 1 || $# -gt 3 ]]; then
-  printf 'usage: %s <output-directory> [refutation|repaired-proof [state-directory]]\n' "$0" >&2
+  printf 'usage: %s <output-directory> [refutation|pilot-c|repaired-proof [state-directory]]\n' "$0" >&2
   exit "$EXIT_USAGE"
 fi
 
@@ -44,6 +51,40 @@ case "$CANDIDATE_MODE" in
     readonly FORMALIZATION_SEARCH_SUFFIX="witness 2"
     readonly CANDIDATE_ACTOR="publication-candidate"
     readonly CANDIDATE_KEY_PREFIX="publication-candidate"
+    readonly LEAN_TOOLCHAIN="leanprover/lean4:v4.32.0"
+    readonly TOOLCHAIN_VERSION_FRAGMENT="Lean (version 4.32.0,"
+    readonly MODULE_FIXTURE="fixtures/publication/PilotARefutation.lean"
+    readonly ENVIRONMENT_FIXTURE="fixtures/environment/lean-4.32-no-imports-local.json"
+    readonly ENVIRONMENT_HASH_FIXTURE="fixtures/environment/lean-4.32-no-imports-local.sha256"
+    readonly PUBLICATION_POLICY="policies/lean-publication-1.json"
+    readonly PUBLICATION_POLICY_HASH="policies/lean-publication-1.sha256"
+    readonly EXPECTED_AXIOMS_JSON="[]"
+    readonly CREATES_STATE=true
+    readonly PROJECT_MODE=false
+    ;;
+  pilot-c)
+    [[ $# -eq 2 ]] || {
+      printf 'the Pilot C candidate creates its own state directory\n' >&2
+      exit "$EXIT_USAGE"
+    }
+    readonly DECLARATION_NAME="BH.Final.GaussianBHCounterexample"
+    readonly EXACT_THEOREM_TYPE="∀ᶠ N in atTop, (13 / 1250 : ℝ) < gaussianBHFDR N"
+    readonly PUBLICATION_OUTCOME="proof"
+    readonly CLAIM_POLARITY="claim"
+    readonly FORMALIZATION_NOTES="Exact headline theorem from Mnehmos/BHFormalization commit 8875bef812375d7e6fd00bff95764cd5c057c7fe. The model uses N+1 indexing; fidelity review must check the eventual shift. The generated Lean 5000-bin certificate remains distinct from the paper certificate."
+    readonly FORMALIZATION_SEARCH_SUFFIX="Gaussian BH FDR eventual counterexample"
+    readonly CANDIDATE_ACTOR="publication-pilot-c-candidate"
+    readonly CANDIDATE_KEY_PREFIX="publication-pilot-c-candidate"
+    readonly LEAN_TOOLCHAIN="leanprover/lean4:v4.32.0-rc1"
+    readonly TOOLCHAIN_VERSION_FRAGMENT="Lean (version 4.32.0-rc1,"
+    readonly MODULE_FIXTURE=""
+    readonly ENVIRONMENT_FIXTURE="fixtures/environment/lean-4.32-rc1-bh-project-linux.json"
+    readonly ENVIRONMENT_HASH_FIXTURE="fixtures/environment/lean-4.32-rc1-bh-project-linux.sha256"
+    readonly PUBLICATION_POLICY="policies/lean-project-publication-1.json"
+    readonly PUBLICATION_POLICY_HASH="policies/lean-project-publication-1.sha256"
+    readonly EXPECTED_AXIOMS_JSON='["Classical.choice","Quot.sound","propext"]'
+    readonly CREATES_STATE=true
+    readonly PROJECT_MODE=true
     ;;
   repaired-proof)
     [[ $# -eq 3 && -n "$REQUESTED_STATE_ROOT" ]] || {
@@ -58,9 +99,19 @@ case "$CANDIDATE_MODE" in
     readonly FORMALIZATION_SEARCH_SUFFIX="repaired claim excludes 2"
     readonly CANDIDATE_ACTOR="publication-repaired-proof-candidate"
     readonly CANDIDATE_KEY_PREFIX="publication-repaired-proof-candidate"
+    readonly LEAN_TOOLCHAIN="leanprover/lean4:v4.32.0"
+    readonly TOOLCHAIN_VERSION_FRAGMENT="Lean (version 4.32.0,"
+    readonly MODULE_FIXTURE="fixtures/publication/PilotARefutation.lean"
+    readonly ENVIRONMENT_FIXTURE="fixtures/environment/lean-4.32-no-imports-local.json"
+    readonly ENVIRONMENT_HASH_FIXTURE="fixtures/environment/lean-4.32-no-imports-local.sha256"
+    readonly PUBLICATION_POLICY="policies/lean-publication-1.json"
+    readonly PUBLICATION_POLICY_HASH="policies/lean-publication-1.sha256"
+    readonly EXPECTED_AXIOMS_JSON="[]"
+    readonly CREATES_STATE=false
+    readonly PROJECT_MODE=false
     ;;
   *)
-    printf 'publication candidate mode must be refutation or repaired-proof\n' >&2
+    printf 'publication candidate mode must be refutation, pilot-c, or repaired-proof\n' >&2
     exit "$EXIT_USAGE"
     ;;
 esac
@@ -178,11 +229,18 @@ if [[ "$PUBLICATION_CONTEXT_MODE" == "protected-main" ]]; then
     || die "$EXIT_CONTEXT" "protected publication context disagrees with GitHub's immutable run context or ref-protection state"
 fi
 
-for command_name in git jq sha256sum elan lean sudo mktemp cp grep tr cut sed sort stat find basename chmod mkdir dirname rm realpath; do
+for command_name in git jq sha256sum elan lean sudo mktemp cp grep tr cut sed sort stat find basename chmod mkdir dirname rm realpath id; do
   require_command "$command_name"
 done
+if [[ "$PROJECT_MODE" == true ]]; then
+  for command_name in curl tar lake; do
+    require_command "$command_name"
+  done
+fi
 [[ -x /usr/bin/bwrap ]] \
   || die "$EXIT_CONTROL" "publication isolation control is missing: /usr/bin/bwrap"
+[[ -x /usr/bin/chown ]] \
+  || die "$EXIT_CONTROL" "publication workspace ownership control is missing: /usr/bin/chown"
 [[ -x /usr/bin/prlimit ]] \
   || die "$EXIT_CONTROL" "publication resource control is missing: /usr/bin/prlimit"
 [[ -x /usr/bin/timeout ]] \
@@ -202,21 +260,24 @@ require_clean_checkout
 [[ "$(git rev-parse 'HEAD^{tree}')" == "$PUBLICATION_SOURCE_TREE_SHA" ]] \
   || die "$EXIT_CONTEXT" "checked-out tree does not match publication context"
 
-for required_file in \
-  "$MODULE_FIXTURE" \
-  "$ENVIRONMENT_FIXTURE" \
-  "$ENVIRONMENT_HASH_FIXTURE" \
-  "$PUBLICATION_POLICY" \
-  "$PUBLICATION_POLICY_HASH" \
-  "$AUDIT_POLICY" \
-  lean-toolchain; do
+required_files=(
+  "$ENVIRONMENT_FIXTURE"
+  "$ENVIRONMENT_HASH_FIXTURE"
+  "$PUBLICATION_POLICY"
+  "$PUBLICATION_POLICY_HASH"
+  "$AUDIT_POLICY"
+)
+if [[ "$PROJECT_MODE" == false ]]; then
+  required_files+=("$MODULE_FIXTURE" lean-toolchain)
+fi
+for required_file in "${required_files[@]}"; do
   [[ -f "$required_file" && ! -L "$required_file" \
       && "$(realpath -- "$required_file")" == "$repo_root/"* ]] \
     || die "$EXIT_INPUT" "publication candidate input is missing: $required_file"
 done
 
 state_root=""
-if [[ "$CANDIDATE_MODE" == "repaired-proof" ]]; then
+if [[ "$CREATES_STATE" == false ]]; then
   [[ -d "$REQUESTED_STATE_ROOT" && ! -L "$REQUESTED_STATE_ROOT" ]] \
     || die "$EXIT_INPUT" "repaired proof state directory is unavailable or unsafe"
   state_root="$(cd "$REQUESTED_STATE_ROOT" && pwd -P)"
@@ -235,7 +296,7 @@ output_name="$(basename -- "$output_dir")"
     && ! -e "$output_dir" && ! -L "$output_dir" ]] \
   || die "$EXIT_INPUT" "publication candidate output is invalid or already exists: $output_dir"
 output_parent="$(dirname -- "$output_dir")"
-if [[ "$CANDIDATE_MODE" == "repaired-proof" ]]; then
+if [[ "$CREATES_STATE" == false ]]; then
   [[ -d "$output_parent" && ! -L "$output_parent" ]] \
     || die "$EXIT_INPUT" "repaired proof output parent is unavailable or unsafe"
 else
@@ -250,7 +311,7 @@ case "$output_dir/" in
     die "$EXIT_INPUT" "publication candidate output must be outside the clean checkout"
     ;;
 esac
-if [[ "$CANDIDATE_MODE" == "refutation" ]]; then
+if [[ "$CREATES_STATE" == true ]]; then
   state_root="$output_dir"
 else
   case "$output_dir/" in
@@ -313,16 +374,93 @@ run_mcl() {
   "$mcl_bin" --root "$state_root" --json "$@"
 }
 
-toolchain="$(tr -d '\r\n' <lean-toolchain)"
+toolchain_file="lean-toolchain"
+project_archive_hash=""
+paper_artifact_file=""
+formalization_source_artifact_file=""
+reproduction_source_artifact_file=""
+if [[ "$PROJECT_MODE" == true ]]; then
+  formalization_checkout="$temporary_root/BHFormalization"
+  reproduction_checkout="$temporary_root/BH"
+  git init --quiet "$formalization_checkout"
+  git -C "$formalization_checkout" remote add origin "$BH_FORMALIZATION_REPOSITORY"
+  git -C "$formalization_checkout" fetch --quiet --depth=1 origin "$BH_FORMALIZATION_COMMIT" \
+    >"$temporary_root/formalization-fetch.stdout" \
+    2>"$temporary_root/formalization-fetch.stderr" \
+    || die "$EXIT_INPUT" "failed to fetch the pinned BH formalization commit"
+  git -C "$formalization_checkout" checkout --quiet --detach FETCH_HEAD
+  [[ "$(git -C "$formalization_checkout" rev-parse HEAD)" == "$BH_FORMALIZATION_COMMIT" \
+      && "$(git -C "$formalization_checkout" rev-parse 'HEAD^{tree}')" == "$BH_FORMALIZATION_TREE" \
+      && "$(git -C "$formalization_checkout" rev-parse "$BH_FORMALIZATION_COMMIT:BHFormalization")" == "$BH_PROJECT_TREE" ]] \
+    || die "$EXIT_VALIDATION" "BH formalization checkout identity changed"
+
+  git init --quiet "$reproduction_checkout"
+  git -C "$reproduction_checkout" remote add origin "$BH_REPRODUCTION_REPOSITORY"
+  git -C "$reproduction_checkout" fetch --quiet --depth=1 origin "$BH_REPRODUCTION_COMMIT" \
+    >"$temporary_root/reproduction-fetch.stdout" \
+    2>"$temporary_root/reproduction-fetch.stderr" \
+    || die "$EXIT_INPUT" "failed to fetch the pinned BH reproduction commit"
+  git -C "$reproduction_checkout" checkout --quiet --detach FETCH_HEAD
+  [[ "$(git -C "$reproduction_checkout" rev-parse HEAD)" == "$BH_REPRODUCTION_COMMIT" \
+      && "$(git -C "$reproduction_checkout" rev-parse 'HEAD^{tree}')" == "$BH_REPRODUCTION_TREE" ]] \
+    || die "$EXIT_VALIDATION" "BH reproduction checkout identity changed"
+
+  formalization_source_artifact_file="$temporary_root/BHFormalization-8875bef.tar"
+  reproduction_source_artifact_file="$temporary_root/dobriban-BH-bc23a80.tar"
+  paper_artifact_file="$temporary_root/arxiv-2607.12208v1.pdf"
+  git -C "$formalization_checkout" archive \
+    --format=tar \
+    --prefix=BHFormalization-8875bef/ \
+    --output="$formalization_source_artifact_file" \
+    "$BH_FORMALIZATION_COMMIT"
+  git -C "$reproduction_checkout" archive \
+    --format=tar \
+    --prefix=dobriban-BH-bc23a80/ \
+    --output="$reproduction_source_artifact_file" \
+    "$BH_REPRODUCTION_COMMIT"
+  git -C "$formalization_checkout" archive \
+    --format=tar \
+    --prefix=project/ \
+    --output="$closure_dir/project.tar" \
+    "$BH_FORMALIZATION_COMMIT:BHFormalization" \
+    BH \
+    BH.lean \
+    Final.lean \
+    lake-manifest.json \
+    lakefile.lean \
+    lean-toolchain
+  curl --fail --location --proto '=https' --tlsv1.2 \
+    --output "$paper_artifact_file" \
+    "$BH_PAPER_URL" \
+    >"$temporary_root/paper-fetch.stdout" \
+    2>"$temporary_root/paper-fetch.stderr" \
+    || die "$EXIT_INPUT" "failed to fetch the pinned BH paper"
+  assert_file_hash "$formalization_source_artifact_file" \
+    "$BH_FORMALIZATION_ARCHIVE_HASH" "BH formalization source archive"
+  assert_file_hash "$reproduction_source_artifact_file" \
+    "$BH_REPRODUCTION_ARCHIVE_HASH" "BH reproduction source archive"
+  assert_file_hash "$paper_artifact_file" "$BH_PAPER_HASH" "BH paper"
+  assert_file_hash "$closure_dir/project.tar" "$BH_PROJECT_ARCHIVE_HASH" \
+    "BH project archive"
+  project_archive_hash="$BH_PROJECT_ARCHIVE_HASH"
+  project_root="$formalization_checkout/BHFormalization"
+  toolchain_file="$project_root/lean-toolchain"
+  cp -- "$project_root/Final.lean" "$closure_dir/module.lean"
+  assert_file_hash "$closure_dir/module.lean" "$BH_MODULE_HASH" "BH headline module"
+else
+  cp -- "$MODULE_FIXTURE" "$closure_dir/module.lean"
+fi
+
+toolchain="$(tr -d '\r\n' <"$toolchain_file")"
 [[ "$toolchain" == "$LEAN_TOOLCHAIN" ]] \
   || die "$EXIT_CONTEXT" "checked-out Lean toolchain does not match publication policy"
-toolchain_config_hash="$(sha256_file lean-toolchain)"
+toolchain_config_hash="$(sha256_file "$toolchain_file")"
 expected_toolchain_config_hash="$(jq -er '.project_configuration_hashes["lean-toolchain"]' "$ENVIRONMENT_FIXTURE")"
 [[ "$toolchain_config_hash" == "$expected_toolchain_config_hash" ]] \
   || die "$EXIT_CONTEXT" "lean-toolchain bytes do not match the environment manifest"
 lean_version="$(lean --version)"
-[[ "$lean_version" == *"Lean (version 4.32.0,"* ]] \
-  || die "$EXIT_CONTEXT" "active Lean executable is not the pinned 4.32.0 release"
+[[ "$lean_version" == *"$TOOLCHAIN_VERSION_FRAGMENT"* ]] \
+  || die "$EXIT_CONTEXT" "active Lean executable is not the pinned publication toolchain"
 lean_path="$(elan which lean)"
 [[ -x "$lean_path" ]] \
   || die "$EXIT_CONTROL" "elan did not resolve an executable Lean binary"
@@ -349,26 +487,63 @@ expected_environment_hash="$(tr -d '\r\n' <"$ENVIRONMENT_HASH_FIXTURE")"
   || die "$EXIT_INPUT" "environment identity fixture is malformed"
 [[ "$(printf '%s' "$environment_json" | sha256sum | cut -d ' ' -f 1)" == "$expected_environment_hash" ]] \
   || die "$EXIT_VALIDATION" "environment fixture canonical identity does not match its sidecar"
-jq -e --arg toolchain "$LEAN_TOOLCHAIN" --arg config_hash "$toolchain_config_hash" '
-  .schema_version == "environment/1" and
-  .formal_system == "lean4" and
-  .lean_toolchain == $toolchain and
-  .dependencies == [] and
-  .import_manifest == [] and
-  .project_configuration_hashes == {"lean-toolchain": $config_hash} and
-  .platform == "linux_x86_64" and
-  .trust_profile == "local" and
-  .verifier_command == {"executable":"lean","arguments":["{module_path}"]} and
-  .resource_limits.timeout_seconds == 120 and
-  .resource_limits.max_output_bytes == 1048576 and
-  .resource_limits.max_memory_bytes == null and
-  .resource_limits.concurrency == 1 and
-  .network_access == false and
-  .working_directory_policy == "temporary_workspace"
-' "$ENVIRONMENT_FIXTURE" >/dev/null \
-  || die "$EXIT_VALIDATION" "publication evidence environment is not the exact no-import local profile"
+if [[ "$PROJECT_MODE" == true ]]; then
+  lake_manifest_hash="$(sha256_file "$project_root/lake-manifest.json")"
+  lakefile_hash="$(sha256_file "$project_root/lakefile.lean")"
+  jq -e \
+    --arg toolchain "$LEAN_TOOLCHAIN" \
+    --arg toolchain_hash "$toolchain_config_hash" \
+    --arg lake_manifest_hash "$lake_manifest_hash" \
+    --arg lakefile_hash "$lakefile_hash" '
+    .schema_version == "environment/1" and
+    .formal_system == "lean4" and
+    .lean_toolchain == $toolchain and
+    (.dependencies | length) == 9 and
+    .import_manifest == [
+      "BH.Certificate.GeneratedData",
+      "BH.Main.CertificateImpliesCounterexample"
+    ] and
+    .project_configuration_hashes == {
+      "lake-manifest.json": $lake_manifest_hash,
+      "lakefile.lean": $lakefile_hash,
+      "lean-toolchain": $toolchain_hash
+    } and
+    .platform == "linux_x86_64" and
+    .trust_profile == "publication" and
+    .verifier_command == {
+      "executable": "lake",
+      "arguments": ["env", "lean", "{module_path}"]
+    } and
+    .dependency_preparation == "mathlib_cache_get" and
+    .resource_limits.timeout_seconds == 21600 and
+    .resource_limits.max_output_bytes == 16777216 and
+    .resource_limits.max_memory_bytes == 12884901888 and
+    .resource_limits.concurrency == 1 and
+    .network_access == false and
+    .working_directory_policy == "temporary_workspace"
+  ' "$ENVIRONMENT_FIXTURE" >/dev/null \
+    || die "$EXIT_VALIDATION" "publication evidence environment is not the exact BH project profile"
+else
+  jq -e --arg toolchain "$LEAN_TOOLCHAIN" --arg config_hash "$toolchain_config_hash" '
+    .schema_version == "environment/1" and
+    .formal_system == "lean4" and
+    .lean_toolchain == $toolchain and
+    .dependencies == [] and
+    .import_manifest == [] and
+    .project_configuration_hashes == {"lean-toolchain": $config_hash} and
+    .platform == "linux_x86_64" and
+    .trust_profile == "local" and
+    .verifier_command == {"executable":"lean","arguments":["{module_path}"]} and
+    .resource_limits.timeout_seconds == 120 and
+    .resource_limits.max_output_bytes == 1048576 and
+    .resource_limits.max_memory_bytes == null and
+    .resource_limits.concurrency == 1 and
+    .network_access == false and
+    .working_directory_policy == "temporary_workspace"
+  ' "$ENVIRONMENT_FIXTURE" >/dev/null \
+    || die "$EXIT_VALIDATION" "publication evidence environment is not the exact no-import local profile"
+fi
 
-cp -- "$MODULE_FIXTURE" "$closure_dir/module.lean"
 module_hash="$(sha256_file "$closure_dir/module.lean")"
 
 while IFS= read -r forbidden_token; do
@@ -377,7 +552,7 @@ while IFS= read -r forbidden_token; do
   fi
 done < <(jq -er '.forbidden_source_tokens[]' "$AUDIT_POLICY")
 
-if [[ "$CANDIDATE_MODE" == "refutation" ]]; then
+if [[ "$CREATES_STATE" == true ]]; then
   run_mcl init \
     --actor "$CANDIDATE_ACTOR" \
     --idempotency-key "$CANDIDATE_KEY_PREFIX-init" \
@@ -398,6 +573,274 @@ if [[ "$CANDIDATE_MODE" == "refutation" ]]; then
   ' "$temporary_root/environment.json" >/dev/null \
     || die "$EXIT_VALIDATION" "registered environment snapshot is inconsistent"
 
+  if [[ "$PROJECT_MODE" == true ]]; then
+    paper_metadata="$(jq -cn '{
+      schema_version: "artifact_metadata/1",
+      media_type: "application/octet-stream",
+      creation_source: "user_ingest",
+      license_expression: "CC-BY-4.0",
+      restriction: "public",
+      semantic_metadata: {
+        locator: "https://arxiv.org/pdf/2607.12208v1",
+        source_role: "source_content",
+        source_type: "paper",
+        version: "v1"
+      }
+    }')"
+    run_mcl artifact ingest \
+      --input-file "$paper_artifact_file" \
+      --metadata-json "$paper_metadata" \
+      --actor "$CANDIDATE_ACTOR" \
+      --idempotency-key "$CANDIDATE_KEY_PREFIX-paper-artifact" \
+      >"$temporary_root/paper-artifact.json"
+    [[ "$(jq -er '.proposed_artifact_hash' "$temporary_root/paper-artifact.json")" == "$BH_PAPER_HASH" ]] \
+      || die "$EXIT_VALIDATION" "registered BH paper identity changed"
+
+    formalization_source_metadata="$(jq -cn \
+      --arg commit "$BH_FORMALIZATION_COMMIT" \
+      --arg tree "$BH_FORMALIZATION_TREE" '{
+      schema_version: "artifact_metadata/1",
+      media_type: "application/octet-stream",
+      creation_source: "user_ingest",
+      license_expression: "Apache-2.0",
+      restriction: "public",
+      semantic_metadata: {
+        commit: $commit,
+        repository: "Mnehmos/BHFormalization",
+        source_role: "source_content",
+        source_type: "repository",
+        tree: $tree
+      }
+    }')"
+    run_mcl artifact ingest \
+      --input-file "$formalization_source_artifact_file" \
+      --metadata-json "$formalization_source_metadata" \
+      --actor "$CANDIDATE_ACTOR" \
+      --idempotency-key "$CANDIDATE_KEY_PREFIX-formalization-source-artifact" \
+      >"$temporary_root/formalization-source-artifact.json"
+    [[ "$(jq -er '.proposed_artifact_hash' "$temporary_root/formalization-source-artifact.json")" == "$BH_FORMALIZATION_ARCHIVE_HASH" ]] \
+      || die "$EXIT_VALIDATION" "registered BH formalization source identity changed"
+
+    reproduction_source_metadata="$(jq -cn \
+      --arg commit "$BH_REPRODUCTION_COMMIT" \
+      --arg tree "$BH_REPRODUCTION_TREE" '{
+      schema_version: "artifact_metadata/1",
+      media_type: "application/octet-stream",
+      creation_source: "user_ingest",
+      license_expression: null,
+      restriction: "restricted",
+      semantic_metadata: {
+        commit: $commit,
+        repository: "dobriban/BH",
+        source_role: "source_content",
+        source_type: "repository",
+        tree: $tree
+      }
+    }')"
+    run_mcl artifact ingest \
+      --input-file "$reproduction_source_artifact_file" \
+      --metadata-json "$reproduction_source_metadata" \
+      --actor "$CANDIDATE_ACTOR" \
+      --idempotency-key "$CANDIDATE_KEY_PREFIX-reproduction-source-artifact" \
+      >"$temporary_root/reproduction-source-artifact.json"
+    [[ "$(jq -er '.proposed_artifact_hash' "$temporary_root/reproduction-source-artifact.json")" == "$BH_REPRODUCTION_ARCHIVE_HASH" ]] \
+      || die "$EXIT_VALIDATION" "registered BH reproduction source identity changed"
+
+    project_metadata="$(jq -cn \
+      --arg commit "$BH_FORMALIZATION_COMMIT" \
+      --arg source_tree "$BH_PROJECT_TREE" '{
+      schema_version: "artifact_metadata/1",
+      media_type: "application/octet-stream",
+      creation_source: "user_ingest",
+      license_expression: "Apache-2.0",
+      restriction: "public",
+      semantic_metadata: {
+        archive_root: "project",
+        artifact_role: "lean_project_archive",
+        commit: $commit,
+        repository: "Mnehmos/BHFormalization",
+        source_scope: "BH proof project without Challenge.lean",
+        source_tree: $source_tree
+      }
+    }')"
+    run_mcl artifact ingest \
+      --input-file "$closure_dir/project.tar" \
+      --metadata-json "$project_metadata" \
+      --actor "$CANDIDATE_ACTOR" \
+      --idempotency-key "$CANDIDATE_KEY_PREFIX-project-artifact" \
+      >"$temporary_root/project.json"
+    [[ "$(jq -er '.proposed_artifact_hash' "$temporary_root/project.json")" == "$project_archive_hash" ]] \
+      || die "$EXIT_VALIDATION" "registered BH project identity changed"
+
+    module_metadata="$(jq -cn \
+      --arg commit "$BH_FORMALIZATION_COMMIT" \
+      --arg declaration "$DECLARATION_NAME" \
+      --arg project_hash "$project_archive_hash" '{
+      schema_version: "artifact_metadata/1",
+      media_type: "text/x-lean",
+      creation_source: "user_ingest",
+      license_expression: "Apache-2.0",
+      restriction: "public",
+      semantic_metadata: {
+        commit: $commit,
+        declaration_name: $declaration,
+        project_archive_hash: $project_hash,
+        repository: "Mnehmos/BHFormalization",
+        source_role: "formalization_module"
+      }
+    }')"
+    run_mcl artifact ingest \
+      --input-file "$closure_dir/module.lean" \
+      --metadata-json "$module_metadata" \
+      --actor "$CANDIDATE_ACTOR" \
+      --idempotency-key "$CANDIDATE_KEY_PREFIX-module" \
+      >"$temporary_root/module.json"
+    [[ "$(jq -er '.proposed_artifact_hash' "$temporary_root/module.json")" == "$module_hash" ]] \
+      || die "$EXIT_VALIDATION" "registered BH headline module identity changed"
+
+    paper_source_payload="$(jq -cn \
+      --arg content_hash "$BH_PAPER_HASH" '{
+      source_type: "paper",
+      title_or_label: "The Benjamini-Hochberg Procedure Can Fail to Control the FDR for Correlated Two-Sided Gaussian Tests",
+      authors_or_origin: ["Edgar Dobriban"],
+      canonical_locator: "https://arxiv.org/abs/2607.12208v1",
+      acquisition_date: "2026-07-25",
+      license_expression: "CC-BY-4.0",
+      redistribution_status: "allowed",
+      content_hash: $content_hash,
+      citation_metadata: {
+        arxiv: "2607.12208v1",
+        doi: "10.48550/arXiv.2607.12208",
+        submitted: "2026-07-13"
+      },
+      redaction_class: "public",
+      provenance_notes: "Exact arXiv v1 PDF downloaded from the canonical versioned locator; SHA-256 bound in CAS.",
+      original_text: "Theorem 1: for the specified correlated two-sided Gaussian factor model at BH level 0.01, FDR_N is greater than 0.0104 for all sufficiently large N. The paper uses a complete outward-rounded interval-arithmetic certificate."
+    }')"
+    run_mcl source create \
+      --payload-json "$paper_source_payload" \
+      --searchable-text "Benjamini Hochberg correlated two-sided Gaussian FDR 0.0104" \
+      --actor "$CANDIDATE_ACTOR" \
+      --idempotency-key "$CANDIDATE_KEY_PREFIX-paper-source" \
+      >"$temporary_root/source.json"
+    source_object_id="$(jq -er '.record.object_id' "$temporary_root/source.json")"
+    source_version_hash="$(jq -er '.record.version_hash' "$temporary_root/source.json")"
+
+    formalization_source_payload="$(jq -cn \
+      --arg commit "$BH_FORMALIZATION_COMMIT" \
+      --arg tree "$BH_FORMALIZATION_TREE" \
+      --arg content_hash "$BH_FORMALIZATION_ARCHIVE_HASH" '{
+      source_type: "repository",
+      title_or_label: ("Mnehmos/BHFormalization at " + $commit),
+      authors_or_origin: [
+        "Mnehmos/BHFormalization contributors",
+        "Edgar Dobriban (formalized result)"
+      ],
+      canonical_locator: ("https://github.com/Mnehmos/BHFormalization/tree/" + $commit),
+      acquisition_date: "2026-07-25",
+      license_expression: "Apache-2.0",
+      redistribution_status: "allowed",
+      content_hash: $content_hash,
+      citation_metadata: {
+        commit: $commit,
+        repository: "Mnehmos/BHFormalization",
+        toolchain: "leanprover/lean4:v4.32.0-rc1",
+        tree: $tree
+      },
+      redaction_class: "public",
+      provenance_notes: "Deterministic git archive of the exact commit and tree; includes the independent Lean proof and generated 5000-bin certificate.",
+      original_text: "The Lean theorem BH.Final.GaussianBHCounterexample proves eventually (13 / 1250 : Real) < gaussianBHFDR N. Generated certificate data is produced by generator/generate_certificate.py and rechecked by Lean kernel reduction."
+    }')"
+    run_mcl source create \
+      --payload-json "$formalization_source_payload" \
+      --searchable-text "Mnehmos BHFormalization Lean certificate GaussianBHCounterexample" \
+      --actor "$CANDIDATE_ACTOR" \
+      --idempotency-key "$CANDIDATE_KEY_PREFIX-formalization-source" \
+      >"$temporary_root/formalization-source.json"
+    formalization_source_object_id="$(jq -er '.record.object_id' "$temporary_root/formalization-source.json")"
+    formalization_source_version_hash="$(jq -er '.record.version_hash' "$temporary_root/formalization-source.json")"
+
+    reproduction_source_payload="$(jq -cn \
+      --arg commit "$BH_REPRODUCTION_COMMIT" \
+      --arg tree "$BH_REPRODUCTION_TREE" \
+      --arg content_hash "$BH_REPRODUCTION_ARCHIVE_HASH" '{
+      source_type: "repository",
+      title_or_label: ("dobriban/BH reproducibility bundle at " + $commit),
+      authors_or_origin: ["Edgar Dobriban"],
+      canonical_locator: ("https://github.com/dobriban/BH/tree/" + $commit),
+      acquisition_date: "2026-07-25",
+      license_expression: null,
+      redistribution_status: "restricted",
+      content_hash: $content_hash,
+      citation_metadata: {
+        commit: $commit,
+        repository: "dobriban/BH",
+        tree: $tree
+      },
+      redaction_class: "restricted",
+      provenance_notes: "Deterministic git archive of the exact upstream reproducibility repository. No repository license was detected, so redistribution remains restricted.",
+      original_text: "The repository retains the paper certificate generator and output, experiment plan, seeded Monte Carlo outputs, environment lock, and reproducibility manifest."
+    }')"
+    run_mcl source create \
+      --payload-json "$reproduction_source_payload" \
+      --searchable-text "dobriban BH reproducibility certificate experiments" \
+      --actor "$CANDIDATE_ACTOR" \
+      --idempotency-key "$CANDIDATE_KEY_PREFIX-reproduction-source" \
+      >"$temporary_root/reproduction-source.json"
+    reproduction_source_object_id="$(jq -er '.record.object_id' "$temporary_root/reproduction-source.json")"
+    reproduction_source_version_hash="$(jq -er '.record.version_hash' "$temporary_root/reproduction-source.json")"
+
+    claim_payload="$(jq -cn \
+      --arg source_object_id "$source_object_id" \
+      --arg source_version_hash "$source_version_hash" \
+      --arg formalization_source_object_id "$formalization_source_object_id" \
+      --arg formalization_source_version_hash "$formalization_source_version_hash" \
+      --arg reproduction_source_object_id "$reproduction_source_object_id" \
+      --arg reproduction_source_version_hash "$reproduction_source_version_hash" '{
+      source_reference: {
+        object_id: $source_object_id,
+        version_hash: $source_version_hash
+      },
+      normalized_informal_statement: "For the paper'\''s specified three-block correlated two-sided Gaussian factor model, the Benjamini-Hochberg procedure at nominal level 0.01 has FDR_N greater than 0.0104 for all sufficiently large integers N.",
+      claim_kind: "universal",
+      logical_shape: "Exists N0, for every integer N >= N0, FDR_N > 13/1250 > 1/100.",
+      assumptions: [
+        "The common factor and all idiosyncratic variables are mutually independent standard normal random variables.",
+        "For each N >= 1 there are 100N hypotheses split into 96N true nulls, N first-signal coordinates, and 3N second-signal coordinates with the exact paper coefficients.",
+        "Two-sided Gaussian p-values and the ordinary Benjamini-Hochberg step-up rule are used at alpha = 1/100."
+      ],
+      variables: [{
+        symbol: "N",
+        domain: "positive integers",
+        notes: "Number of base blocks; the model contains 100N hypotheses."
+      }],
+      concept_links: [],
+      source_citations: [
+        {object_id: $source_object_id, version_hash: $source_version_hash},
+        {
+          object_id: $formalization_source_object_id,
+          version_hash: $formalization_source_version_hash
+        },
+        {
+          object_id: $reproduction_source_object_id,
+          version_hash: $reproduction_source_version_hash
+        }
+      ],
+      ambiguity_notes: [
+        "The Lean development indexes its model by N+1 over natural N while the paper states N>=1; fidelity review must check the eventual statements are equivalent under this shift.",
+        "The Lean 5000-bin certificate is independent of and stronger than the paper'\''s 1000-bin interval certificate; their provenance must remain separate.",
+        "The paper source, reproducibility bundle, and Lean formalization have distinct licensing and authority boundaries."
+      ]
+    }')"
+    run_mcl claim create \
+      --payload-json "$claim_payload" \
+      --searchable-text "Gaussian BH FDR 0.0104 eventual counterexample" \
+      --actor "$CANDIDATE_ACTOR" \
+      --idempotency-key "$CANDIDATE_KEY_PREFIX-claim" \
+      >"$temporary_root/claim.json"
+    claim_object_id="$(jq -er '.record.object_id' "$temporary_root/claim.json")"
+    claim_version_hash="$(jq -er '.record.version_hash' "$temporary_root/claim.json")"
+  else
   artifact_metadata="$(jq -cn \
     --arg declaration "$DECLARATION_NAME" \
     --arg repaired_declaration "MathOS.PilotA.every_prime_other_than_two_is_odd" \
@@ -440,6 +883,7 @@ if [[ "$CANDIDATE_MODE" == "refutation" ]]; then
     >"$temporary_root/claim.json"
   claim_object_id="$(jq -er '.record.object_id' "$temporary_root/claim.json")"
   claim_version_hash="$(jq -er '.record.version_hash' "$temporary_root/claim.json")"
+  fi
 else
   environment_hash="$expected_environment_hash"
   run_mcl environment get \
@@ -526,17 +970,51 @@ else
 fi
 
 declaration_hash="$(printf '%s' "$DECLARATION_NAME : $EXACT_THEOREM_TYPE" | sha256sum | cut -d ' ' -f 1)"
+formalization_project_json="null"
+formalization_imports_json="[]"
+if [[ "$PROJECT_MODE" == true ]]; then
+  formalization_project_json="$(jq -cn \
+    --arg archive_artifact_hash "$project_archive_hash" '{
+    archive_artifact_hash: $archive_artifact_hash,
+    archive_root: "project",
+    module_path: "Final.lean"
+  }')"
+  formalization_imports_json='[
+    "BH.Certificate.GeneratedData",
+    "BH.Main.CertificateImpliesCounterexample"
+  ]'
+fi
 formalization_payload="$(jq -cn \
   --arg claim_object_id "$claim_object_id" \
   --arg claim_version_hash "$claim_version_hash" \
   --arg environment_hash "$environment_hash" \
   --arg module_hash "$module_hash" \
+  --arg project_hash "$project_archive_hash" \
   --arg declaration "$DECLARATION_NAME" \
   --arg theorem_type "$EXACT_THEOREM_TYPE" \
   --arg declaration_hash "$declaration_hash" \
   --arg claim_polarity "$CLAIM_POLARITY" \
   --arg formalization_notes "$FORMALIZATION_NOTES" \
-  '{claim_version:{object_id:$claim_object_id,version_hash:$claim_version_hash},formal_system:"lean4",claim_polarity:$claim_polarity,environment_hash:$environment_hash,module_artifact_hash:$module_hash,declaration_name:$declaration,exact_theorem_type:$theorem_type,declaration_hash:$declaration_hash,import_manifest:[],formalization_notes:$formalization_notes,fidelity_evidence_references:[],verification_evidence_references:[]}')"
+  --argjson import_manifest "$formalization_imports_json" \
+  --argjson project "$formalization_project_json" '
+  {
+    claim_version: {
+      object_id: $claim_object_id,
+      version_hash: $claim_version_hash
+    },
+    formal_system: "lean4",
+    claim_polarity: $claim_polarity,
+    environment_hash: $environment_hash,
+    module_artifact_hash: $module_hash,
+    declaration_name: $declaration,
+    exact_theorem_type: $theorem_type,
+    declaration_hash: $declaration_hash,
+    import_manifest: $import_manifest,
+    formalization_notes: $formalization_notes,
+    fidelity_evidence_references: [],
+    verification_evidence_references: []
+  } + if $project == null then {} else {project: $project} end
+  ')"
 run_mcl formalization create \
   --payload-json "$formalization_payload" \
   --searchable-text "$DECLARATION_NAME $EXACT_THEOREM_TYPE $FORMALIZATION_SEARCH_SUFFIX" \
@@ -546,23 +1024,35 @@ run_mcl formalization create \
 formalization_object_id="$(jq -er '.record.object_id' "$temporary_root/formalization.json")"
 formalization_version_hash="$(jq -er '.record.version_hash' "$temporary_root/formalization.json")"
 
-run_mcl verify check \
-  --environment-hash "$environment_hash" \
-  --module-artifact-hash "$module_hash" \
-  --declaration-name "$DECLARATION_NAME" \
-  --actor "$CANDIDATE_ACTOR" \
-  --idempotency-key "$CANDIDATE_KEY_PREFIX-verifier-job" \
-  >"$temporary_root/verifier-enqueue.json"
+verifier_arguments=(
+  verify check
+  --environment-hash "$environment_hash"
+  --module-artifact-hash "$module_hash"
+  --declaration-name "$DECLARATION_NAME"
+  --actor "$CANDIDATE_ACTOR"
+  --idempotency-key "$CANDIDATE_KEY_PREFIX-verifier-job"
+)
+if [[ "$PROJECT_MODE" == true ]]; then
+  verifier_arguments+=(
+    --project-archive-artifact-hash "$project_archive_hash"
+    --project-archive-root project
+    --project-module-path Final.lean
+  )
+fi
+run_mcl "${verifier_arguments[@]}" >"$temporary_root/verifier-enqueue.json"
 verifier_job_id="$(jq -er '.job.job_id' "$temporary_root/verifier-enqueue.json")"
 run_mcl worker \
-  --worker-id "$CANDIDATE_KEY_PREFIX-local-worker" \
-  --lease-seconds 3660 \
+  --worker-id "$CANDIDATE_KEY_PREFIX-verifier-worker" \
+  --lease-seconds 21700 \
   >"$temporary_root/verifier-work.json"
 jq -e \
   --arg job_id "$verifier_job_id" \
   --arg environment_hash "$environment_hash" \
   --arg module_hash "$module_hash" \
-  --arg declaration "$DECLARATION_NAME" '
+  --arg declaration "$DECLARATION_NAME" \
+  --arg project_hash "$project_archive_hash" \
+  --argjson project_mode "$PROJECT_MODE" \
+  --argjson expected_axioms "$EXPECTED_AXIOMS_JSON" '
   .job.job_id == $job_id and
   .job.state == "succeeded" and
   .report.job_id == $job_id and
@@ -572,12 +1062,26 @@ jq -e \
   .report.classification == "elaborated" and
   .report.exit_code == 0 and
   .report.forbidden_source_token == null and
-  .report.trust_profile == "local" and
-  .report.memory_limit_enforced == false and
-  .report.network_isolation_enforced == false and
+  (if $project_mode then
+    .report.observed_axioms == $expected_axioms
+  else
+    (.report | has("observed_axioms") | not)
+  end) and
+  (if $project_mode then
+    .report.project == {
+      archive_artifact_hash: $project_hash,
+      archive_root: "project",
+      module_path: "Final.lean"
+    }
+  else
+    (.report | has("project") | not)
+  end) and
+  .report.trust_profile == (if $project_mode then "publication" else "local" end) and
+  .report.memory_limit_enforced == $project_mode and
+  .report.network_isolation_enforced == $project_mode and
   .report.authoritative == false
 ' "$temporary_root/verifier-work.json" >/dev/null \
-  || die "$EXIT_VALIDATION" "local diagnostic verifier did not produce the exact accepted input"
+  || die "$EXIT_VALIDATION" "diagnostic verifier did not produce the exact accepted input"
 run_mcl verify status --job-id "$verifier_job_id" >"$temporary_root/verifier-job.json"
 
 run_mcl verify promote-diagnostic \
@@ -614,8 +1118,8 @@ run_mcl verify audit \
 audit_job_id="$(jq -er '.job.job_id' "$temporary_root/audit-enqueue.json")"
 run_mcl worker \
   --job-kind audit \
-  --worker-id "$CANDIDATE_KEY_PREFIX-local-audit-worker" \
-  --lease-seconds 3660 \
+  --worker-id "$CANDIDATE_KEY_PREFIX-audit-worker" \
+  --lease-seconds 21700 \
   >"$temporary_root/audit-work.json"
 jq -e \
   --arg job_id "$audit_job_id" \
@@ -623,7 +1127,10 @@ jq -e \
   --arg subject_hash "$formalization_version_hash" \
   --arg environment_hash "$environment_hash" \
   --arg module_hash "$module_hash" \
-  --arg declaration "$DECLARATION_NAME" '
+  --arg declaration "$DECLARATION_NAME" \
+  --arg project_hash "$project_archive_hash" \
+  --argjson project_mode "$PROJECT_MODE" \
+  --argjson expected_axioms "$EXPECTED_AXIOMS_JSON" '
   .job.job_id == $job_id and
   .job.state == "succeeded" and
   .report.job_id == $job_id and
@@ -633,15 +1140,24 @@ jq -e \
   .report.declaration_name == $declaration and
   .report.classification == "passed" and
   .report.source_forbidden_token == null and
-  .report.observed_axioms == [] and
+  .report.observed_axioms == $expected_axioms and
   .report.unexpected_axioms == [] and
-  .report.trust_profile == "local" and
+  (if $project_mode then
+    .report.project == {
+      archive_artifact_hash: $project_hash,
+      archive_root: "project",
+      module_path: "Final.lean"
+    }
+  else
+    (.report | has("project") | not)
+  end) and
+  .report.trust_profile == (if $project_mode then "publication" else "local" end) and
   .report.dependency_closure_complete == true and
-  .report.memory_limit_enforced == false and
-  .report.network_isolation_enforced == false and
+  .report.memory_limit_enforced == $project_mode and
+  .report.network_isolation_enforced == $project_mode and
   .report.authoritative == false
 ' "$temporary_root/audit-work.json" >/dev/null \
-  || die "$EXIT_VALIDATION" "local audit did not produce the exact accepted no-import closure"
+  || die "$EXIT_VALIDATION" "audit did not produce the exact accepted closure"
 run_mcl verify audit-status --job-id "$audit_job_id" >"$temporary_root/audit-job.json"
 
 run_mcl verify promote-audit \
@@ -704,7 +1220,9 @@ jq -e \
   --arg policy_hash "$(tr -d '\r\n' <"$PUBLICATION_POLICY_HASH")" \
   --arg commit "$PUBLICATION_SOURCE_COMMIT_SHA" \
   --arg tree "$PUBLICATION_SOURCE_TREE_SHA" \
-  --arg outcome "$PUBLICATION_OUTCOME" '
+  --arg outcome "$PUBLICATION_OUTCOME" \
+  --arg project_hash "$project_archive_hash" \
+  --argjson project_mode "$PROJECT_MODE" '
   .dry_run == false and
   .proposed_artifact_hash == $request_hash and
   .artifact.artifact_hash == $request_hash and
@@ -719,6 +1237,15 @@ jq -e \
   .request.axiom_audit_evidence_hash == $axiom_hash and
   .request.environment_hash == $environment_hash and
   .request.module_artifact_hash == $module_hash and
+  (if $project_mode then
+    .request.project == {
+      archive_artifact_hash: $project_hash,
+      archive_root: "project",
+      module_path: "Final.lean"
+    }
+  else
+    (.request | has("project") | not)
+  end) and
   .request.declaration_name == $declaration and
   .request.policy_hash == $policy_hash and
   .request.source_commit_sha == $commit and
@@ -804,44 +1331,51 @@ run_protected_lean() {
   fi
 }
 
-run_protected_lean \
-  protected-rebuild \
-  "$closure_dir" \
-  module.lean \
-  "$closure_dir/protected.stdout" \
-  "$closure_dir/protected.stderr"
+if [[ "$PROJECT_MODE" == true ]]; then
+  # The project verifier report is the protected execution: the publication
+  # environment requires one Bubblewrap-isolated, memory-bounded build and driver.
+  # The project audit reuses those exact immutable diagnostic streams.
+  :
+else
+  run_protected_lean \
+    protected-rebuild \
+    "$closure_dir" \
+    module.lean \
+    "$closure_dir/protected.stdout" \
+    "$closure_dir/protected.stderr"
 
-run_protected_lean \
-  protected-dependency \
-  "$closure_dir" \
-  module.lean \
-  "$closure_dir/protected-dependency.stdout" \
-  "$closure_dir/protected-dependency.stderr" \
-  --deps
-[[ ! -s "$closure_dir/protected-dependency.stderr" ]] \
-  || die "$EXIT_VALIDATION" "protected dependency discovery wrote unexpected stderr"
-[[ "$(LC_ALL=C sort -u "$closure_dir/protected-dependency.stdout")" == "/opt/lib/lean/Init.olean" ]] \
-  || die "$EXIT_VALIDATION" "protected dependency discovery found an undeclared import"
+  run_protected_lean \
+    protected-dependency \
+    "$closure_dir" \
+    module.lean \
+    "$closure_dir/protected-dependency.stdout" \
+    "$closure_dir/protected-dependency.stderr" \
+    --deps
+  [[ ! -s "$closure_dir/protected-dependency.stderr" ]] \
+    || die "$EXIT_VALIDATION" "protected dependency discovery wrote unexpected stderr"
+  [[ "$(LC_ALL=C sort -u "$closure_dir/protected-dependency.stdout")" == "/opt/lib/lean/Init.olean" ]] \
+    || die "$EXIT_VALIDATION" "protected dependency discovery found an undeclared import"
 
-cp -- "$closure_dir/module.lean" "$temporary_root/ProtectedAudit.lean"
-printf '\n#print axioms %s\n' "$DECLARATION_NAME" >>"$temporary_root/ProtectedAudit.lean"
-run_protected_lean \
-  protected-audit \
-  "$temporary_root" \
-  ProtectedAudit.lean \
-  "$closure_dir/protected-audit.stdout" \
-  "$closure_dir/protected-audit.stderr"
+  cp -- "$closure_dir/module.lean" "$temporary_root/ProtectedAudit.lean"
+  printf '\n#print axioms %s\n' "$DECLARATION_NAME" >>"$temporary_root/ProtectedAudit.lean"
+  run_protected_lean \
+    protected-audit \
+    "$temporary_root" \
+    ProtectedAudit.lean \
+    "$closure_dir/protected-audit.stdout" \
+    "$closure_dir/protected-audit.stderr"
 
-no_axioms_marker="'$DECLARATION_NAME' does not depend on any axioms"
-no_axioms_count="$((
-  $(grep -Foc "$no_axioms_marker" "$closure_dir/protected-audit.stdout" || true) +
-  $(grep -Foc "$no_axioms_marker" "$closure_dir/protected-audit.stderr" || true)
-))"
-[[ "$no_axioms_count" -eq 1 ]] \
-  || die "$EXIT_VALIDATION" "protected axiom driver did not emit one exact no-axioms result"
-if grep -Fq "'$DECLARATION_NAME' depends on axioms:" \
-  "$closure_dir/protected-audit.stdout" "$closure_dir/protected-audit.stderr"; then
-  die "$EXIT_VALIDATION" "protected axiom driver observed an unexpected axiom surface"
+  no_axioms_marker="'$DECLARATION_NAME' does not depend on any axioms"
+  no_axioms_count="$((
+    $(grep -Foc "$no_axioms_marker" "$closure_dir/protected-audit.stdout" || true) +
+    $(grep -Foc "$no_axioms_marker" "$closure_dir/protected-audit.stderr" || true)
+  ))"
+  [[ "$no_axioms_count" -eq 1 ]] \
+    || die "$EXIT_VALIDATION" "protected axiom driver did not emit one exact no-axioms result"
+  if grep -Fq "'$DECLARATION_NAME' depends on axioms:" \
+    "$closure_dir/protected-audit.stdout" "$closure_dir/protected-audit.stderr"; then
+    die "$EXIT_VALIDATION" "protected axiom driver observed an unexpected axiom surface"
+  fi
 fi
 
 if ! verifier_report_hash="$(jq -er '.result_artifact_hash | strings' "$temporary_root/verifier-job.json")" \
@@ -901,6 +1435,9 @@ canonical_select "$temporary_root/audit-job.json" '.' "$closure_dir/audit-job.js
 
 assert_file_hash "$closure_dir/publication-request.json" "$request_hash" "publication request"
 assert_file_hash "$closure_dir/module.lean" "$module_hash" "Lean module"
+if [[ "$PROJECT_MODE" == true ]]; then
+  assert_file_hash "$closure_dir/project.tar" "$project_archive_hash" "Lean project archive"
+fi
 assert_file_hash "$closure_dir/environment-manifest.json" "$environment_hash" "environment manifest"
 publication_policy_hash="$(tr -d '\r\n' <"$PUBLICATION_POLICY_HASH")"
 assert_file_hash "$closure_dir/publication-policy.json" "$publication_policy_hash" "publication policy"
@@ -949,19 +1486,24 @@ add_entry diagnostic_evidence closure/diagnostic-evidence.json "$diagnostic_evid
 add_entry environment_manifest closure/environment-manifest.json "$environment_hash"
 add_entry formalization_version closure/formalization-version.json "$formalization_version_hash"
 add_entry lean_module closure/module.lean "$module_hash"
+if [[ "$PROJECT_MODE" == true ]]; then
+add_entry lean_project_archive closure/project.tar "$project_archive_hash"
+fi
 add_entry proof_closure_evidence closure/proof-closure-evidence.json "$proof_closure_evidence_hash"
-add_entry protected_audit_stderr closure/protected-audit.stderr \
-  "$(sha256_file "$closure_dir/protected-audit.stderr")"
-add_entry protected_audit_stdout closure/protected-audit.stdout \
-  "$(sha256_file "$closure_dir/protected-audit.stdout")"
-add_entry protected_dependency_stderr closure/protected-dependency.stderr \
-  "$(sha256_file "$closure_dir/protected-dependency.stderr")"
-add_entry protected_dependency_stdout closure/protected-dependency.stdout \
-  "$(sha256_file "$closure_dir/protected-dependency.stdout")"
-add_entry protected_stderr closure/protected.stderr \
-  "$(sha256_file "$closure_dir/protected.stderr")"
-add_entry protected_stdout closure/protected.stdout \
-  "$(sha256_file "$closure_dir/protected.stdout")"
+if [[ "$PROJECT_MODE" != true ]]; then
+  add_entry protected_audit_stderr closure/protected-audit.stderr \
+    "$(sha256_file "$closure_dir/protected-audit.stderr")"
+  add_entry protected_audit_stdout closure/protected-audit.stdout \
+    "$(sha256_file "$closure_dir/protected-audit.stdout")"
+  add_entry protected_dependency_stderr closure/protected-dependency.stderr \
+    "$(sha256_file "$closure_dir/protected-dependency.stderr")"
+  add_entry protected_dependency_stdout closure/protected-dependency.stdout \
+    "$(sha256_file "$closure_dir/protected-dependency.stdout")"
+  add_entry protected_stderr closure/protected.stderr \
+    "$(sha256_file "$closure_dir/protected.stderr")"
+  add_entry protected_stdout closure/protected.stdout \
+    "$(sha256_file "$closure_dir/protected.stdout")"
+fi
 add_entry publication_policy closure/publication-policy.json "$publication_policy_hash"
 add_entry publication_request closure/publication-request.json "$request_hash"
 add_entry source_version closure/source-version.json "$source_version_hash"
@@ -982,9 +1524,8 @@ jq -cS -n \
   '{schema_version:"publication_retained_closure/1",subject:{object_id:$subject_id,version_hash:$subject_hash},request_hash:$request_hash,artifacts:$artifacts}' \
   | tr -d '\n' >"$output_dir/publication-retained-closure.json"
 
-jq -e '
-  .schema_version == "publication_retained_closure/1" and
-  (.artifacts | map(.role)) == [
+expected_closure_roles="$(jq -cn --argjson project "$PROJECT_MODE" '
+  [
     "audit_job",
     "audit_policy",
     "audit_report",
@@ -995,14 +1536,21 @@ jq -e '
     "diagnostic_evidence",
     "environment_manifest",
     "formalization_version",
-    "lean_module",
-    "proof_closure_evidence",
+    "lean_module"
+  ] +
+  (if $project then ["lean_project_archive"] else [] end) +
+  [
+    "proof_closure_evidence"
+  ] +
+  (if $project then [] else [
     "protected_audit_stderr",
     "protected_audit_stdout",
     "protected_dependency_stderr",
     "protected_dependency_stdout",
     "protected_stderr",
-    "protected_stdout",
+    "protected_stdout"
+  ] end) +
+  [
     "publication_policy",
     "publication_request",
     "source_version",
@@ -1011,6 +1559,10 @@ jq -e '
     "verifier_stderr",
     "verifier_stdout"
   ]
+')"
+jq -e --argjson expected_roles "$expected_closure_roles" '
+  .schema_version == "publication_retained_closure/1" and
+  (.artifacts | map(.role)) == $expected_roles
 ' "$output_dir/publication-retained-closure.json" >/dev/null \
   || die "$EXIT_VALIDATION" "retained publication closure roles are incomplete or out of order"
 
@@ -1034,7 +1586,9 @@ jq -cS -n \
   --argjson run_id "$PUBLICATION_WORKFLOW_RUN_ID" \
   --argjson run_attempt "$PUBLICATION_WORKFLOW_RUN_ATTEMPT" \
   --argjson retained_hashes "$retained_hashes" \
-  '{schema_version:"publication_report/1",request_hash:$request_hash,request:$request[0],classification:"passed",repository:"Mnehmos/MathOS",workflow_path:".github/workflows/publication.yml",source_ref:"refs/heads/main",workflow_run_id:$run_id,workflow_run_attempt:$run_attempt,runner_environment:"github_hosted",observed_lean_toolchain:"leanprover/lean4:v4.32.0",observed_axioms:[],retained_artifact_hashes:$retained_hashes,clean_checkout:true,dependency_closure_complete:true,network_isolation_enforced:true,memory_limit_enforced:true,authoritative:false}' \
+  --arg toolchain "$LEAN_TOOLCHAIN" \
+  --argjson observed_axioms "$EXPECTED_AXIOMS_JSON" \
+  '{schema_version:"publication_report/1",request_hash:$request_hash,request:$request[0],classification:"passed",repository:"Mnehmos/MathOS",workflow_path:".github/workflows/publication.yml",source_ref:"refs/heads/main",workflow_run_id:$run_id,workflow_run_attempt:$run_attempt,runner_environment:"github_hosted",observed_lean_toolchain:$toolchain,observed_axioms:$observed_axioms,retained_artifact_hashes:$retained_hashes,clean_checkout:true,dependency_closure_complete:true,network_isolation_enforced:true,memory_limit_enforced:true,authoritative:false}' \
   | tr -d '\n' >"$output_dir/publication-report.json"
 
 jq -e \
@@ -1043,7 +1597,9 @@ jq -e \
   --arg tree "$PUBLICATION_SOURCE_TREE_SHA" \
   --argjson run_id "$PUBLICATION_WORKFLOW_RUN_ID" \
   --argjson run_attempt "$PUBLICATION_WORKFLOW_RUN_ATTEMPT" \
-  --argjson retained_hashes "$retained_hashes" '
+  --argjson retained_hashes "$retained_hashes" \
+  --arg toolchain "$LEAN_TOOLCHAIN" \
+  --argjson observed_axioms "$EXPECTED_AXIOMS_JSON" '
   .schema_version == "publication_report/1" and
   .request_hash == $request_hash and
   .request.source_commit_sha == $commit and
@@ -1055,8 +1611,8 @@ jq -e \
   .workflow_run_id == $run_id and
   .workflow_run_attempt == $run_attempt and
   .runner_environment == "github_hosted" and
-  .observed_lean_toolchain == "leanprover/lean4:v4.32.0" and
-  .observed_axioms == [] and
+  .observed_lean_toolchain == $toolchain and
+  .observed_axioms == $observed_axioms and
   .retained_artifact_hashes == $retained_hashes and
   .clean_checkout == true and
   .dependency_closure_complete == true and

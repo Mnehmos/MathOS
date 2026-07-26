@@ -2056,6 +2056,7 @@ mod tests {
             claim_polarity: None,
             environment_hash: "b".repeat(64),
             module_artifact_hash: "c".repeat(64),
+            project: None,
             declaration_name: "Fixture.theorem".to_owned(),
             exact_theorem_type: "True".to_owned(),
             declaration_hash: "d".repeat(64),
@@ -2096,6 +2097,7 @@ mod tests {
                         outcome: PublicationOutcome::Proof,
                         environment_hash: "d".repeat(64),
                         module_artifact_hash: "e".repeat(64),
+                        project: None,
                         declaration_name: "Fixture.theorem".to_owned(),
                     },
                     pedagogy: ReleasePedagogyBinding {
@@ -2114,6 +2116,7 @@ mod tests {
                     replay: ReleaseReplayBinding {
                         module_path: "replay/Submission.lean".to_owned(),
                         environment_path: "replay/environment.json".to_owned(),
+                        project_archive_path: None,
                         declaration_name: "Fixture.theorem".to_owned(),
                     },
                     trust: None,
@@ -2245,6 +2248,7 @@ mod tests {
                 outcome: PublicationOutcome::Proof,
                 environment_hash: hash('e'),
                 module_artifact_hash: hash('a'),
+                project: None,
                 declaration_name: "Fixture.theorem".to_owned(),
             },
             pedagogy: ReleasePedagogyBinding {
@@ -2263,6 +2267,7 @@ mod tests {
             replay: ReleaseReplayBinding {
                 module_path: "replay/Submission.lean".to_owned(),
                 environment_path: "replay/environment.json".to_owned(),
+                project_archive_path: None,
                 declaration_name: "Fixture.theorem".to_owned(),
             },
             trust: None,

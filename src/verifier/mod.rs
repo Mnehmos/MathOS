@@ -1,14 +1,22 @@
 use std::ffi::OsString;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::domain::{EnvironmentManifest, EnvironmentPlatform, TrustProfile};
+use crate::domain::{EnvironmentManifest, EnvironmentPlatform, TrustProfile, VerifierExecutable};
 use crate::error::AppError;
+
+mod project;
+
+pub use project::{MaterializedLeanProject, materialize_lean_project};
+
+const MATHLIB_CACHE_PREPARATION_COMMANDS: [[&str; 3]; 2] =
+    [["exe", "cache", "get-"], ["exe", "cache", "unpack"]];
+const MATHLIB_CACHE_DIRECTORY: &str = ".mathlib-cache";
 
 pub const FORBIDDEN_SOURCE_TOKENS: &[&str] = &[
     "admit",
@@ -42,6 +50,8 @@ pub struct LeanProcessResult {
     pub timed_out: bool,
     pub output_limit_exceeded: bool,
     pub observed_toolchain_version: String,
+    pub memory_limit_enforced: bool,
+    pub network_isolation_enforced: bool,
 }
 
 pub fn scan_forbidden_source_token(bytes: &[u8]) -> Result<Option<String>, AppError> {
@@ -81,42 +91,53 @@ pub fn parse_axiom_dependencies(
     let list_prefix = format!("'{declaration_name}' depends on axioms: [");
     let no_axiom_count = output.matches(&no_axioms).count();
     let list_count = output.matches(&list_prefix).count();
-    if no_axiom_count == 1 && list_count == 0 {
+    if no_axiom_count > 0 && list_count == 0 && no_axiom_count <= 16 {
         return Ok(Vec::new());
     }
-    if no_axiom_count != 0 || list_count != 1 {
+    if no_axiom_count != 0 || !(1..=16).contains(&list_count) {
         return Err(audit_output_error(
-            "audit output did not contain exactly one declaration-specific axiom result",
+            "audit output did not contain a bounded consistent declaration-specific axiom result",
         ));
     }
-    let start = output.find(&list_prefix).expect("single marker exists") + list_prefix.len();
-    let tail = &output[start..];
-    let end = tail
-        .find(']')
-        .ok_or_else(|| audit_output_error("audit axiom list did not contain a closing bracket"))?;
-    let raw = &tail[..end];
-    if raw.trim().is_empty() {
-        return Err(audit_output_error(
-            "audit axiom list was empty instead of using the no-axioms result",
-        ));
+    let mut remaining = output.as_str();
+    let mut observed = None;
+    for _ in 0..list_count {
+        let marker = remaining
+            .find(&list_prefix)
+            .ok_or_else(|| audit_output_error("audit axiom marker count changed while parsing"))?;
+        let tail = &remaining[marker + list_prefix.len()..];
+        let end = tail.find(']').ok_or_else(|| {
+            audit_output_error("audit axiom list did not contain a closing bracket")
+        })?;
+        let raw = &tail[..end];
+        if raw.trim().is_empty() {
+            return Err(audit_output_error(
+                "audit axiom list was empty instead of using the no-axioms result",
+            ));
+        }
+        let mut axioms = raw
+            .split(',')
+            .map(str::trim)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if axioms.len() > 256 || axioms.iter().any(|name| !is_audit_name(name)) {
+            return Err(audit_output_error(
+                "audit axiom list was malformed or excessive",
+            ));
+        }
+        let original_len = axioms.len();
+        axioms.sort();
+        axioms.dedup();
+        if axioms.len() != original_len {
+            return Err(audit_output_error("audit axiom list contained duplicates"));
+        }
+        if observed.as_ref().is_some_and(|prior| prior != &axioms) {
+            return Err(audit_output_error("repeated audit axiom results disagree"));
+        }
+        observed = Some(axioms);
+        remaining = &tail[end + 1..];
     }
-    let mut axioms = raw
-        .split(',')
-        .map(str::trim)
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    if axioms.len() > 256 || axioms.iter().any(|name| !is_audit_name(name)) {
-        return Err(audit_output_error(
-            "audit axiom list was malformed or excessive",
-        ));
-    }
-    let original_len = axioms.len();
-    axioms.sort();
-    axioms.dedup();
-    if axioms.len() != original_len {
-        return Err(audit_output_error("audit axiom list contained duplicates"));
-    }
-    Ok(axioms)
+    observed.ok_or_else(|| audit_output_error("audit axiom result was absent"))
 }
 
 fn is_audit_name(value: &str) -> bool {
@@ -140,58 +161,116 @@ fn audit_output_error(message: impl Into<String>) -> AppError {
 }
 
 pub fn execute_lean(
-    command: &str,
+    lean_command: &str,
+    lake_command: &str,
     workspace: &Path,
     module_file_name: &str,
     environment: &EnvironmentManifest,
 ) -> Result<LeanProcessResult, AppError> {
-    execute_lean_with_profile(command, workspace, module_file_name, environment, false)
+    execute_lean_with_profile(
+        lean_command,
+        lake_command,
+        workspace,
+        module_file_name,
+        None,
+        environment,
+    )
+}
+
+pub fn execute_lake_project(
+    lean_command: &str,
+    lake_command: &str,
+    workspace: &Path,
+    driver_file_name: &str,
+    project: &crate::domain::LeanProjectBinding,
+    environment: &EnvironmentManifest,
+) -> Result<LeanProcessResult, AppError> {
+    project.validate()?;
+    execute_lean_with_profile(
+        lean_command,
+        lake_command,
+        workspace,
+        driver_file_name,
+        Some(&project.module_path),
+        environment,
+    )
 }
 
 /// Replays an already-authoritative publication artifact without promoting new authority.
-/// The executable and arguments remain verifier-controlled; only the publication-profile
-/// isolation precondition is relaxed because release replay is an integrity check.
+/// Publication-profile replays retain the same verifier-controlled isolation as the
+/// publication candidate.
 pub fn execute_release_lean(
-    command: &str,
+    lean_command: &str,
+    lake_command: &str,
     workspace: &Path,
     module_file_name: &str,
     environment: &EnvironmentManifest,
 ) -> Result<LeanProcessResult, AppError> {
-    execute_lean_with_profile(command, workspace, module_file_name, environment, true)
+    execute_lean_with_profile(
+        lean_command,
+        lake_command,
+        workspace,
+        module_file_name,
+        None,
+        environment,
+    )
+}
+
+pub fn execute_release_lake_project(
+    lean_command: &str,
+    lake_command: &str,
+    workspace: &Path,
+    driver_file_name: &str,
+    project: &crate::domain::LeanProjectBinding,
+    environment: &EnvironmentManifest,
+) -> Result<LeanProcessResult, AppError> {
+    project.validate()?;
+    execute_lean_with_profile(
+        lean_command,
+        lake_command,
+        workspace,
+        driver_file_name,
+        Some(&project.module_path),
+        environment,
+    )
 }
 
 fn execute_lean_with_profile(
-    command: &str,
+    lean_command: &str,
+    lake_command: &str,
     workspace: &Path,
     module_file_name: &str,
+    project_build_target: Option<&str>,
     environment: &EnvironmentManifest,
-    allow_publication_replay: bool,
 ) -> Result<LeanProcessResult, AppError> {
     environment.validate()?;
-    if environment.trust_profile == TrustProfile::Publication && !allow_publication_replay {
-        return Err(AppError::new(
-            "MCL_PUBLICATION_ISOLATION_UNAVAILABLE",
-            "publication-profile process isolation is not implemented by the local worker",
-            false,
-            "Use the protected publication CI profile once its network and process isolation controls are implemented.",
-        ));
-    }
     validate_platform(environment.platform)?;
-    if !matches!(command, "lean" | "lean.exe") {
+    let lean_num_threads = lean_num_threads_configuration(environment.resource_limits.concurrency);
+    if !matches!(lean_command, "lean" | "lean.exe") {
         return Err(AppError::new(
             "MCL_VERIFIER_COMMAND_REJECTED",
-            format!("verifier executable `{command}` is not allowlisted"),
+            format!("verifier executable `{lean_command}` is not allowlisted"),
             false,
             "Configure only the platform Lean executable name.",
         ));
     }
-    let version_capture = run_bounded_process(
-        command,
+    let _publication_workspace_ownership = if environment.trust_profile == TrustProfile::Publication
+    {
+        Some(PublicationWorkspaceOwnership::prepare(
+            workspace,
+            &environment.lean_toolchain,
+        )?)
+    } else {
+        None
+    };
+    let version_capture = run_bounded_profiled_process(
+        lean_command,
         &["--version"],
         workspace,
         Duration::from_secs(environment.resource_limits.timeout_seconds.min(30)),
         4_096,
-        Some(&environment.lean_toolchain),
+        environment,
+        &lean_num_threads,
     )?;
     let observed_toolchain_version =
         String::from_utf8(version_capture.stdout.clone()).map_err(|error| {
@@ -227,13 +306,263 @@ fn execute_lean_with_profile(
         ));
     }
 
-    let capture = run_bounded_process(
+    let (command, arguments): (&str, Vec<&str>) = match (
+        environment.verifier_command.executable,
+        project_build_target,
+    ) {
+        (VerifierExecutable::Lean, None) => (lean_command, vec![module_file_name]),
+        (VerifierExecutable::Lake, Some(build_target)) => {
+            if !matches!(lake_command, "lake" | "lake.exe") {
+                return Err(AppError::new(
+                    "MCL_VERIFIER_COMMAND_REJECTED",
+                    format!("verifier executable `{lake_command}` is not allowlisted"),
+                    false,
+                    "Configure only the platform Lake executable name.",
+                ));
+            }
+            let started = Instant::now();
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let total_timeout = Duration::from_secs(environment.resource_limits.timeout_seconds);
+            if environment.dependency_preparation
+                == Some(crate::domain::DependencyPreparation::MathlibCacheGet)
+            {
+                // Keep transfer and extraction as separate fixed commands. Mathlib's pipelined
+                // `get` mode can race downloaded cache files on Windows, while `get-` followed by
+                // `unpack` preserves the same pinned cache checks without caller-controlled input.
+                for arguments in MATHLIB_CACHE_PREPARATION_COMMANDS {
+                    let elapsed = started.elapsed();
+                    let Some(preparation_timeout) = total_timeout.checked_sub(elapsed) else {
+                        return Ok(LeanProcessResult {
+                            exit_code: None,
+                            stdout,
+                            stderr,
+                            duration_milliseconds: elapsed
+                                .as_millis()
+                                .try_into()
+                                .unwrap_or(u64::MAX),
+                            timed_out: true,
+                            output_limit_exceeded: false,
+                            observed_toolchain_version: observed_toolchain_version
+                                .trim()
+                                .to_owned(),
+                            memory_limit_enforced: false,
+                            network_isolation_enforced: false,
+                        });
+                    };
+                    let consumed = stdout
+                        .len()
+                        .saturating_add(stderr.len())
+                        .try_into()
+                        .unwrap_or(u64::MAX);
+                    let Some(preparation_output) = environment
+                        .resource_limits
+                        .max_output_bytes
+                        .checked_sub(consumed)
+                        .filter(|remaining| *remaining > 0)
+                    else {
+                        return Ok(LeanProcessResult {
+                            exit_code: None,
+                            stdout,
+                            stderr,
+                            duration_milliseconds: elapsed
+                                .as_millis()
+                                .try_into()
+                                .unwrap_or(u64::MAX),
+                            timed_out: false,
+                            output_limit_exceeded: true,
+                            observed_toolchain_version: observed_toolchain_version
+                                .trim()
+                                .to_owned(),
+                            memory_limit_enforced: false,
+                            network_isolation_enforced: false,
+                        });
+                    };
+                    let preparation = run_bounded_cache_process(
+                        lake_command,
+                        &arguments,
+                        workspace,
+                        preparation_timeout,
+                        preparation_output,
+                        environment,
+                        &lean_num_threads,
+                    )?;
+                    append_process_output(&mut stdout, &preparation.stdout);
+                    append_process_output(&mut stderr, &preparation.stderr);
+                    if preparation.timed_out
+                        || preparation.output_limit_exceeded
+                        || preparation.exit_code != Some(0)
+                    {
+                        return Ok(LeanProcessResult {
+                            exit_code: preparation.exit_code,
+                            stdout,
+                            stderr,
+                            duration_milliseconds: started
+                                .elapsed()
+                                .as_millis()
+                                .try_into()
+                                .unwrap_or(u64::MAX),
+                            timed_out: preparation.timed_out,
+                            output_limit_exceeded: preparation.output_limit_exceeded,
+                            observed_toolchain_version: observed_toolchain_version
+                                .trim()
+                                .to_owned(),
+                            memory_limit_enforced: false,
+                            network_isolation_enforced: false,
+                        });
+                    }
+                }
+            }
+            let Some(build_timeout) = total_timeout.checked_sub(started.elapsed()) else {
+                return Ok(LeanProcessResult {
+                    exit_code: None,
+                    stdout,
+                    stderr,
+                    duration_milliseconds: started
+                        .elapsed()
+                        .as_millis()
+                        .try_into()
+                        .unwrap_or(u64::MAX),
+                    timed_out: true,
+                    output_limit_exceeded: false,
+                    observed_toolchain_version: observed_toolchain_version.trim().to_owned(),
+                    memory_limit_enforced: false,
+                    network_isolation_enforced: false,
+                });
+            };
+            let consumed = stdout
+                .len()
+                .saturating_add(stderr.len())
+                .try_into()
+                .unwrap_or(u64::MAX);
+            let Some(build_output) = environment
+                .resource_limits
+                .max_output_bytes
+                .checked_sub(consumed)
+                .filter(|remaining| *remaining > 0)
+            else {
+                return Ok(LeanProcessResult {
+                    exit_code: None,
+                    stdout,
+                    stderr,
+                    duration_milliseconds: started
+                        .elapsed()
+                        .as_millis()
+                        .try_into()
+                        .unwrap_or(u64::MAX),
+                    timed_out: false,
+                    output_limit_exceeded: true,
+                    observed_toolchain_version: observed_toolchain_version.trim().to_owned(),
+                    memory_limit_enforced: false,
+                    network_isolation_enforced: false,
+                });
+            };
+            let olean_target = lake_olean_target(build_target);
+            let build = run_bounded_profiled_process(
+                lake_command,
+                &["build", olean_target.as_str()],
+                workspace,
+                build_timeout,
+                build_output,
+                environment,
+                &lean_num_threads,
+            )?;
+            append_process_output(&mut stdout, &build.stdout);
+            append_process_output(&mut stderr, &build.stderr);
+            if build.timed_out || build.output_limit_exceeded || build.exit_code != Some(0) {
+                return Ok(LeanProcessResult {
+                    exit_code: build.exit_code,
+                    stdout,
+                    stderr,
+                    duration_milliseconds: started
+                        .elapsed()
+                        .as_millis()
+                        .try_into()
+                        .unwrap_or(u64::MAX),
+                    timed_out: build.timed_out,
+                    output_limit_exceeded: build.output_limit_exceeded,
+                    observed_toolchain_version: observed_toolchain_version.trim().to_owned(),
+                    memory_limit_enforced: build.memory_limit_enforced,
+                    network_isolation_enforced: build.network_isolation_enforced,
+                });
+            }
+            let elapsed = started.elapsed();
+            let Some(remaining_timeout) = total_timeout.checked_sub(elapsed) else {
+                return Ok(LeanProcessResult {
+                    exit_code: None,
+                    stdout,
+                    stderr,
+                    duration_milliseconds: elapsed.as_millis().try_into().unwrap_or(u64::MAX),
+                    timed_out: true,
+                    output_limit_exceeded: false,
+                    observed_toolchain_version: observed_toolchain_version.trim().to_owned(),
+                    memory_limit_enforced: build.memory_limit_enforced,
+                    network_isolation_enforced: build.network_isolation_enforced,
+                });
+            };
+            let consumed = stdout
+                .len()
+                .saturating_add(stderr.len())
+                .try_into()
+                .unwrap_or(u64::MAX);
+            let Some(remaining_output) = environment
+                .resource_limits
+                .max_output_bytes
+                .checked_sub(consumed)
+                .filter(|remaining| *remaining > 0)
+            else {
+                return Ok(LeanProcessResult {
+                    exit_code: None,
+                    stdout,
+                    stderr,
+                    duration_milliseconds: elapsed.as_millis().try_into().unwrap_or(u64::MAX),
+                    timed_out: false,
+                    output_limit_exceeded: true,
+                    observed_toolchain_version: observed_toolchain_version.trim().to_owned(),
+                    memory_limit_enforced: build.memory_limit_enforced,
+                    network_isolation_enforced: build.network_isolation_enforced,
+                });
+            };
+            let driver = run_bounded_profiled_process(
+                lake_command,
+                &["env", "lean", module_file_name],
+                workspace,
+                remaining_timeout,
+                remaining_output,
+                environment,
+                &lean_num_threads,
+            )?;
+            append_process_output(&mut stdout, &driver.stdout);
+            append_process_output(&mut stderr, &driver.stderr);
+            return Ok(LeanProcessResult {
+                exit_code: driver.exit_code,
+                stdout,
+                stderr,
+                duration_milliseconds: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+                timed_out: driver.timed_out,
+                output_limit_exceeded: driver.output_limit_exceeded,
+                observed_toolchain_version: observed_toolchain_version.trim().to_owned(),
+                memory_limit_enforced: driver.memory_limit_enforced,
+                network_isolation_enforced: driver.network_isolation_enforced,
+            });
+        }
+        _ => {
+            return Err(AppError::new(
+                "MCL_VERIFIER_COMMAND_REJECTED",
+                "verifier command mode and project build target disagree",
+                false,
+                "Use standalone Lean without a project target, or Lake with one validated bound module.",
+            ));
+        }
+    };
+    let capture = run_bounded_profiled_process(
         command,
-        &[module_file_name],
+        &arguments,
         workspace,
         Duration::from_secs(environment.resource_limits.timeout_seconds),
         environment.resource_limits.max_output_bytes,
-        Some(&environment.lean_toolchain),
+        environment,
+        &lean_num_threads,
     )?;
     Ok(LeanProcessResult {
         exit_code: capture.exit_code,
@@ -243,7 +572,524 @@ fn execute_lean_with_profile(
         timed_out: capture.timed_out,
         output_limit_exceeded: capture.output_limit_exceeded,
         observed_toolchain_version: observed_toolchain_version.trim().to_owned(),
+        memory_limit_enforced: capture.memory_limit_enforced,
+        network_isolation_enforced: capture.network_isolation_enforced,
     })
+}
+
+fn append_process_output(combined: &mut Vec<u8>, next: &[u8]) {
+    if next.is_empty() {
+        return;
+    }
+    if !combined.is_empty() && !combined.ends_with(b"\n") {
+        combined.push(b'\n');
+    }
+    combined.extend_from_slice(next);
+}
+
+fn lean_num_threads_configuration(concurrency: u16) -> String {
+    concurrency.to_string()
+}
+
+fn lake_olean_target(module_path: &str) -> String {
+    format!("{module_path}:olean")
+}
+
+fn run_bounded_profiled_process(
+    executable: &str,
+    arguments: &[&str],
+    workspace: &Path,
+    timeout: Duration,
+    max_output_bytes: u64,
+    environment: &EnvironmentManifest,
+    lean_num_threads: &str,
+) -> Result<ProcessCapture, AppError> {
+    if environment.trust_profile == TrustProfile::Local {
+        return run_bounded_lean_process(
+            executable,
+            arguments,
+            workspace,
+            timeout,
+            max_output_bytes,
+            Some(&environment.lean_toolchain),
+            lean_num_threads,
+        );
+    }
+
+    run_bounded_publication_process(
+        executable,
+        arguments,
+        workspace,
+        timeout,
+        max_output_bytes,
+        environment,
+        lean_num_threads,
+        true,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_bounded_publication_process(
+    executable: &str,
+    arguments: &[&str],
+    workspace: &Path,
+    timeout: Duration,
+    max_output_bytes: u64,
+    environment: &EnvironmentManifest,
+    lean_num_threads: &str,
+    network_isolated: bool,
+    mathlib_cache_directory: Option<&str>,
+) -> Result<ProcessCapture, AppError> {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return Err(publication_isolation_error(
+            "publication-profile verification requires a Linux x86-64 worker",
+        ));
+    }
+    let isolated_executable = match executable {
+        "lean" => "/opt/bin/lean",
+        "lake" => "/opt/bin/lake",
+        _ => {
+            return Err(publication_isolation_error(format!(
+                "publication verifier executable `{executable}` is not allowlisted"
+            )));
+        }
+    };
+    let memory_limit = environment
+        .resource_limits
+        .max_memory_bytes
+        .ok_or_else(|| {
+            publication_isolation_error(
+                "publication-profile verification requires an exact memory limit",
+            )
+        })?;
+    let workspace = std::fs::canonicalize(workspace).map_err(|error| {
+        publication_isolation_error(format!(
+            "publication workspace could not be resolved: {error}"
+        ))
+    })?;
+    let toolchain_root = publication_toolchain_root(&environment.lean_toolchain)?;
+    let uid = publication_numeric_identity("-u")?;
+    let gid = publication_numeric_identity("-g")?;
+    let sandbox_arguments = publication_sandbox_arguments(
+        isolated_executable,
+        arguments,
+        &workspace,
+        &toolchain_root,
+        &uid,
+        &gid,
+        memory_limit,
+        lean_num_threads,
+        &environment.lean_toolchain,
+        network_isolated,
+        mathlib_cache_directory,
+    );
+
+    let mut capture = run_bounded_external(
+        Path::new("/usr/bin/sudo"),
+        &sandbox_arguments,
+        &workspace,
+        timeout,
+        max_output_bytes,
+        &[],
+        "MCL_PUBLICATION_ISOLATION_UNAVAILABLE",
+        "publication isolation launcher",
+    )?;
+    // Only a successful verifier command can prove that the fixed Bubblewrap and
+    // prlimit chain reached the inner process. Failed candidates remain conservative.
+    if capture.exit_code == Some(0) {
+        capture.memory_limit_enforced = true;
+        capture.network_isolation_enforced = network_isolated;
+    }
+    Ok(capture)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publication_sandbox_arguments(
+    isolated_executable: &str,
+    arguments: &[&str],
+    workspace: &Path,
+    toolchain_root: &Path,
+    uid: &str,
+    gid: &str,
+    memory_limit: u64,
+    lean_num_threads: &str,
+    lean_toolchain: &str,
+    network_isolated: bool,
+    mathlib_cache_directory: Option<&str>,
+) -> Vec<OsString> {
+    let mut sandbox_arguments = [
+        "-n",
+        "/usr/bin/bwrap",
+        "--unshare-all",
+        "--die-with-parent",
+        "--new-session",
+        "--cap-drop",
+        "ALL",
+        "--uid",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect::<Vec<_>>();
+    sandbox_arguments.push(OsString::from(uid));
+    sandbox_arguments.push(OsString::from("--gid"));
+    sandbox_arguments.push(OsString::from(gid));
+    if !network_isolated {
+        sandbox_arguments.push(OsString::from("--share-net"));
+    }
+    sandbox_arguments.push(OsString::from("--clearenv"));
+    for (name, value) in [
+        ("HOME", "/tmp"),
+        ("PATH", "/opt/bin:/usr/bin:/bin"),
+        ("LANG", "C.UTF-8"),
+        ("LC_ALL", "C.UTF-8"),
+        ("LEAN_NUM_THREADS", lean_num_threads),
+        ("ELAN_TOOLCHAIN", lean_toolchain),
+    ] {
+        sandbox_arguments.push(OsString::from("--setenv"));
+        sandbox_arguments.push(OsString::from(name));
+        sandbox_arguments.push(OsString::from(value));
+    }
+    if let Some(cache_directory) = mathlib_cache_directory {
+        sandbox_arguments.push(OsString::from("--setenv"));
+        sandbox_arguments.push(OsString::from("MATHLIB_CACHE_DIR"));
+        sandbox_arguments.push(OsString::from(cache_directory));
+    }
+    sandbox_arguments.extend(["--ro-bind", "/", "/"].into_iter().map(OsString::from));
+    sandbox_arguments.push(OsString::from("--bind"));
+    sandbox_arguments.push(workspace.as_os_str().to_owned());
+    sandbox_arguments.push(OsString::from("/mnt"));
+    sandbox_arguments.push(OsString::from("--ro-bind"));
+    sandbox_arguments.push(toolchain_root.as_os_str().to_owned());
+    sandbox_arguments.push(OsString::from("/opt"));
+    sandbox_arguments.extend(
+        [
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/home",
+            "--tmpfs",
+            "/root",
+            "--tmpfs",
+            "/run",
+            "--tmpfs",
+            "/tmp",
+            "--chdir",
+            "/mnt",
+            "/usr/bin/prlimit",
+        ]
+        .into_iter()
+        .map(OsString::from),
+    );
+    sandbox_arguments.push(OsString::from(format!("--as={memory_limit}")));
+    sandbox_arguments.push(OsString::from("--"));
+    sandbox_arguments.push(OsString::from(isolated_executable));
+    sandbox_arguments.extend(arguments.iter().map(OsString::from));
+    sandbox_arguments
+}
+
+fn publication_toolchain_root(lean_toolchain: &str) -> Result<PathBuf, AppError> {
+    let configured = std::env::var_os("ELAN_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".elan")))
+        .ok_or_else(|| {
+            publication_isolation_error(
+                "publication worker does not expose ELAN_HOME or HOME for the pinned toolchain",
+            )
+        })?;
+    let canonical = std::fs::canonicalize(&configured).map_err(|error| {
+        publication_isolation_error(format!(
+            "publication ELAN_HOME `{}` could not be resolved: {error}",
+            configured.display()
+        ))
+    })?;
+    if !canonical.is_dir() {
+        return Err(publication_isolation_error(format!(
+            "publication ELAN_HOME `{}` is not a directory",
+            canonical.display()
+        )));
+    }
+    let elan = canonical.join("bin").join("elan");
+    if !elan.is_file() {
+        return Err(publication_isolation_error(format!(
+            "publication Elan executable `{}` is unavailable",
+            elan.display()
+        )));
+    }
+    let output = Command::new(&elan)
+        .args(["which", "lean"])
+        .stdin(Stdio::null())
+        .env_clear()
+        .env("ELAN_HOME", &canonical)
+        .env("ELAN_TOOLCHAIN", lean_toolchain)
+        .output()
+        .map_err(|error| {
+            publication_isolation_error(format!(
+                "publication toolchain root could not be resolved: {error}"
+            ))
+        })?;
+    let lean_path = std::str::from_utf8(&output.stdout)
+        .unwrap_or_default()
+        .trim();
+    if !output.status.success()
+        || !output.stderr.is_empty()
+        || lean_path.is_empty()
+        || lean_path.len() > 4_096
+    {
+        return Err(publication_isolation_error(
+            "publication Elan query returned an invalid toolchain path",
+        ));
+    }
+    let lean = std::fs::canonicalize(lean_path).map_err(|error| {
+        publication_isolation_error(format!(
+            "publication Lean executable `{lean_path}` could not be resolved: {error}"
+        ))
+    })?;
+    let root = lean
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| publication_isolation_error("publication Lean path has no toolchain root"))?
+        .to_path_buf();
+    let toolchains = std::fs::canonicalize(canonical.join("toolchains")).map_err(|error| {
+        publication_isolation_error(format!(
+            "publication Elan toolchain directory could not be resolved: {error}"
+        ))
+    })?;
+    if root.parent() != Some(toolchains.as_path())
+        || !root.join("bin").join("lean").is_file()
+        || !root.join("bin").join("lake").is_file()
+    {
+        return Err(publication_isolation_error(
+            "publication Lean and Lake executables are not one installed Elan toolchain",
+        ));
+    }
+    Ok(root)
+}
+
+#[cfg(unix)]
+struct PublicationWorkspaceOwnership {
+    workspace: PathBuf,
+    uid: String,
+    gid: String,
+    permission_modes: Vec<(PathBuf, u32)>,
+    root_owned: bool,
+}
+
+#[cfg(unix)]
+impl PublicationWorkspaceOwnership {
+    fn prepare(workspace: &Path, lean_toolchain: &str) -> Result<Self, AppError> {
+        use std::os::unix::fs::MetadataExt;
+
+        let workspace = std::fs::canonicalize(workspace).map_err(|error| {
+            publication_isolation_error(format!(
+                "publication workspace could not be resolved for ownership isolation: {error}"
+            ))
+        })?;
+        if workspace == Path::new("/") || workspace.parent().is_none() {
+            return Err(publication_isolation_error(
+                "publication workspace ownership isolation refused a broad path",
+            ));
+        }
+        let disposable_workspace = workspace.ancestors().any(|ancestor| {
+            ancestor
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("mcl-lean-") || name.starts_with(".mcl-release-replay-")
+                })
+        });
+        if !disposable_workspace {
+            return Err(publication_isolation_error(
+                "publication workspace ownership isolation requires an application-created disposable workspace",
+            ));
+        }
+        let uid = publication_numeric_identity("-u")?;
+        let gid = publication_numeric_identity("-g")?;
+        let numeric_uid = uid.parse::<u32>().map_err(|_| {
+            publication_isolation_error(
+                "publication worker identity is not a valid Unix user identifier",
+            )
+        })?;
+        let metadata = std::fs::metadata(&workspace).map_err(|error| {
+            publication_isolation_error(format!(
+                "publication workspace ownership could not be inspected: {error}"
+            ))
+        })?;
+        if !metadata.is_dir() || (numeric_uid != 0 && metadata.uid() != numeric_uid) {
+            return Err(publication_isolation_error(
+                "publication workspace is not one worker-owned directory",
+            ));
+        }
+        let toolchain_root = publication_toolchain_root(lean_toolchain)?;
+        let mut ownership = Self {
+            workspace,
+            uid,
+            gid,
+            permission_modes: Vec::new(),
+            root_owned: false,
+        };
+        let workspace_source = ownership.workspace.clone();
+        for source in [&workspace_source, &toolchain_root] {
+            if let Err(error) = publication_make_mount_source_traversable(
+                source,
+                numeric_uid,
+                &mut ownership.permission_modes,
+            ) {
+                ownership.restore();
+                return Err(error);
+            }
+        }
+        // A sudo-root Bubblewrap user namespace maps the requested inner uid to
+        // host root. The disposable workspace must have the same host ownership so
+        // Lake can persist cache and build outputs across isolated invocations.
+        ownership.root_owned = true;
+        if let Err(error) = publication_sudo_chown(&ownership.workspace, "0:0") {
+            ownership.restore();
+            return Err(error);
+        }
+        Ok(ownership)
+    }
+
+    fn restore(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+
+        if self.root_owned {
+            let owner = format!("{}:{}", self.uid, self.gid);
+            let _ = publication_sudo_chown(&self.workspace, &owner);
+            self.root_owned = false;
+        }
+        for (directory, mode) in self.permission_modes.drain(..).rev() {
+            let _ = std::fs::set_permissions(directory, std::fs::Permissions::from_mode(mode));
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for PublicationWorkspaceOwnership {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
+#[cfg(unix)]
+fn publication_make_mount_source_traversable(
+    source: &Path,
+    current_uid: u32,
+    permission_modes: &mut Vec<(PathBuf, u32)>,
+) -> Result<(), AppError> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    for directory in source.ancestors() {
+        let metadata = std::fs::metadata(directory).map_err(|error| {
+            publication_isolation_error(format!(
+                "publication mount source directory `{}` could not be inspected: {error}",
+                directory.display()
+            ))
+        })?;
+        if !metadata.is_dir() {
+            return Err(publication_isolation_error(format!(
+                "publication mount source ancestor `{}` is not a directory",
+                directory.display()
+            )));
+        }
+        let mode = metadata.permissions().mode();
+        if mode & 0o001 != 0 {
+            continue;
+        }
+        if current_uid != 0 && metadata.uid() != current_uid {
+            return Err(publication_isolation_error(format!(
+                "publication mount source ancestor `{}` is not traversable or owned by the worker",
+                directory.display()
+            )));
+        }
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(mode | 0o001))
+            .map_err(|error| {
+                publication_isolation_error(format!(
+                    "publication mount source ancestor `{}` could not gain traversal permission: {error}",
+                    directory.display()
+                ))
+            })?;
+        permission_modes.push((directory.to_path_buf(), mode));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn publication_sudo_chown(workspace: &Path, owner: &str) -> Result<(), AppError> {
+    let output = Command::new("/usr/bin/sudo")
+        .args(["-n", "/usr/bin/chown", "-R", owner, "--"])
+        .arg(workspace)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .env_clear()
+        .output()
+        .map_err(|error| {
+            publication_isolation_error(format!(
+                "publication workspace ownership control could not start: {error}"
+            ))
+        })?;
+    if !output.status.success() {
+        let diagnostic = String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .chars()
+            .take(512)
+            .collect::<String>();
+        return Err(publication_isolation_error(format!(
+            "publication workspace ownership control failed: {diagnostic}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+struct PublicationWorkspaceOwnership;
+
+#[cfg(not(unix))]
+impl PublicationWorkspaceOwnership {
+    fn prepare(_workspace: &Path, _lean_toolchain: &str) -> Result<Self, AppError> {
+        Err(publication_isolation_error(
+            "publication workspace ownership isolation requires a Unix worker",
+        ))
+    }
+}
+
+fn publication_numeric_identity(argument: &str) -> Result<String, AppError> {
+    let output = Command::new("/usr/bin/id")
+        .arg(argument)
+        .stdin(Stdio::null())
+        .env_clear()
+        .output()
+        .map_err(|error| {
+            publication_isolation_error(format!(
+                "publication worker identity could not be resolved: {error}"
+            ))
+        })?;
+    let value = std::str::from_utf8(&output.stdout)
+        .unwrap_or_default()
+        .trim();
+    if !output.status.success()
+        || !output.stderr.is_empty()
+        || value.is_empty()
+        || value.len() > 20
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(publication_isolation_error(
+            "publication worker identity command returned an invalid numeric identity",
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+fn publication_isolation_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        "MCL_PUBLICATION_ISOLATION_UNAVAILABLE",
+        message,
+        false,
+        "Run the exact publication profile on protected Linux CI with sudo, chown, Bubblewrap, prlimit, and the pinned Elan toolchain.",
+    )
 }
 
 pub(crate) struct ProcessCapture {
@@ -253,20 +1099,24 @@ pub(crate) struct ProcessCapture {
     pub duration_milliseconds: u64,
     pub timed_out: bool,
     pub output_limit_exceeded: bool,
+    pub memory_limit_enforced: bool,
+    pub network_isolation_enforced: bool,
 }
 
-fn run_bounded_process(
+fn run_bounded_lean_process(
     executable: &str,
     arguments: &[&str],
     workspace: &Path,
     timeout: Duration,
     max_output_bytes: u64,
     elan_toolchain: Option<&str>,
+    lean_num_threads: &str,
 ) -> Result<ProcessCapture, AppError> {
     let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-    let extra_environment = elan_toolchain
-        .map(|toolchain| vec![("ELAN_TOOLCHAIN", toolchain)])
-        .unwrap_or_default();
+    let mut extra_environment = vec![("LEAN_NUM_THREADS", lean_num_threads)];
+    if let Some(toolchain) = elan_toolchain {
+        extra_environment.push(("ELAN_TOOLCHAIN", toolchain));
+    }
     run_bounded_external(
         Path::new(executable),
         &arguments,
@@ -274,6 +1124,45 @@ fn run_bounded_process(
         timeout,
         max_output_bytes,
         &extra_environment,
+        "MCL_VERIFIER_LAUNCH_FAILED",
+        "allowlisted Lean executable",
+    )
+}
+
+fn run_bounded_cache_process(
+    executable: &str,
+    arguments: &[&str],
+    workspace: &Path,
+    timeout: Duration,
+    max_output_bytes: u64,
+    environment: &EnvironmentManifest,
+    lean_num_threads: &str,
+) -> Result<ProcessCapture, AppError> {
+    if environment.trust_profile == TrustProfile::Publication {
+        return run_bounded_publication_process(
+            executable,
+            arguments,
+            workspace,
+            timeout,
+            max_output_bytes,
+            environment,
+            lean_num_threads,
+            false,
+            Some(MATHLIB_CACHE_DIRECTORY),
+        );
+    }
+    let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+    run_bounded_external(
+        Path::new(executable),
+        &arguments,
+        workspace,
+        timeout,
+        max_output_bytes,
+        &[
+            ("ELAN_TOOLCHAIN", environment.lean_toolchain.as_str()),
+            ("LEAN_NUM_THREADS", lean_num_threads),
+            ("MATHLIB_CACHE_DIR", MATHLIB_CACHE_DIRECTORY),
+        ],
         "MCL_VERIFIER_LAUNCH_FAILED",
         "allowlisted Lean executable",
     )
@@ -372,6 +1261,8 @@ pub(crate) fn run_bounded_external(
         duration_milliseconds: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
         timed_out,
         output_limit_exceeded: exceeded.load(Ordering::Relaxed),
+        memory_limit_enforced: false,
+        network_isolation_enforced: false,
     })
 }
 
@@ -492,6 +1383,132 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lake_project_build_uses_closed_concurrency_and_olean_target() {
+        assert_eq!(lean_num_threads_configuration(1), "1");
+        assert_eq!(lean_num_threads_configuration(16), "16");
+        assert_eq!(lake_olean_target("Final.lean"), "Final.lean:olean");
+    }
+
+    #[test]
+    fn publication_sandbox_separates_contained_fetch_from_networkless_proof() {
+        let arguments = publication_sandbox_arguments(
+            "/opt/bin/lake",
+            &["build", "Final.lean:olean"],
+            Path::new("workspace"),
+            Path::new("elan"),
+            "1001",
+            "1001",
+            12_884_901_888,
+            "1",
+            "leanprover/lean4:v4.32.0-rc1",
+            true,
+            None,
+        )
+        .into_iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+        assert_eq!(
+            &arguments[..4],
+            ["-n", "/usr/bin/bwrap", "--unshare-all", "--die-with-parent"]
+        );
+        let clear = arguments
+            .iter()
+            .position(|value| value == "--clearenv")
+            .expect("clear environment");
+        let first_set = arguments
+            .iter()
+            .position(|value| value == "--setenv")
+            .expect("typed environment");
+        assert!(clear < first_set);
+        assert!(
+            arguments
+                .windows(2)
+                .any(|values| values == ["--uid", "1001"])
+        );
+        assert!(
+            arguments
+                .windows(2)
+                .any(|values| values == ["--gid", "1001"])
+        );
+        assert!(
+            arguments
+                .windows(3)
+                .any(|values| values == ["--setenv", "LEAN_NUM_THREADS", "1"])
+        );
+        assert!(
+            arguments
+                .windows(3)
+                .any(|values| values
+                    == ["--setenv", "ELAN_TOOLCHAIN", "leanprover/lean4:v4.32.0-rc1"])
+        );
+        assert!(
+            arguments
+                .windows(3)
+                .any(|values| values == ["--bind", "workspace", "/mnt"])
+        );
+        assert!(
+            arguments
+                .windows(3)
+                .any(|values| values == ["--ro-bind", "elan", "/opt"])
+        );
+        assert!(!arguments.iter().any(|value| value == "--share-net"));
+        for masked in ["/home", "/root", "/run", "/tmp"] {
+            assert!(
+                arguments
+                    .windows(2)
+                    .any(|values| values == ["--tmpfs", masked])
+            );
+        }
+        assert_eq!(
+            &arguments[arguments.len() - 6..],
+            [
+                "/usr/bin/prlimit",
+                "--as=12884901888",
+                "--",
+                "/opt/bin/lake",
+                "build",
+                "Final.lean:olean",
+            ]
+        );
+
+        let preparation = publication_sandbox_arguments(
+            "/opt/bin/lake",
+            &["exe", "cache", "get-"],
+            Path::new("workspace"),
+            Path::new("elan"),
+            "1001",
+            "1001",
+            12_884_901_888,
+            "1",
+            "leanprover/lean4:v4.32.0-rc1",
+            false,
+            Some(".mathlib-cache"),
+        )
+        .into_iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+        assert!(preparation.iter().any(|value| value == "--share-net"));
+        let unshare = preparation
+            .iter()
+            .position(|value| value == "--unshare-all")
+            .expect("namespace isolation");
+        let share = preparation
+            .iter()
+            .position(|value| value == "--share-net")
+            .expect("controlled fetch network");
+        let clear = preparation
+            .iter()
+            .position(|value| value == "--clearenv")
+            .expect("clear environment");
+        assert!(unshare < share && share < clear);
+        assert!(
+            preparation
+                .windows(3)
+                .any(|values| values == ["--setenv", "MATHLIB_CACHE_DIR", ".mathlib-cache"])
+        );
+    }
+
+    #[test]
     fn unsafe_tokens_are_detected_but_comments_and_strings_do_not_trigger() {
         for (source, expected) in [
             ("theorem x : True := by sorry\n", "sorry"),
@@ -551,7 +1568,25 @@ mod tests {
                 b"'MathOS.ambiguous' does not depend on any axioms\n'MathOS.ambiguous' does not depend on any axioms\n",
                 b"",
             )
-            .expect_err("duplicate declaration output rejected")
+            .expect("repeated identical no-axiom output"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_axiom_dependencies(
+                "MathOS.repeated",
+                b"'MathOS.repeated' depends on axioms: [propext, Classical.choice]\n",
+                b"'MathOS.repeated' depends on axioms: [propext, Classical.choice]\n",
+            )
+            .expect("repeated identical axiom output"),
+            ["Classical.choice", "propext"]
+        );
+        assert_eq!(
+            parse_axiom_dependencies(
+                "MathOS.conflicting",
+                b"'MathOS.conflicting' depends on axioms: [propext]\n",
+                b"'MathOS.conflicting' depends on axioms: [Classical.choice]\n",
+            )
+            .expect_err("conflicting repeated output rejected")
             .code,
             "MCL_AUDIT_OUTPUT_INVALID"
         );
@@ -571,13 +1606,17 @@ mod tests {
     #[test]
     fn process_capture_enforces_output_and_time_bounds() {
         let workspace = tempfile::TempDir::new().expect("workspace");
-        let selected = run_bounded_process(
+        let selected = run_bounded_lean_process(
             "sh",
-            &["-c", "test \"$ELAN_TOOLCHAIN\" = leanprover/lean4:v4.32.0"],
+            &[
+                "-c",
+                "test \"$ELAN_TOOLCHAIN\" = leanprover/lean4:v4.32.0 && test \"$LEAN_NUM_THREADS\" = 1",
+            ],
             workspace.path(),
             Duration::from_secs(1),
             64,
             Some("leanprover/lean4:v4.32.0"),
+            "1",
         )
         .expect("typed toolchain environment");
         assert_eq!(selected.exit_code, Some(0));
@@ -602,36 +1641,39 @@ mod tests {
             })
             .expect("test process has one non-allowlisted environment variable");
         let leak_check = format!("test -z \"${{{leaked_name}+present}}\"");
-        let cleared = run_bounded_process(
+        let cleared = run_bounded_lean_process(
             "sh",
             &["-c", &leak_check],
             workspace.path(),
             Duration::from_secs(1),
             64,
             None,
+            "1",
         )
         .expect("cleared child environment");
         assert_eq!(cleared.exit_code, Some(0), "leaked {leaked_name}");
 
-        let output = run_bounded_process(
+        let output = run_bounded_lean_process(
             "sh",
             &["-c", "printf 123456789"],
             workspace.path(),
             Duration::from_secs(1),
             4,
             None,
+            "1",
         )
         .expect("bounded output process");
         assert!(output.output_limit_exceeded);
         assert!(output.stdout.len() + output.stderr.len() <= 4);
 
-        let timeout = run_bounded_process(
+        let timeout = run_bounded_lean_process(
             "sh",
             &["-c", "while :; do :; done"],
             workspace.path(),
             Duration::from_millis(30),
             64,
             None,
+            "1",
         )
         .expect("bounded timeout process");
         assert!(timeout.timed_out);

@@ -905,10 +905,12 @@ fn validate_publication_reports(
     files: &BTreeMap<String, Vec<u8>>,
     artifact_hashes: &BTreeSet<String>,
 ) -> Result<(), AppError> {
-    let policy = crate::domain::publication::committed_publication_policy()?;
     let report: crate::domain::PublicationReport = decode_canonical(
         required(files, "reports/publication-report.json")?,
         "publication report",
+    )?;
+    let policy = crate::domain::publication::committed_publication_policy_for_hash(
+        &report.request.policy_hash,
     )?;
     report.validate_candidate(&policy)?;
     let closure: PublicationRetainedClosure = decode_canonical(
@@ -946,6 +948,7 @@ fn validate_publication_reports(
         || report.request.outcome != manifest.publication.outcome
         || report.request.environment_hash != manifest.publication.environment_hash
         || report.request.module_artifact_hash != manifest.publication.module_artifact_hash
+        || report.request.project != manifest.publication.project
         || report.request.declaration_name != manifest.publication.declaration_name
         || stage.stage.report_artifact_hash != manifest.publication.report_artifact_hash
         || stage.stage.retained_closure_artifact_hash
@@ -1068,6 +1071,28 @@ fn validate_replay_bindings(
             "release replay inputs differ from publication binding",
         ));
     }
+    match (
+        &manifest.publication.project,
+        &manifest.replay.project_archive_path,
+    ) {
+        (None, None) => {}
+        (Some(project), Some(project_path)) => {
+            let artifact_path = format!("artifacts/{}", project.archive_artifact_hash);
+            let project_bytes = required(files, project_path)?;
+            if project_bytes != required(files, &artifact_path)?
+                || format!("{:x}", Sha256::digest(project_bytes)) != project.archive_artifact_hash
+            {
+                return Err(invalid_semantics(
+                    "release replay project archive differs from its publication binding",
+                ));
+            }
+        }
+        _ => {
+            return Err(invalid_semantics(
+                "release replay project path disagrees with its publication binding",
+            ));
+        }
+    }
     let exported: crate::domain::ReleasePedagogyBinding = decode_canonical(
         required(files, "exports/pedagogy-path.json")?,
         "pedagogy path export",
@@ -1101,19 +1126,69 @@ fn replay_release(
         .prefix(".mcl-release-replay-")
         .tempdir()
         .map_err(|error| AppError::io("create release replay workspace", error))?;
-    let mut driver = module.to_vec();
-    driver.extend_from_slice(format!("\n#check {}\n", manifest.replay.declaration_name).as_bytes());
-    write_new_member(workspace.path(), "Driver.lean", &driver)?;
-    let result = crate::verifier::execute_release_lean(
-        lean_command,
-        workspace.path(),
-        "Driver.lean",
-        &environment.manifest,
-    )?;
+    let result = if let Some(project) = &manifest.publication.project {
+        let project_path = manifest
+            .replay
+            .project_archive_path
+            .as_deref()
+            .expect("validated project replay path");
+        let materialized = crate::verifier::materialize_lean_project(
+            required(files, project_path)?,
+            project,
+            &manifest.publication.module_artifact_hash,
+            &environment.manifest,
+            workspace.path(),
+        )?;
+        if let Some(token) = materialized.forbidden_source_token {
+            return Err(release_error(
+                "MCL_RELEASE_REPLAY_SOURCE_UNSAFE",
+                format!(
+                    "release project contains forbidden verifier token `{token}` in {}",
+                    materialized
+                        .forbidden_source_path
+                        .as_deref()
+                        .unwrap_or("an unknown source")
+                ),
+                "Quarantine the release and rebuild from a safe publication project.",
+            ));
+        }
+        let driver = format!(
+            "import {}\n\n#check {}\n#print axioms {}\n",
+            project.module_name(),
+            manifest.replay.declaration_name,
+            manifest.replay.declaration_name
+        );
+        write_new_member(
+            &materialized.root,
+            "MathOSVerifierDriver.lean",
+            driver.as_bytes(),
+        )?;
+        crate::verifier::execute_release_lake_project(
+            lean_command,
+            if cfg!(windows) { "lake.exe" } else { "lake" },
+            &materialized.root,
+            "MathOSVerifierDriver.lean",
+            project,
+            &environment.manifest,
+        )?
+    } else {
+        let mut driver = module.to_vec();
+        driver.extend_from_slice(
+            format!("\n#check {}\n", manifest.replay.declaration_name).as_bytes(),
+        );
+        write_new_member(workspace.path(), "Driver.lean", &driver)?;
+        crate::verifier::execute_release_lean(
+            lean_command,
+            if cfg!(windows) { "lake.exe" } else { "lake" },
+            workspace.path(),
+            "Driver.lean",
+            &environment.manifest,
+        )?
+    };
     if result.timed_out
         || result.output_limit_exceeded
         || result.exit_code != Some(0)
-        || !result.stderr.is_empty()
+        || (manifest.publication.project.is_none() && !result.stderr.is_empty())
     {
         return Err(release_error(
             "MCL_RELEASE_REPLAY_FAILED",
@@ -1126,6 +1201,24 @@ fn replay_release(
             ),
             "Activate the exact pinned Lean toolchain and verify the unchanged release on its declared platform.",
         ));
+    }
+    if manifest.publication.project.is_some() {
+        let report: crate::domain::PublicationReport = decode_canonical(
+            required(files, "reports/publication-report.json")?,
+            "publication report",
+        )?;
+        let observed = crate::verifier::parse_axiom_dependencies(
+            &manifest.replay.declaration_name,
+            &result.stdout,
+            &result.stderr,
+        )?;
+        if observed != report.observed_axioms {
+            return Err(release_error(
+                "MCL_RELEASE_REPLAY_FAILED",
+                "release project replay axiom surface differs from its publication report",
+                "Quarantine the release and rerun the exact protected project publication.",
+            ));
+        }
     }
     Ok((
         result.observed_toolchain_version,

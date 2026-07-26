@@ -11,6 +11,7 @@ use crate::domain::trust::{
     CoverageTrustStatus, DefinitionTrustStatus, FidelityTrustStatus, KernelTrustStatus,
     PromotionAssessment, PromotionProfile, ReuseTrustStatus,
 };
+use crate::domain::verifier::LeanProjectBinding;
 use crate::error::AppError;
 
 pub const RELEASE_MANIFEST_SCHEMA_VERSION: &str = "release_manifest/1";
@@ -123,6 +124,8 @@ pub struct ReleasePublicationBinding {
     pub outcome: PublicationOutcome,
     pub environment_hash: String,
     pub module_artifact_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<LeanProjectBinding>,
     pub declaration_name: String,
 }
 
@@ -141,6 +144,8 @@ pub struct ReleasePedagogyBinding {
 pub struct ReleaseReplayBinding {
     pub module_path: String,
     pub environment_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_archive_path: Option<String>,
     pub declaration_name: String,
 }
 
@@ -275,6 +280,7 @@ impl ReleaseManifest {
             self.replay.module_path.clone(),
             self.replay.environment_path.clone(),
         ];
+        required_paths.extend(self.replay.project_archive_path.clone());
         if self.schema_version == RELEASE_MANIFEST_V2_SCHEMA_VERSION {
             required_paths.push("reports/promotion-assessment.json".to_owned());
         }
@@ -416,6 +422,10 @@ impl ReleasePublicationBinding {
             || uuid::Uuid::parse_str(&self.authority_evidence_id).is_err()
             || uuid::Uuid::parse_str(&self.fidelity_evidence_id).is_err()
             || uuid::Uuid::parse_str(&self.subject.object_id).is_err()
+            || self.project.as_ref().is_some_and(|project| {
+                project.validate().is_err()
+                    || project.archive_artifact_hash == self.module_artifact_hash
+            })
             || !is_lean_name(&self.declaration_name)
         {
             return Err(release_error(
@@ -456,6 +466,11 @@ impl ReleaseReplayBinding {
     fn validate(&self, publication: &ReleasePublicationBinding) -> Result<(), AppError> {
         if self.module_path != "replay/Submission.lean"
             || self.environment_path != "replay/environment.json"
+            || self.project_archive_path
+                != publication
+                    .project
+                    .as_ref()
+                    .map(|_| "replay/project.tar".to_owned())
             || self.declaration_name != publication.declaration_name
         {
             return Err(release_error(
@@ -469,6 +484,16 @@ impl ReleaseReplayBinding {
 }
 
 pub fn release_manifest_schema() -> Value {
+    let project_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["archive_artifact_hash", "archive_root", "module_path"],
+        "properties": {
+            "archive_artifact_hash": {"$ref": "#/$defs/hash"},
+            "archive_root": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$"},
+            "module_path": {"type": "string", "minLength": 6, "maxLength": 512, "pattern": "^[A-Za-z0-9_']+(/[A-Za-z0-9_']+)*\\.lean$"}
+        }
+    });
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://mnehmos.ai/mathos/schemas/release/manifest/1",
@@ -487,9 +512,9 @@ pub fn release_manifest_schema() -> Value {
         "$defs": {
             "exact_ref": {"type": "object", "additionalProperties": false, "required": ["object_id", "version_hash"], "properties": {"object_id": {"type": "string", "format": "uuid"}, "version_hash": {"$ref": "#/$defs/hash"}}},
             "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "publication": {"type": "object", "additionalProperties": false, "required": ["ingestion_receipt_hash", "authority_evidence_id", "authority_evidence_hash", "fidelity_evidence_id", "fidelity_evidence_hash", "fidelity_report_artifact_hash", "stage_hash", "report_artifact_hash", "retained_closure_artifact_hash", "attestation_bundle_artifact_hash", "raw_verification_hash", "request_hash", "policy_hash", "subject", "outcome", "environment_hash", "module_artifact_hash", "declaration_name"], "properties": {"ingestion_receipt_hash": {"$ref": "#/$defs/hash"}, "authority_evidence_id": {"type": "string", "format": "uuid"}, "authority_evidence_hash": {"$ref": "#/$defs/hash"}, "fidelity_evidence_id": {"type": "string", "format": "uuid"}, "fidelity_evidence_hash": {"$ref": "#/$defs/hash"}, "fidelity_report_artifact_hash": {"$ref": "#/$defs/hash"}, "stage_hash": {"$ref": "#/$defs/hash"}, "report_artifact_hash": {"$ref": "#/$defs/hash"}, "retained_closure_artifact_hash": {"$ref": "#/$defs/hash"}, "attestation_bundle_artifact_hash": {"$ref": "#/$defs/hash"}, "raw_verification_hash": {"$ref": "#/$defs/hash"}, "request_hash": {"$ref": "#/$defs/hash"}, "policy_hash": {"$ref": "#/$defs/hash"}, "subject": {"$ref": "#/$defs/exact_ref"}, "outcome": {"enum": ["proof", "refutation"]}, "environment_hash": {"$ref": "#/$defs/hash"}, "module_artifact_hash": {"$ref": "#/$defs/hash"}, "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256}}},
+            "publication": {"type": "object", "additionalProperties": false, "required": ["ingestion_receipt_hash", "authority_evidence_id", "authority_evidence_hash", "fidelity_evidence_id", "fidelity_evidence_hash", "fidelity_report_artifact_hash", "stage_hash", "report_artifact_hash", "retained_closure_artifact_hash", "attestation_bundle_artifact_hash", "raw_verification_hash", "request_hash", "policy_hash", "subject", "outcome", "environment_hash", "module_artifact_hash", "declaration_name"], "properties": {"ingestion_receipt_hash": {"$ref": "#/$defs/hash"}, "authority_evidence_id": {"type": "string", "format": "uuid"}, "authority_evidence_hash": {"$ref": "#/$defs/hash"}, "fidelity_evidence_id": {"type": "string", "format": "uuid"}, "fidelity_evidence_hash": {"$ref": "#/$defs/hash"}, "fidelity_report_artifact_hash": {"$ref": "#/$defs/hash"}, "stage_hash": {"$ref": "#/$defs/hash"}, "report_artifact_hash": {"$ref": "#/$defs/hash"}, "retained_closure_artifact_hash": {"$ref": "#/$defs/hash"}, "attestation_bundle_artifact_hash": {"$ref": "#/$defs/hash"}, "raw_verification_hash": {"$ref": "#/$defs/hash"}, "request_hash": {"$ref": "#/$defs/hash"}, "policy_hash": {"$ref": "#/$defs/hash"}, "subject": {"$ref": "#/$defs/exact_ref"}, "outcome": {"enum": ["proof", "refutation"]}, "environment_hash": {"$ref": "#/$defs/hash"}, "module_artifact_hash": {"$ref": "#/$defs/hash"}, "project": project_schema, "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256}}},
             "pedagogy": {"type": "object", "additionalProperties": false, "required": ["mode", "include_soft", "root", "unit_order", "edge_ids"], "properties": {"mode": {"enum": ["prerequisites", "recommended"]}, "include_soft": {"type": "boolean"}, "root": {"$ref": "#/$defs/exact_ref"}, "unit_order": {"type": "array", "minItems": 1, "maxItems": 1000, "items": {"$ref": "#/$defs/exact_ref"}}, "edge_ids": {"type": "array", "maxItems": 4096, "items": {"type": "string", "format": "uuid"}}}},
-            "replay": {"type": "object", "additionalProperties": false, "required": ["module_path", "environment_path", "declaration_name"], "properties": {"module_path": {"const": "replay/Submission.lean"}, "environment_path": {"const": "replay/environment.json"}, "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256}}},
+            "replay": {"type": "object", "additionalProperties": false, "required": ["module_path", "environment_path", "declaration_name"], "properties": {"module_path": {"const": "replay/Submission.lean"}, "environment_path": {"const": "replay/environment.json"}, "project_archive_path": {"const": "replay/project.tar"}, "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256}}},
             "member": {"type": "object", "additionalProperties": false, "required": ["path", "kind", "content_hash", "byte_size", "license_expression", "restriction", "artifact_metadata"], "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 512}, "kind": {"enum": ["object", "edge", "evidence", "artifact", "environment", "license", "replay", "report", "export"]}, "content_hash": {"$ref": "#/$defs/hash"}, "byte_size": {"type": "integer", "minimum": 0, "maximum": MAX_RELEASE_MEMBER_BYTES}, "license_expression": {"type": ["string", "null"], "maxLength": 512}, "restriction": {"enum": ["public", "restricted", "private"]}, "artifact_metadata": {"oneOf": [{"$ref": "https://mnehmos.ai/mathos/schemas/artifact/metadata/1"}, {"type": "null"}]}}}
         }
     })
@@ -597,7 +622,7 @@ mod tests {
         assert_eq!(committed, release_manifest_schema());
         assert_eq!(
             value_hash(&committed).expect("release schema hash"),
-            "63090d65dea509c4c3e1d4e5572d29fa688e4cc30792b3f4c94a1647f9491ae3"
+            "7b2653a68474a5872276dbcde1fe9db60af7f1cd1bcc503854ba59ef2ce6dbdb"
         );
         let committed_v2: Value = serde_json::from_str(include_str!(
             "../../schemas/release/release-manifest-2.schema.json"
@@ -606,7 +631,7 @@ mod tests {
         assert_eq!(committed_v2, release_manifest_v2_schema());
         assert_eq!(
             value_hash(&committed_v2).expect("release v2 schema hash"),
-            "3da87107817ca9bf658398aed3cfbe9db65e3878987dcc6e376db0150772e3fc"
+            "a201d7902ff590c40aa07fefa57bfa729bb73df13913c3504cec0e1ce03d0363"
         );
     }
 

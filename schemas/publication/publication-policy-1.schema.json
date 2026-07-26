@@ -14,7 +14,7 @@
     "workflow_path": {"const": ".github/workflows/publication.yml"},
     "required_source_ref": {"const": "refs/heads/main"},
     "required_runner_environment": {"const": "github_hosted"},
-    "required_lean_toolchain": {"pattern": "^leanprover/lean4:v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "required_lean_toolchain": {"pattern": "^leanprover/lean4:v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"},
     "allowed_axioms": {"type": "array", "maxItems": 256, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
     "requires_clean_checkout": {"const": true},
     "requires_dependency_closure": {"const": true},

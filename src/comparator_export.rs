@@ -1196,6 +1196,7 @@ mod tests {
             formal_system: EnvironmentFormalSystem::Lean4,
             lean_toolchain: format!("leanprover/lean4:{lean_version}"),
             dependencies: Vec::<DependencyRevision>::new(),
+            dependency_preparation: None,
             import_manifest: Vec::new(),
             project_configuration_hashes: BTreeMap::from([(
                 "lean-toolchain".to_owned(),
@@ -1239,6 +1240,7 @@ mod tests {
             claim_polarity: Some(FormalizationClaimPolarity::Claim),
             environment_hash: environment_hash.clone(),
             module_artifact_hash: module_hash.clone(),
+            project: None,
             declaration_name: "Fixture.theorem".to_owned(),
             exact_theorem_type: "True".to_owned(),
             declaration_hash: "3".repeat(64),
@@ -1289,6 +1291,7 @@ mod tests {
             outcome: crate::domain::PublicationOutcome::Proof,
             environment_hash,
             module_artifact_hash: module_hash,
+            project: None,
             declaration_name: "Fixture.theorem".to_owned(),
         };
         let fidelity_path = format!(
@@ -1379,6 +1382,7 @@ mod tests {
             replay: ReleaseReplayBinding {
                 module_path: "replay/Submission.lean".to_owned(),
                 environment_path: "replay/environment.json".to_owned(),
+                project_archive_path: None,
                 declaration_name: "Fixture.theorem".to_owned(),
             },
             trust: None,

@@ -1,0 +1,19 @@
+BH Pilot C: what the formalization establishes
+
+The paper's headline claim is an asymptotic counterexample to nominal false-discovery-rate
+control. In the specified three-block correlated two-sided Gaussian model, ordinary
+Benjamini-Hochberg at level 0.01 has FDR_N greater than 0.0104 for all sufficiently large N.
+
+The Lean declaration BH.Final.GaussianBHCounterexample proves that exact eventual bound. Lean
+uses natural-number index N for a sample of size 100*(N+1), so its statement is the paper's
+positive-integer sequence after a successor reindexing.
+
+The proof project keeps two kinds of material distinct. General empirical-CDF, BH, Gaussian, and
+asymptotic lemmas may be useful outside this campaign. The headline theorem, concrete factor
+model, and generated 5000-bin certificate are paper-specific. The generated certificate's
+provenance is the pinned Mnehmos/BHFormalization project; it is not the paper's separate interval
+certificate.
+
+Statement fidelity, Lean kernel verification, definition grounding, reuse readiness, and theorem
+coverage are independent MathOS judgments. A source-correspondence review cannot replace the
+clean Lean build or its axiom audit.

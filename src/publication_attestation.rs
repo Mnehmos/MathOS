@@ -653,6 +653,7 @@ mod tests {
             axiom_audit_evidence_hash: "4".repeat(64),
             environment_hash: "5".repeat(64),
             module_artifact_hash: "6".repeat(64),
+            project: None,
             declaration_name: "MathOS.Publication.smoke".to_owned(),
             policy_hash: policy.policy_hash().expect("policy hash"),
             source_commit_sha: "a".repeat(40),

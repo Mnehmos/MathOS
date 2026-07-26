@@ -28,8 +28,8 @@ use crate::domain::{
     PublicationIngestionReceiptSnapshot, PublicationOutcome, PublicationRequest,
     PublicationRetainedArtifactRole, PublicationStage, PublicationStageSnapshot, RecordDraft,
     RecordKind, RecordSnapshot, ReleasePublicationBinding, ReviewedTrustStatus,
-    TrustTransitionRequest, TrustTransitionSnapshot, VerifierJobRequest, VerifierJobSnapshot,
-    VerifierJobState, committed_comparator_authority_policy,
+    TrustTransitionRequest, TrustTransitionSnapshot, VerifierExecutable, VerifierJobRequest,
+    VerifierJobSnapshot, VerifierJobState, committed_comparator_authority_policy,
 };
 use crate::error::AppError;
 
@@ -2181,6 +2181,13 @@ impl Store {
                 .map_err(|error| AppError::database("commit empty verifier job lease", error))?;
             return Ok(None);
         };
+        let queued = read_verifier_job(&transaction, &job_id)?;
+        let environment = read_environment(&transaction, &queued.request.environment_hash)?;
+        validate_worker_lease_covers_timeout(
+            lease_seconds,
+            environment.manifest.resource_limits.timeout_seconds,
+            false,
+        )?;
         transaction
             .execute(
                 "UPDATE jobs SET state = 'leased', lease_owner = ?2, lease_expires_at = unixepoch() + ?3, attempt_count = attempt_count + 1, progress_json = '{\"phase\":\"leased\"}', updated_at = unixepoch() WHERE job_id = ?1 AND state = 'queued'",
@@ -2410,6 +2417,13 @@ impl Store {
                 .map_err(|error| AppError::database("commit empty audit job lease", error))?;
             return Ok(None);
         };
+        let queued = read_audit_job(&transaction, &job_id)?;
+        let environment = read_environment(&transaction, &queued.request.environment_hash)?;
+        validate_worker_lease_covers_timeout(
+            lease_seconds,
+            environment.manifest.resource_limits.timeout_seconds,
+            true,
+        )?;
         transaction
             .execute(
                 "UPDATE jobs SET state = 'leased', lease_owner = ?2, lease_expires_at = unixepoch() + ?3, attempt_count = attempt_count + 1, progress_json = '{\"phase\":\"leased\"}', updated_at = unixepoch() WHERE job_id = ?1 AND state = 'queued'",
@@ -5365,6 +5379,7 @@ fn validate_comparator_authority_commit(
         || commit.release_publication.subject != commit.subject
         || commit.release_publication.environment_hash != commit.environment_hash
         || commit.release_publication.module_artifact_hash != formalization.module_artifact_hash
+        || commit.release_publication.project != formalization.project
         || commit.release_publication.declaration_name != formalization.declaration_name
     {
         return Err(comparator_store_error(
@@ -5644,40 +5659,61 @@ fn validate_worker_lease(worker: &str, lease_seconds: u64) -> Result<(), AppErro
         || !worker
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-        || !(1..=7_200).contains(&lease_seconds)
+        || !(1..=22_200).contains(&lease_seconds)
     {
         return Err(AppError::new(
             "MCL_VERIFIER_LEASE_INVALID",
             "verifier worker identity or lease duration is outside policy",
             false,
-            "Use a short stable worker name and a lease between 1 and 7200 seconds.",
+            "Use a short stable worker name and a lease between 1 and 22200 seconds.",
         ));
     }
     Ok(())
+}
+
+fn validate_worker_lease_covers_timeout(
+    lease_seconds: u64,
+    timeout_seconds: u64,
+    audit: bool,
+) -> Result<(), AppError> {
+    if lease_seconds >= timeout_seconds.saturating_add(60) {
+        return Ok(());
+    }
+    if audit {
+        return Err(AppError::new(
+            "MCL_AUDIT_LEASE_TOO_SHORT",
+            "audit worker lease does not cover the environment timeout plus cleanup margin",
+            true,
+            "Use a lease at least 60 seconds longer than the registered verifier timeout.",
+        ));
+    }
+    Err(AppError::new(
+        "MCL_VERIFIER_LEASE_TOO_SHORT",
+        "worker lease does not cover the environment timeout plus cleanup margin",
+        true,
+        "Use a lease at least 60 seconds longer than the registered verifier timeout.",
+    ))
 }
 
 fn validate_verifier_job_references(
     connection: &Connection,
     request: &VerifierJobRequest,
 ) -> Result<(), AppError> {
-    let environment_exists = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM environments WHERE environment_hash = ?1)",
-            [&request.environment_hash],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(|error| AppError::database("validate verifier job environment", error))?;
-    if !environment_exists {
-        return Err(AppError::new(
-            "MCL_VERIFIER_ENVIRONMENT_INVALID",
-            format!(
-                "verifier environment {} is not registered",
-                request.environment_hash
-            ),
-            false,
-            "Register and select an exact pinned environment before verification.",
-        ));
-    }
+    let environment = read_environment(connection, &request.environment_hash).map_err(|error| {
+        if error.code == "MCL_ENVIRONMENT_NOT_FOUND" {
+            AppError::new(
+                "MCL_VERIFIER_ENVIRONMENT_INVALID",
+                format!(
+                    "verifier environment {} is not registered",
+                    request.environment_hash
+                ),
+                false,
+                "Register and select an exact pinned environment before verification.",
+            )
+        } else {
+            error
+        }
+    })?;
     let media_type = connection
         .query_row(
             "SELECT media_type FROM artifacts WHERE artifact_hash = ?1",
@@ -5696,6 +5732,44 @@ fn validate_verifier_job_references(
             false,
             "Ingest and select an exact registered Lean source artifact before verification.",
         ));
+    }
+    match (
+        &request.project,
+        environment.manifest.verifier_command.executable,
+    ) {
+        (None, VerifierExecutable::Lean) => {}
+        (Some(project), VerifierExecutable::Lake) => {
+            if project.archive_artifact_hash == request.module_artifact_hash {
+                return Err(AppError::new(
+                    "MCL_VERIFIER_PROJECT_INVALID",
+                    "project archive and Lean module must be distinct exact artifacts",
+                    false,
+                    "Bind one tar archive artifact and its exact contained Lean module artifact.",
+                ));
+            }
+            let archive = read_artifact(connection, &project.archive_artifact_hash)?;
+            if archive.media_type != ArtifactMediaType::OctetStream
+                || archive
+                    .semantic_metadata
+                    .get("artifact_role")
+                    .is_none_or(|role| role != "lean_project_archive")
+            {
+                return Err(AppError::new(
+                    "MCL_VERIFIER_PROJECT_INVALID",
+                    "project archive artifact lacks controlled Lean-project metadata",
+                    false,
+                    "Ingest an application/octet-stream artifact with artifact_role=lean_project_archive.",
+                ));
+            }
+        }
+        _ => {
+            return Err(AppError::new(
+                "MCL_VERIFIER_PROJECT_INVALID",
+                "verifier request project mode disagrees with the registered command template",
+                false,
+                "Use standalone input with `lean`, or one exact project binding with `lake env lean`.",
+            ));
+        }
     }
     Ok(())
 }
@@ -5766,6 +5840,7 @@ fn validate_audit_job_references(
         })?;
     if formalization.environment_hash != request.environment_hash
         || formalization.module_artifact_hash != request.module_artifact_hash
+        || formalization.project != request.project
         || formalization.declaration_name != request.declaration_name
     {
         return Err(AppError::new(
@@ -5788,6 +5863,12 @@ fn validate_audit_job_references(
             .artifact_hashes
             .iter()
             .any(|hash| hash == &request.module_artifact_hash)
+        || request.project.as_ref().is_some_and(|project| {
+            !evidence
+                .payload
+                .artifact_hashes
+                .contains(&project.archive_artifact_hash)
+        })
     {
         return Err(AppError::new(
             "MCL_AUDIT_EVIDENCE_INVALID",
@@ -5805,13 +5886,7 @@ fn validate_audit_job_references(
             "Derive the audit policy hash from the committed policy.",
         ));
     }
-    let environment_exists = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM environments WHERE environment_hash = ?1)",
-            [&request.environment_hash],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(|error| AppError::database("validate audit environment", error))?;
+    let environment = read_environment(connection, &request.environment_hash)?;
     let module_media = connection
         .query_row(
             "SELECT media_type FROM artifacts WHERE artifact_hash = ?1",
@@ -5820,13 +5895,43 @@ fn validate_audit_job_references(
         )
         .optional()
         .map_err(|error| AppError::database("validate audit module", error))?;
-    if !environment_exists || module_media.as_deref() != Some("text/x-lean") {
+    if module_media.as_deref() != Some("text/x-lean") {
         return Err(AppError::new(
             "MCL_AUDIT_REFERENCE_INVALID",
             "audit environment or Lean module is not registered",
             false,
             "Restore the exact registered audit inputs before enqueueing.",
         ));
+    }
+    match (
+        &request.project,
+        environment.manifest.verifier_command.executable,
+    ) {
+        (None, VerifierExecutable::Lean) => {}
+        (Some(project), VerifierExecutable::Lake) => {
+            let archive = read_artifact(connection, &project.archive_artifact_hash)?;
+            if archive.media_type != ArtifactMediaType::OctetStream
+                || archive
+                    .semantic_metadata
+                    .get("artifact_role")
+                    .is_none_or(|role| role != "lean_project_archive")
+            {
+                return Err(AppError::new(
+                    "MCL_AUDIT_REFERENCE_INVALID",
+                    "audit project archive lacks controlled Lean-project metadata",
+                    false,
+                    "Restore the exact registered Lean project archive before enqueueing.",
+                ));
+            }
+        }
+        _ => {
+            return Err(AppError::new(
+                "MCL_AUDIT_REFERENCE_INVALID",
+                "audit project mode disagrees with its exact environment",
+                false,
+                "Derive audit inputs from the exact formalization and diagnostic job.",
+            ));
+        }
     }
     Ok(())
 }
@@ -5873,6 +5978,11 @@ fn validate_audit_evidence_references(
             .artifact_hashes
             .iter()
             .any(|hash| Some(hash) == job.result_artifact_hash.as_ref())
+        || job.request.project.as_ref().is_some_and(|project| {
+            !payload
+                .artifact_hashes
+                .contains(&project.archive_artifact_hash)
+        })
     {
         return Err(AppError::new(
             "MCL_AUDIT_EVIDENCE_MISMATCH",
@@ -6081,6 +6191,7 @@ fn validate_diagnostic_evidence_references(
     }
     if formalization.environment_hash != job.request.environment_hash
         || formalization.module_artifact_hash != job.request.module_artifact_hash
+        || formalization.project != job.request.project
         || formalization.declaration_name != job.request.declaration_name
     {
         return Err(AppError::new(
@@ -6106,6 +6217,11 @@ fn validate_diagnostic_evidence_references(
             .artifact_hashes
             .iter()
             .any(|hash| Some(hash) == job.result_artifact_hash.as_ref())
+        || job.request.project.as_ref().is_some_and(|project| {
+            !payload
+                .artifact_hashes
+                .contains(&project.archive_artifact_hash)
+        })
     {
         return Err(AppError::new(
             "MCL_EVIDENCE_ARTIFACT_MISMATCH",
@@ -7990,6 +8106,7 @@ mod tests {
                     environment_hash: environment.environment_hash.clone(),
                     module_artifact_hash: module.artifact_hash.clone(),
                     declaration_name: "kernelHistoryFixture".to_owned(),
+                    project: None,
                 },
                 0,
                 "kernel-history-author",
@@ -9930,6 +10047,7 @@ mod tests {
             outcome: publication.commit.outcome,
             environment_hash: publication.commit.environment_hash.clone(),
             module_artifact_hash: formalization.module_artifact_hash,
+            project: formalization.project,
             declaration_name: formalization.declaration_name,
         };
         let commit = ComparatorAuthorityCommit {
@@ -10321,6 +10439,7 @@ mod tests {
             axiom_audit_evidence_hash: test_hash(&format!("{label}-axiom-audit")),
             environment_hash: formalization.environment_hash,
             module_artifact_hash: formalization.module_artifact_hash,
+            project: formalization.project,
             declaration_name: formalization.declaration_name,
             policy_hash: test_hash(&format!("{label}-policy")),
             source_commit_sha: source_commit_sha.clone(),
@@ -10655,6 +10774,7 @@ mod tests {
             environment_hash: environment_hash.to_owned(),
             module_artifact_hash: artifact_hash.to_owned(),
             declaration_name: "MathOS.Verifier.fixture".to_owned(),
+            project: None,
         }
     }
 
@@ -10699,8 +10819,21 @@ mod tests {
         );
         assert_eq!(store.list_verifier_jobs(10).expect("job list").len(), 1);
 
+        assert_eq!(
+            store
+                .lease_next_verifier_job("undersized-worker", 179)
+                .expect_err("undersized lease rejected before claim")
+                .code,
+            "MCL_VERIFIER_LEASE_TOO_SHORT"
+        );
+        let still_queued = store
+            .get_verifier_job(&queued.job_id)
+            .expect("undersized lease leaves job readable");
+        assert_eq!(still_queued.state, VerifierJobState::Queued);
+        assert_eq!(still_queued.attempt_count, 0);
+
         let leased = store
-            .lease_next_verifier_job("worker-1", 60)
+            .lease_next_verifier_job("worker-1", 180)
             .expect("lease succeeds")
             .expect("queued job exists");
         assert_eq!(leased.job_id, queued.job_id);
@@ -10708,7 +10841,7 @@ mod tests {
         assert_eq!(leased.attempt_count, 1);
         assert!(
             store
-                .lease_next_verifier_job("worker-2", 60)
+                .lease_next_verifier_job("worker-2", 180)
                 .expect("empty lease succeeds")
                 .is_none()
         );
@@ -10803,7 +10936,7 @@ mod tests {
             .expect("terminal test job enqueues");
         let terminal_id = terminal.job_id;
         let leased_terminal = store
-            .lease_next_verifier_job("terminal-worker", 60)
+            .lease_next_verifier_job("terminal-worker", 180)
             .expect("terminal test lease")
             .expect("terminal job selected");
         assert_eq!(leased_terminal.job_id, terminal_id);
@@ -11563,6 +11696,7 @@ mod tests {
             axiom_audit_evidence_hash: "3".repeat(64),
             environment_hash: environment.environment_hash,
             module_artifact_hash: module.artifact_hash,
+            project: None,
             declaration_name: "MathOS.publicationFixture".to_owned(),
             policy_hash: "4".repeat(64),
             source_commit_sha: "5".repeat(40),
@@ -11754,7 +11888,7 @@ mod tests {
             .enqueue_verifier_job(&request, 0, "verifier", "evidence-job")
             .expect("job enqueued");
         store
-            .lease_next_verifier_job("evidence-worker", 60)
+            .lease_next_verifier_job("evidence-worker", 180)
             .expect("lease succeeds")
             .expect("job leased");
         store
@@ -11850,6 +11984,7 @@ mod tests {
             diagnostic_evidence_hash: evidence.evidence_hash.clone(),
             environment_hash: environment.environment_hash.clone(),
             module_artifact_hash: module.artifact_hash,
+            project: None,
             declaration_name: "MathOS.Verifier.fixture".to_owned(),
             policy_hash: policy.policy_hash().expect("policy hash"),
         };
@@ -11904,8 +12039,21 @@ mod tests {
                 .code,
             "MCL_AUDIT_POLICY_MISMATCH"
         );
+        assert_eq!(
+            store
+                .lease_next_audit_job("undersized-audit-worker", 179)
+                .expect_err("undersized audit lease rejected before claim")
+                .code,
+            "MCL_AUDIT_LEASE_TOO_SHORT"
+        );
+        let still_queued = store
+            .get_audit_job(&audit.job_id)
+            .expect("undersized lease leaves audit readable");
+        assert_eq!(still_queued.state, VerifierJobState::Queued);
+        assert_eq!(still_queued.attempt_count, 0);
+
         let leased_audit = store
-            .lease_next_audit_job("audit-worker", 60)
+            .lease_next_audit_job("audit-worker", 180)
             .expect("audit lease succeeds")
             .expect("audit leased");
         assert_eq!(leased_audit.job_id, audit.job_id);

@@ -25,6 +25,7 @@ pub enum CorpusExportMemberKind {
     MathcorpusPacket,
     McipBundle,
     LeanModule,
+    LeanProjectArchive,
     SourceReleaseManifest,
     Schema,
     License,
@@ -36,6 +37,7 @@ impl CorpusExportMemberKind {
             Self::MathcorpusPacket => "mathcorpus",
             Self::McipBundle => "mcip",
             Self::LeanModule => "lean",
+            Self::LeanProjectArchive => "lean-project",
             Self::SourceReleaseManifest => "source-release",
             Self::Schema => "schemas",
             Self::License => "licenses",
@@ -227,6 +229,8 @@ pub struct CorpusExportSourceBinding {
     pub fidelity_evidence_hash: String,
     pub environment_hash: String,
     pub module_artifact_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_archive_hash: Option<String>,
     pub declaration_name: String,
     pub source: ExactVersionReference,
     pub claim: ExactVersionReference,
@@ -267,6 +271,10 @@ pub struct CorpusExportOutputBinding {
     pub mcip_bundle_sha256: String,
     pub module_path: String,
     pub module_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -303,7 +311,8 @@ impl CorpusExportManifest {
             .validate(self.source_release.release_profile)?;
         self.upstream.validate()?;
         self.outputs.validate()?;
-        if self.members.len() != required_member_paths().len() {
+        let required_paths = required_member_paths(self.outputs.project_path.is_some());
+        if self.members.len() != required_paths.len() {
             return Err(manifest_error(
                 "corpus export manifest has the wrong closed member count",
             ));
@@ -325,7 +334,7 @@ impl CorpusExportManifest {
             })?;
         }
         if total > MAX_CORPUS_EXPORT_TOTAL_BYTES
-            || observed_paths != required_member_paths().into_iter().collect()
+            || observed_paths != required_paths.into_iter().collect()
         {
             return Err(manifest_error(
                 "corpus export inventory differs from its closed v1 member set",
@@ -343,6 +352,22 @@ impl CorpusExportManifest {
                 "normalized Lean module binding differs from its member identity",
             ));
         }
+        if self.source_release.project_archive_hash != self.outputs.project_sha256 {
+            return Err(manifest_error(
+                "source release and output project archive bindings disagree",
+            ));
+        }
+        if let (Some(path), Some(hash)) = (&self.outputs.project_path, &self.outputs.project_sha256)
+        {
+            let project_member = self.member(path)?;
+            if project_member.content_hash != *hash
+                || self.source_release.project_archive_hash.as_ref() != Some(hash)
+            {
+                return Err(manifest_error(
+                    "Lean project archive binding differs from its member or source release identity",
+                ));
+            }
+        }
         let sensitive_restriction = match self.curation.policy {
             CorpusExportPolicy::PrivateAuditOnly => ArtifactRestriction::Private,
             CorpusExportPolicy::Quarantined => ArtifactRestriction::Public,
@@ -352,14 +377,17 @@ impl CorpusExportManifest {
             "mcip/bundle.json",
             "lean/Submission.lean",
             "source-release/manifest.json",
-        ] {
+        ]
+        .into_iter()
+        .chain(self.outputs.project_path.as_deref())
+        {
             if self.member(path)?.restriction != sensitive_restriction {
                 return Err(manifest_error(
                     "corpus export policy and member restriction disagree",
                 ));
             }
         }
-        for path in required_member_paths()
+        for path in required_member_paths(self.outputs.project_path.is_some())
             .into_iter()
             .filter(|path| path.starts_with("schemas/") || path.starts_with("licenses/"))
         {
@@ -399,6 +427,10 @@ impl CorpusExportSourceBinding {
             &self.formalization.version_hash,
         ];
         if hashes.into_iter().any(|hash| !is_hash(hash))
+            || self
+                .project_archive_hash
+                .as_ref()
+                .is_some_and(|hash| !is_hash(hash) || hash == &self.module_artifact_hash)
             || [
                 &self.authority_evidence_id,
                 &self.fidelity_evidence_id,
@@ -461,12 +493,18 @@ impl CorpusExportUpstreamBinding {
 
 impl CorpusExportOutputBinding {
     fn validate(&self) -> Result<(), AppError> {
+        let project_binding_valid = match (&self.project_path, &self.project_sha256) {
+            (None, None) => true,
+            (Some(path), Some(hash)) => path == "lean-project/project.tar" && is_hash(hash),
+            _ => false,
+        };
         if self.packet_path != "mathcorpus/packet.json"
             || self.mcip_bundle_path != "mcip/bundle.json"
             || self.module_path != "lean/Submission.lean"
             || !is_hash(&self.packet_sha256)
             || !is_hash(&self.mcip_bundle_sha256)
             || !is_hash(&self.module_sha256)
+            || !project_binding_valid
         {
             return Err(manifest_error(
                 "corpus output bindings are not the closed v1 identities",
@@ -497,8 +535,8 @@ impl CorpusExportMember {
     }
 }
 
-pub fn required_member_paths() -> [&'static str; 11] {
-    [
+pub fn required_member_paths(project: bool) -> Vec<&'static str> {
+    let mut paths = vec![
         "lean/Submission.lean",
         "licenses/mathcorpus-apache-2.0.txt",
         "mathcorpus/packet.json",
@@ -510,7 +548,12 @@ pub fn required_member_paths() -> [&'static str; 11] {
         "schemas/mcip/v1/packet_identity.schema.json",
         "schemas/mcip/v1/proof_variant.schema.json",
         "source-release/manifest.json",
-    ]
+    ];
+    if project {
+        paths.push("lean-project/project.tar");
+        paths.sort_unstable();
+    }
+    paths
 }
 
 pub fn corpus_export_manifest_schema() -> Value {
@@ -527,7 +570,7 @@ pub fn corpus_export_manifest_schema() -> Value {
             "curation": {"$ref": "#/$defs/curation"},
             "upstream": {"$ref": "#/$defs/upstream"},
             "outputs": {"$ref": "#/$defs/outputs"},
-            "members": {"type": "array", "minItems": 11, "maxItems": 11, "items": {"$ref": "#/$defs/member"}}
+            "members": {"type": "array", "minItems": 11, "maxItems": 12, "items": {"$ref": "#/$defs/member"}}
         },
         "$defs": {
             "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -560,6 +603,7 @@ pub fn corpus_export_manifest_schema() -> Value {
                     "fidelity_evidence_hash": {"$ref": "#/$defs/hash"},
                     "environment_hash": {"$ref": "#/$defs/hash"},
                     "module_artifact_hash": {"$ref": "#/$defs/hash"},
+                    "project_archive_hash": {"$ref": "#/$defs/hash"},
                     "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256},
                     "source": {"$ref": "#/$defs/exact_ref"},
                     "claim": {"$ref": "#/$defs/exact_ref"},
@@ -620,7 +664,9 @@ pub fn corpus_export_manifest_schema() -> Value {
                     "mcip_bundle_path": {"const": "mcip/bundle.json"},
                     "mcip_bundle_sha256": {"$ref": "#/$defs/hash"},
                     "module_path": {"const": "lean/Submission.lean"},
-                    "module_sha256": {"$ref": "#/$defs/hash"}
+                    "module_sha256": {"$ref": "#/$defs/hash"},
+                    "project_path": {"const": "lean-project/project.tar"},
+                    "project_sha256": {"$ref": "#/$defs/hash"}
                 }
             },
             "member": {
@@ -630,7 +676,7 @@ pub fn corpus_export_manifest_schema() -> Value {
                 "properties": {
                     "path": {"type": "string", "minLength": 1, "maxLength": 512},
                     "kind": {"enum": [
-                        "mathcorpus_packet", "mcip_bundle", "lean_module",
+                        "mathcorpus_packet", "mcip_bundle", "lean_module", "lean_project_archive",
                         "source_release_manifest", "schema", "license"
                     ]},
                     "content_hash": {"$ref": "#/$defs/hash"},
@@ -764,7 +810,7 @@ mod tests {
         assert_eq!(committed, corpus_export_manifest_schema());
         assert_eq!(
             crate::canonical::value_hash(&committed).expect("corpus export schema hash"),
-            "bfb5bf991a215289c440009ba7c80e130bfb9540fec0965bd728460843cdf194"
+            "f9a27454950c303d41214a5c6649ee0b3e8ad257d5cb2368cde6a1e295b5da7b"
         );
     }
 }

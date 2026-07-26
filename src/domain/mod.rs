@@ -83,9 +83,9 @@ pub use counterexample::{
     CounterexampleSearchResultKind, CounterexampleWitness, ProposedRepairedClaim,
 };
 pub use environment::{
-    DependencyRevision, EnvironmentManifest, EnvironmentPlatform, EnvironmentSnapshot,
-    ResourceLimits, TrustProfile, VerifierArgument, VerifierCommandTemplate, VerifierExecutable,
-    WorkingDirectoryPolicy,
+    DependencyPreparation, DependencyRevision, EnvironmentManifest, EnvironmentPlatform,
+    EnvironmentSnapshot, ResourceLimits, TrustProfile, VerifierArgument, VerifierCommandTemplate,
+    VerifierExecutable, WorkingDirectoryPolicy,
 };
 pub use evidence::{
     EvidenceAuthorityClass, EvidenceKind, EvidencePayload, EvidenceResult, EvidenceSnapshot,
@@ -133,8 +133,8 @@ pub use trust::{
     promotion_evaluations, trust_status_schema, trust_transition_schema,
 };
 pub use verifier::{
-    VerifierExecutionClassification, VerifierExecutionReport, VerifierJobRequest,
-    VerifierJobSnapshot, VerifierJobState,
+    LeanProjectBinding, VerifierExecutionClassification, VerifierExecutionReport,
+    VerifierJobRequest, VerifierJobSnapshot, VerifierJobState,
 };
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

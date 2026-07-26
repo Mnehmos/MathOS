@@ -18,12 +18,28 @@
     "network_access",
     "working_directory_policy"
   ],
+  "allOf": [
+    {
+      "if": {
+        "required": ["trust_profile"],
+        "properties": { "trust_profile": { "const": "publication" } }
+      },
+      "then": {
+        "properties": {
+          "resource_limits": {
+            "properties": { "max_memory_bytes": { "type": "integer" } }
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "schema_version": { "const": "environment/1" },
     "formal_system": { "enum": ["lean4"] },
     "lean_toolchain": {
       "type": "string",
-      "pattern": "^leanprover/lean4:v[0-9]+\\.[0-9]+\\.[0-9]+$"
+      "maxLength": 128,
+      "pattern": "^leanprover/lean4:v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
     },
     "dependencies": {
       "type": "array",
@@ -41,6 +57,7 @@
         }
       }
     },
+    "dependency_preparation": { "enum": ["mathlib_cache_get"] },
     "import_manifest": {
       "type": "array",
       "maxItems": 1000,
@@ -58,13 +75,26 @@
     "platform": { "enum": ["linux_x86_64", "windows_x86_64"] },
     "trust_profile": { "enum": ["local", "publication"] },
     "verifier_command": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["executable", "arguments"],
-      "properties": {
-        "executable": { "const": "lean" },
-        "arguments": { "const": ["{module_path}"] }
-      }
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["executable", "arguments"],
+          "properties": {
+            "executable": { "const": "lean" },
+            "arguments": { "const": ["{module_path}"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["executable", "arguments"],
+          "properties": {
+            "executable": { "const": "lake" },
+            "arguments": { "const": ["env", "lean", "{module_path}"] }
+          }
+        }
+      ]
     },
     "resource_limits": {
       "type": "object",
@@ -76,7 +106,7 @@
         "concurrency"
       ],
       "properties": {
-        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 21600 },
         "max_output_bytes": {
           "type": "integer",
           "minimum": 1,

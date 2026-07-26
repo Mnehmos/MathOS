@@ -1,0 +1,67 @@
+{
+  "schema_version": "environment/1",
+  "formal_system": "lean4",
+  "lean_toolchain": "leanprover/lean4:v4.32.0-rc1",
+  "dependencies": [
+    {
+      "name": "Cli",
+      "revision": "406ebb8c8e2f7e852a1b47764b42494022ce652c"
+    },
+    {
+      "name": "LeanSearchClient",
+      "revision": "c5d5b8fe6e5158def25cd28eb94e4141ad97c843"
+    },
+    {
+      "name": "Qq",
+      "revision": "7a62bd13860cd39ac98da16ffc8c24d601353f69"
+    },
+    {
+      "name": "aesop",
+      "revision": "b5b9e2bb45ce91e4bc44eaa738c3a8910404ab82"
+    },
+    {
+      "name": "batteries",
+      "revision": "954dbc9873f3b4534dc9896604593406d0383520"
+    },
+    {
+      "name": "importGraph",
+      "revision": "41f407a8e85b0fdc00910633a8f14754139b63f4"
+    },
+    {
+      "name": "mathlib",
+      "revision": "360da6fa66c1273b76b6b2d8c5666fd5ac2e3b56"
+    },
+    {
+      "name": "plausible",
+      "revision": "f3f26cc72646205ca167117487c008ee1dafe816"
+    },
+    {
+      "name": "proofwidgets",
+      "revision": "e6518a674e62de322b8f79eebeda7bcae2a36bc3"
+    }
+  ],
+  "import_manifest": [
+    "BH.Certificate.GeneratedData",
+    "BH.Main.CertificateImpliesCounterexample"
+  ],
+  "project_configuration_hashes": {
+    "lake-manifest.json": "e4fc6d1feaf04359e176b0f82a3b7579ddbd51e47f78a9ad5da1f8678a1de96d",
+    "lakefile.lean": "e2e2dc82a5c488f3cd4f0ce4de5787e4ead480c923213e34909c4ce00817ca3d",
+    "lean-toolchain": "c1637887662a98a38f753a27b840731294a109cdbffd048a5cc77c52883dc8c8"
+  },
+  "platform": "linux_x86_64",
+  "trust_profile": "publication",
+  "verifier_command": {
+    "executable": "lake",
+    "arguments": ["env", "lean", "{module_path}"]
+  },
+  "dependency_preparation": "mathlib_cache_get",
+  "resource_limits": {
+    "timeout_seconds": 21600,
+    "max_output_bytes": 16777216,
+    "max_memory_bytes": 12884901888,
+    "concurrency": 1
+  },
+  "network_access": false,
+  "working_directory_policy": "temporary_workspace"
+}

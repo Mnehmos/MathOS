@@ -2,7 +2,7 @@
 
 Date: 2026-07-19
 
-Status: accepted
+Status: accepted; publication-profile execution added by ADR-0019
 
 ## Context
 
@@ -22,7 +22,10 @@ Wall-clock time and combined retained output are bounded. The worker kills and r
 
 Every report from this boundary has `authoritative: false`. An `elaborated` classification means only that the selected Lean executable accepted the controlled driver in the observed local environment. A `rejected` classification is an execution result, not a source-claim refutation. Operational job success means the attempt completed and its report was committed. It does not mean the theorem or source claim succeeded.
 
-The local report states that memory enforcement and network isolation are false. The local worker refuses publication-profile environments. Publication evidence requires a later protected Linux CI boundary with dependency closure, network isolation, proof-closure scans, axiom audit, and retained reports.
+The local report states that memory enforcement and network isolation are false. This decision did
+not implement publication-profile execution. ADR-0019 later adds a separate Linux-only
+publication branch to the same typed worker surface; it does not strengthen or reinterpret local
+reports.
 
 ## Consequences
 

@@ -50,7 +50,16 @@ mcl --root <missing-path-is-allowed> --json release verify \
 
 The expected hash is required out of band so a coherent replacement manifest cannot silently redefine the release. The verifier checks the exact file inventory, rejects symbolic links and unsafe paths, recomputes every member hash and size, parses exact canonical JSON, validates record hashes and schemas, resolves all object and edge references, requires exact path and retained policy metadata for non-null source content, verifies the persisted authority and current fidelity witnesses, artifacts, environment identities, and controlled repair graph, reproduces the publication report/closure/stage/receipt bindings, recomputes the promotion assessment and its trust/evidence bindings, compares report copies with their CAS members and the license index, and checks the replay and pedagogy exports against the manifest.
 
-Only after those checks pass does it replay `replay/Submission.lean`. The executable is fixed to `lean` (or `lean.exe` on Windows), the only argument is the verifier-controlled module path, and the declaration comes from the receipt-bound manifest. The pinned environment controls toolchain, platform, network flag, timeout, and output limit. A platform or Lean-version mismatch fails closed.
+Only after those checks pass does it replay the theorem. A standalone release runs
+`replay/Submission.lean`; a project release safely extracts the exact retained
+`replay/project.tar`, revalidates its configuration/module/source closure, builds the bound module
+with the manifest's concurrency limit, and runs a controlled Lake driver. Executables and
+arguments remain application-owned, and the declaration comes from the receipt-bound manifest.
+The pinned environment controls toolchain, platform, network flag, timeout, output limit, and
+dependency preparation. A project release carrying a `publication` environment must replay the
+build and driver through the same Linux Bubblewrap network namespace and `prlimit` memory
+boundary; release replay does not relax the publication profile. A platform, isolation-control, or
+Lean-version mismatch fails closed.
 
 The returned `manifest_hash` is the SHA-256 of the exact canonical `manifest.json` bytes. It must remain identical after copying the bundle.
 

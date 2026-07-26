@@ -11,8 +11,8 @@ The governing trust decision is
 The caller must provide the expected SHA-256 identity of the source release manifest. The
 exporter first verifies that exact release directory, then follows its bound formalization to
 the exact claim and source records. Packet and MCIP evidence are derived from those records,
-the publication receipt, current authority and fidelity bindings, replay environment, and
-normalized Lean module.
+the publication receipt, current authority and fidelity bindings, replay environment, normalized
+Lean module, and optional exact Lake project archive.
 
 MathCorpus is not a runtime dependency. MathOS vendors the minimum Apache-2.0 schema set from
 `Mnehmos/mathcorpus` commit
@@ -55,13 +55,13 @@ mcl --root does-not-need-to-exist --json release verify-export \
 
 The verifier checks the closed inventory, regular-file and path policy, canonical JSON,
 member hashes and sizes, exact vendored schemas, MathCorpus packet and MCIP record hashes,
-source/publication/environment/module bindings, and the fail-closed export policy. It then
+source/publication/environment/module/project bindings, and the fail-closed export policy. It then
 reprojects the supplied frozen release and requires every manifest field and member byte to be
 identical. No database or network access is required.
 
 ## Output
 
-The v1 export has exactly eleven manifest members:
+The v1 export has eleven standalone manifest members:
 
 ```text
 lean/Submission.lean
@@ -76,6 +76,16 @@ schemas/mcip/v1/packet_identity.schema.json
 schemas/mcip/v1/proof_variant.schema.json
 source-release/manifest.json
 ```
+
+A project-bound export has one additional member:
+
+```text
+lean-project/project.tar
+```
+
+That tar must be byte-identical to the source release's project replay member and to the exact
+project role in its retained publication closure. It follows the same sensitive-member policy as
+the Lean module.
 
 The root `manifest.json` uses the Rust-owned `corpus_export_manifest/1` contract committed at
 `schemas/release/corpus-export-manifest-1.schema.json`. The inventory excludes the root

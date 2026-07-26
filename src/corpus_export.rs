@@ -295,6 +295,7 @@ fn project_release(
         release_record(source, RecordKind::Formalization, &formalization_reference)?;
     if formalization.environment_hash != source.manifest.publication.environment_hash
         || formalization.module_artifact_hash != source.manifest.publication.module_artifact_hash
+        || formalization.project != source.manifest.publication.project
         || formalization.declaration_name != source.manifest.publication.declaration_name
     {
         return Err(binding_error(
@@ -339,6 +340,24 @@ fn project_release(
     let source_module = required(source, &source.manifest.replay.module_path)?;
     let module_bytes = normalize_file_bytes(source_module);
     let module_sha256 = sha256(&module_bytes);
+    let project_bytes = if let Some(project) = &source.manifest.publication.project {
+        let project_path = source
+            .manifest
+            .replay
+            .project_archive_path
+            .as_deref()
+            .ok_or_else(|| binding_error("source release omits its project replay path"))?;
+        let bytes = required(source, project_path)?.to_vec();
+        if sha256(&bytes) != project.archive_artifact_hash {
+            return Err(binding_error(
+                "source release project archive differs from its publication binding",
+            ));
+        }
+        Some(bytes)
+    } else {
+        None
+    };
+    let project_sha256 = project_bytes.as_ref().map(|bytes| sha256(bytes));
     let created_at = unix_timestamp_rfc3339(receipt.created_at)?;
     let mathlib_rev = environment
         .manifest
@@ -430,15 +449,45 @@ fn project_release(
         .iter()
         .find(|member| member.path == source.manifest.replay.module_path)
         .ok_or_else(|| binding_error("source release omits its replay module member"))?;
+    let source_project_member = source
+        .manifest
+        .replay
+        .project_archive_path
+        .as_ref()
+        .map(|path| {
+            source
+                .manifest
+                .members
+                .iter()
+                .find(|member| &member.path == path)
+                .ok_or_else(|| binding_error("source release omits its replay project member"))
+        })
+        .transpose()?;
     let module_license = match curation.policy {
         CorpusExportPolicy::PrivateAuditOnly => None,
         CorpusExportPolicy::Quarantined => source_module_member.license_expression.clone(),
+    };
+    let project_license = match curation.policy {
+        CorpusExportPolicy::PrivateAuditOnly => None,
+        CorpusExportPolicy::Quarantined => {
+            source_project_member.and_then(|member| member.license_expression.clone())
+        }
     };
     if curation.policy == CorpusExportPolicy::Quarantined && module_license.is_none() {
         return Err(export_error(
             "MCL_CORPUS_EXPORT_PUBLIC_POLICY_BLOCKED",
             "public corpus projection has no resolved Lean module license",
             "Resolve the source module license before creating a public projection.",
+        ));
+    }
+    if curation.policy == CorpusExportPolicy::Quarantined
+        && project_bytes.is_some()
+        && project_license.is_none()
+    {
+        return Err(export_error(
+            "MCL_CORPUS_EXPORT_PUBLIC_POLICY_BLOCKED",
+            "public corpus projection has no resolved Lean project license",
+            "Resolve the source project license before creating a public projection.",
         ));
     }
 
@@ -451,6 +500,16 @@ fn project_release(
         module_license,
         sensitive_restriction,
     );
+    if let Some(bytes) = project_bytes {
+        insert_file(
+            &mut files,
+            "lean-project/project.tar",
+            bytes,
+            CorpusExportMemberKind::LeanProjectArchive,
+            project_license,
+            sensitive_restriction,
+        );
+    }
     insert_file(
         &mut files,
         "licenses/mathcorpus-apache-2.0.txt",
@@ -501,6 +560,12 @@ fn project_release(
             fidelity_evidence_hash: source.manifest.publication.fidelity_evidence_hash.clone(),
             environment_hash: source.manifest.publication.environment_hash.clone(),
             module_artifact_hash: source.manifest.publication.module_artifact_hash.clone(),
+            project_archive_hash: source
+                .manifest
+                .publication
+                .project
+                .as_ref()
+                .map(|project| project.archive_artifact_hash.clone()),
             declaration_name: source.manifest.publication.declaration_name.clone(),
             source: exact_reference(&source_record),
             claim: exact_reference(&claim_record),
@@ -515,6 +580,10 @@ fn project_release(
             mcip_bundle_sha256,
             module_path: "lean/Submission.lean".to_owned(),
             module_sha256,
+            project_path: project_sha256
+                .as_ref()
+                .map(|_| "lean-project/project.tar".to_owned()),
+            project_sha256,
         },
         members,
     };
@@ -1056,6 +1125,19 @@ fn verify_export_integrity(export_dir: &Path) -> Result<VerifiedExport, AppError
             "Restore the BOM-free LF-normalized module from the frozen release.",
         ));
     }
+    if let (Some(path), Some(expected_hash)) = (
+        &manifest.outputs.project_path,
+        &manifest.outputs.project_sha256,
+    ) {
+        let project = required_export(&files, path)?;
+        if sha256(project) != *expected_hash {
+            return Err(export_error(
+                "MCL_CORPUS_EXPORT_PROJECT_INVALID",
+                "exported Lean project archive differs from its binding",
+                "Restore the exact project archive from the frozen release.",
+            ));
+        }
+    }
     let source_manifest: crate::domain::ReleaseManifest = decode_canonical(
         required_export(&files, "source-release/manifest.json")?,
         "copied source release manifest",
@@ -1067,10 +1149,43 @@ fn verify_export_integrity(export_dir: &Path) -> Result<VerifiedExport, AppError
         || source_manifest.publication.environment_hash != manifest.source_release.environment_hash
         || source_manifest.publication.module_artifact_hash
             != manifest.source_release.module_artifact_hash
+        || source_manifest
+            .publication
+            .project
+            .as_ref()
+            .map(|project| project.archive_artifact_hash.as_str())
+            != manifest.source_release.project_archive_hash.as_deref()
     {
         return Err(binding_error(
             "copied source release manifest differs from the corpus export binding",
         ));
+    }
+    match (
+        &manifest.source_release.project_archive_hash,
+        &source_manifest.replay.project_archive_path,
+    ) {
+        (None, None) => {}
+        (Some(expected_hash), Some(path)) => {
+            let member = source_manifest
+                .members
+                .iter()
+                .find(|member| member.path == *path)
+                .ok_or_else(|| {
+                    binding_error(
+                        "copied source release manifest omits its bound project archive member",
+                    )
+                })?;
+            if member.content_hash != *expected_hash {
+                return Err(binding_error(
+                    "copied source release project member differs from the corpus export binding",
+                ));
+            }
+        }
+        _ => {
+            return Err(binding_error(
+                "copied source release project replay path and corpus binding disagree",
+            ));
+        }
     }
     Ok(VerifiedExport {
         manifest,
@@ -1711,7 +1826,7 @@ fn export_error(
 #[cfg(test)]
 mod tests {
     use crate::domain::{
-        PublicationOutcome, ReleaseManifest, ReleaseMember, ReleaseMemberKind,
+        LeanProjectBinding, PublicationOutcome, ReleaseManifest, ReleaseMember, ReleaseMemberKind,
         ReleasePedagogyBinding, ReleasePedagogyMode, ReleasePublicationBinding,
         ReleaseReplayBinding,
     };
@@ -1809,6 +1924,68 @@ mod tests {
                 .expect("records")
                 .iter()
                 .all(|record| record["export_eligibility"] == "private_only")
+        );
+    }
+
+    #[test]
+    fn project_projection_retains_and_rebinds_the_exact_release_archive() {
+        let mut source = synthetic_source_release();
+        let project_bytes = add_synthetic_project(&mut source);
+        let project_hash = sha256(&project_bytes);
+        let curation = synthetic_curation();
+        let projection = project_release(&source, &curation).expect("project projection");
+
+        assert_eq!(projection.manifest.members.len(), 12);
+        assert_eq!(
+            projection.manifest.source_release.project_archive_hash,
+            Some(project_hash.clone())
+        );
+        assert_eq!(
+            projection.manifest.outputs.project_sha256,
+            Some(project_hash.clone())
+        );
+        assert_eq!(
+            projection
+                .files
+                .get("lean-project/project.tar")
+                .expect("project archive")
+                .bytes,
+            project_bytes
+        );
+        let root = tempfile::tempdir().expect("project export root");
+        materialize_projection(root.path(), &projection);
+        verify_export_integrity(root.path()).expect("project export integrity");
+
+        let mut substituted =
+            project_release(&source, &curation).expect("substituted project projection");
+        let path = "lean-project/project.tar";
+        let replacement = b"substituted synthetic project archive".to_vec();
+        let replacement_hash = sha256(&replacement);
+        substituted.files.get_mut(path).expect("project file").bytes = replacement;
+        substituted.manifest.source_release.project_archive_hash = Some(replacement_hash.clone());
+        substituted.manifest.outputs.project_sha256 = Some(replacement_hash);
+        let changed_member = substituted
+            .files
+            .get(path)
+            .expect("changed project file")
+            .member(path.to_owned());
+        *substituted
+            .manifest
+            .members
+            .iter_mut()
+            .find(|member| member.path == path)
+            .expect("project member") = changed_member;
+        substituted
+            .manifest
+            .validate()
+            .expect("coherently substituted export manifest");
+        let substituted_root = tempfile::tempdir().expect("substituted export root");
+        materialize_projection(substituted_root.path(), &substituted);
+        assert_eq!(
+            verify_export_integrity(substituted_root.path())
+                .expect_err("release-bound project substitution blocked")
+                .code,
+            "MCL_CORPUS_EXPORT_BINDING_MISMATCH"
         );
     }
 
@@ -2008,6 +2185,7 @@ mod tests {
             outcome: PublicationOutcome::Proof,
             environment_hash: environment_hash.clone(),
             module_artifact_hash: module_hash.clone(),
+            project: None,
             declaration_name: "Fixture.theorem".to_owned(),
         };
         let fidelity_path = format!(
@@ -2120,6 +2298,7 @@ mod tests {
             replay: ReleaseReplayBinding {
                 module_path: "replay/Submission.lean".to_owned(),
                 environment_path: "replay/environment.json".to_owned(),
+                project_archive_path: None,
                 declaration_name: "Fixture.theorem".to_owned(),
             },
             trust: None,
@@ -2271,6 +2450,65 @@ mod tests {
             manifest_hash,
             files,
         }
+    }
+
+    fn add_synthetic_project(source: &mut ReleaseIntegrity) -> Vec<u8> {
+        let project_bytes = b"synthetic exact Lean project archive".to_vec();
+        let project_hash = sha256(&project_bytes);
+        let project = LeanProjectBinding {
+            archive_artifact_hash: project_hash.clone(),
+            archive_root: "project".to_owned(),
+            module_path: "Final.lean".to_owned(),
+        };
+        source.manifest.publication.project = Some(project.clone());
+        source.manifest.replay.project_archive_path = Some("replay/project.tar".to_owned());
+        for (path, kind) in [
+            (
+                format!("artifacts/{project_hash}"),
+                ReleaseMemberKind::Artifact,
+            ),
+            ("replay/project.tar".to_owned(), ReleaseMemberKind::Replay),
+        ] {
+            source.manifest.members.push(ReleaseMember {
+                path: path.clone(),
+                kind,
+                content_hash: project_hash.clone(),
+                byte_size: project_bytes.len() as u64,
+                license_expression: None,
+                restriction: ArtifactRestriction::Private,
+                artifact_metadata: None,
+            });
+            source.files.insert(path, project_bytes.clone());
+        }
+        source
+            .manifest
+            .members
+            .sort_by(|left, right| left.path.cmp(&right.path));
+
+        let formalization_path = source
+            .files
+            .keys()
+            .find(|path| path.starts_with("objects/formalization/"))
+            .expect("formalization path")
+            .clone();
+        let mut formalization: RecordSnapshot = serde_json::from_slice(
+            source
+                .files
+                .get(&formalization_path)
+                .expect("formalization bytes"),
+        )
+        .expect("formalization record");
+        formalization.payload["project"] =
+            serde_json::to_value(project).expect("project binding JSON");
+        source.files.insert(
+            formalization_path,
+            canonical_bytes(&formalization, "project formalization").expect("formalization bytes"),
+        );
+        source.manifest_hash = source
+            .manifest
+            .manifest_hash()
+            .expect("valid project source manifest");
+        project_bytes
     }
 
     fn materialize_projection(root: &Path, projection: &Projection) {
