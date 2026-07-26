@@ -50,12 +50,15 @@ isolation. The build target is the validated bound module's `olean` facet; unnee
 editor-metadata outputs cannot consume the proof-checking budget. A verifier-controlled driver then
 imports its module name and performs both `#check` and `#print axioms` for the exact declaration.
 
-A Linux `publication` environment additionally requires an exact memory bound. The worker runs
-the build and driver through one fixed non-interactive `sudo` -> Bubblewrap -> `prlimit` chain:
-all namespaces are unshared, the network namespace is empty, capabilities and inherited
-environment are removed, the exact writable project workspace is mounted at `/mnt`, the pinned
-toolchain root is read-only at `/opt`, and only application-owned command arguments and environment
-values enter the namespace. A successful publication execution report can claim memory and
+A Linux `publication` environment additionally requires an exact memory bound. Before execution,
+the worker verifies that the input is an application-created disposable workspace, temporarily
+makes that exact tree root-owned, and opens traversal only on the required mount-source directory
+chain. It then runs the build and driver through the fixed non-interactive `sudo` -> Bubblewrap ->
+`prlimit` chain: all namespaces are unshared, the network namespace is empty, capabilities and
+inherited environment are removed, the exact writable project workspace is mounted at `/mnt`, the
+pinned toolchain root is read-only at `/opt`, and only application-owned command arguments and
+environment values enter the namespace. Workspace ownership and traversal permissions are restored
+when the execution scope ends. A successful publication execution report can claim memory and
 network controls only after the inner command exits successfully. The report remains
 non-authoritative.
 

@@ -91,15 +91,18 @@ The `local` profile does not enforce a memory limit or network namespace, and it
 It is not a hardened virtualization boundary.
 
 The Linux `publication` profile requires an exact memory bound and the protected runner controls
-`sudo`, `/usr/bin/bwrap`, and `/usr/bin/prlimit`. Fixed cache acquisition runs first in a
-capability-free Bubblewrap filesystem boundary with host homes and runtime directories masked and
-network deliberately shared so pinned dependency objects can be fetched. The module build and
-controlled driver then run with all namespaces unshared, no network namespace connectivity, no
-capabilities, a cleared environment, a writable mount containing only the exact materialized
-project, the exact pinned toolchain mounted read-only, the manifest's `LEAN_NUM_THREADS`, and the manifest's
-address-space limit. A successful inner execution records both control flags as true; a launch or
-rejected execution cannot claim a successful protected result. Windows workers fail closed if
-asked to run this profile.
+`sudo`, `/usr/bin/chown`, `/usr/bin/bwrap`, and `/usr/bin/prlimit`. The worker accepts only its
+application-created disposable workspace, temporarily maps that exact tree to the sudo-root
+Bubblewrap user namespace, and restores its ownership and mount-source traversal permissions when
+the execution scope ends. Fixed cache acquisition runs first in a capability-free Bubblewrap
+filesystem boundary with host homes and runtime directories masked and network deliberately shared
+so pinned dependency objects can be fetched. The module build and controlled driver then run with
+all namespaces unshared, no network namespace connectivity, no capabilities, a cleared
+environment, a writable mount containing only the exact materialized project, the exact pinned
+toolchain mounted read-only, the manifest's `LEAN_NUM_THREADS`, and the manifest's address-space
+limit. A successful inner execution records both control flags as true; a launch or rejected
+execution cannot claim a successful protected result. Windows workers fail closed if asked to run
+this profile.
 
 ## Trust boundary
 

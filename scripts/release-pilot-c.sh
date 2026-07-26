@@ -24,6 +24,16 @@ done
   printf 'Pilot C release executable or content fixture is unavailable\n' >&2
   exit 69
 }
+for control in /usr/bin/sudo /usr/bin/chown /usr/bin/bwrap /usr/bin/prlimit; do
+  [[ -x "$control" ]] || {
+    printf 'Pilot C release isolation control is unavailable: %s\n' "$control" >&2
+    exit 69
+  }
+done
+sudo -n true >/dev/null 2>&1 || {
+  printf 'Pilot C release requires non-interactive sudo for publication replay\n' >&2
+  exit 69
+}
 for output in "$release_output" "$corpus_output"; do
   [[ ! -e "$output" && ! -L "$output" ]] || {
     printf 'Pilot C release output already exists or is unsafe: %s\n' "$output" >&2

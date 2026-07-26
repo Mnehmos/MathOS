@@ -239,6 +239,8 @@ if [[ "$PROJECT_MODE" == true ]]; then
 fi
 [[ -x /usr/bin/bwrap ]] \
   || die "$EXIT_CONTROL" "publication isolation control is missing: /usr/bin/bwrap"
+[[ -x /usr/bin/chown ]] \
+  || die "$EXIT_CONTROL" "publication workspace ownership control is missing: /usr/bin/chown"
 [[ -x /usr/bin/prlimit ]] \
   || die "$EXIT_CONTROL" "publication resource control is missing: /usr/bin/prlimit"
 [[ -x /usr/bin/timeout ]] \

@@ -254,6 +254,15 @@ fn execute_lean_with_profile(
             "Configure only the platform Lean executable name.",
         ));
     }
+    let _publication_workspace_ownership = if environment.trust_profile == TrustProfile::Publication
+    {
+        Some(PublicationWorkspaceOwnership::prepare(
+            workspace,
+            &environment.lean_toolchain,
+        )?)
+    } else {
+        None
+    };
     let version_capture = run_bounded_profiled_process(
         lean_command,
         &["--version"],
@@ -709,30 +718,19 @@ fn publication_sandbox_arguments(
     network_isolated: bool,
     mathlib_cache_directory: Option<&str>,
 ) -> Vec<OsString> {
-    // Preserve the worker's host identity across sudo. Launching Bubblewrap as root
-    // maps the requested sandbox uid to host root, which cannot access or update
-    // runner-owned private mount sources after the user namespace is created.
-    let mut sandbox_arguments = ["-n", "-u"]
-        .into_iter()
-        .map(OsString::from)
-        .collect::<Vec<_>>();
-    sandbox_arguments.push(OsString::from(format!("#{uid}")));
-    sandbox_arguments.push(OsString::from("-g"));
-    sandbox_arguments.push(OsString::from(format!("#{gid}")));
-    sandbox_arguments.extend(
-        [
-            "--",
-            "/usr/bin/bwrap",
-            "--unshare-all",
-            "--die-with-parent",
-            "--new-session",
-            "--cap-drop",
-            "ALL",
-            "--uid",
-        ]
-        .into_iter()
-        .map(OsString::from),
-    );
+    let mut sandbox_arguments = [
+        "-n",
+        "/usr/bin/bwrap",
+        "--unshare-all",
+        "--die-with-parent",
+        "--new-session",
+        "--cap-drop",
+        "ALL",
+        "--uid",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect::<Vec<_>>();
     sandbox_arguments.push(OsString::from(uid));
     sandbox_arguments.push(OsString::from("--gid"));
     sandbox_arguments.push(OsString::from(gid));
@@ -870,6 +868,194 @@ fn publication_toolchain_root(lean_toolchain: &str) -> Result<PathBuf, AppError>
     Ok(root)
 }
 
+#[cfg(unix)]
+struct PublicationWorkspaceOwnership {
+    workspace: PathBuf,
+    uid: String,
+    gid: String,
+    permission_modes: Vec<(PathBuf, u32)>,
+    root_owned: bool,
+}
+
+#[cfg(unix)]
+impl PublicationWorkspaceOwnership {
+    fn prepare(workspace: &Path, lean_toolchain: &str) -> Result<Self, AppError> {
+        use std::os::unix::fs::MetadataExt;
+
+        let workspace = std::fs::canonicalize(workspace).map_err(|error| {
+            publication_isolation_error(format!(
+                "publication workspace could not be resolved for ownership isolation: {error}"
+            ))
+        })?;
+        if workspace == Path::new("/") || workspace.parent().is_none() {
+            return Err(publication_isolation_error(
+                "publication workspace ownership isolation refused a broad path",
+            ));
+        }
+        let disposable_workspace = workspace.ancestors().any(|ancestor| {
+            ancestor
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("mcl-lean-") || name.starts_with(".mcl-release-replay-")
+                })
+        });
+        if !disposable_workspace {
+            return Err(publication_isolation_error(
+                "publication workspace ownership isolation requires an application-created disposable workspace",
+            ));
+        }
+        let uid = publication_numeric_identity("-u")?;
+        let gid = publication_numeric_identity("-g")?;
+        let numeric_uid = uid.parse::<u32>().map_err(|_| {
+            publication_isolation_error(
+                "publication worker identity is not a valid Unix user identifier",
+            )
+        })?;
+        let metadata = std::fs::metadata(&workspace).map_err(|error| {
+            publication_isolation_error(format!(
+                "publication workspace ownership could not be inspected: {error}"
+            ))
+        })?;
+        if !metadata.is_dir() || (numeric_uid != 0 && metadata.uid() != numeric_uid) {
+            return Err(publication_isolation_error(
+                "publication workspace is not one worker-owned directory",
+            ));
+        }
+        let toolchain_root = publication_toolchain_root(lean_toolchain)?;
+        let mut ownership = Self {
+            workspace,
+            uid,
+            gid,
+            permission_modes: Vec::new(),
+            root_owned: false,
+        };
+        let workspace_source = ownership.workspace.clone();
+        for source in [&workspace_source, &toolchain_root] {
+            if let Err(error) = publication_make_mount_source_traversable(
+                source,
+                numeric_uid,
+                &mut ownership.permission_modes,
+            ) {
+                ownership.restore();
+                return Err(error);
+            }
+        }
+        // A sudo-root Bubblewrap user namespace maps the requested inner uid to
+        // host root. The disposable workspace must have the same host ownership so
+        // Lake can persist cache and build outputs across isolated invocations.
+        ownership.root_owned = true;
+        if let Err(error) = publication_sudo_chown(&ownership.workspace, "0:0") {
+            ownership.restore();
+            return Err(error);
+        }
+        Ok(ownership)
+    }
+
+    fn restore(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+
+        if self.root_owned {
+            let owner = format!("{}:{}", self.uid, self.gid);
+            let _ = publication_sudo_chown(&self.workspace, &owner);
+            self.root_owned = false;
+        }
+        for (directory, mode) in self.permission_modes.drain(..).rev() {
+            let _ = std::fs::set_permissions(directory, std::fs::Permissions::from_mode(mode));
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for PublicationWorkspaceOwnership {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
+#[cfg(unix)]
+fn publication_make_mount_source_traversable(
+    source: &Path,
+    current_uid: u32,
+    permission_modes: &mut Vec<(PathBuf, u32)>,
+) -> Result<(), AppError> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    for directory in source.ancestors() {
+        let metadata = std::fs::metadata(directory).map_err(|error| {
+            publication_isolation_error(format!(
+                "publication mount source directory `{}` could not be inspected: {error}",
+                directory.display()
+            ))
+        })?;
+        if !metadata.is_dir() {
+            return Err(publication_isolation_error(format!(
+                "publication mount source ancestor `{}` is not a directory",
+                directory.display()
+            )));
+        }
+        let mode = metadata.permissions().mode();
+        if mode & 0o001 != 0 {
+            continue;
+        }
+        if current_uid != 0 && metadata.uid() != current_uid {
+            return Err(publication_isolation_error(format!(
+                "publication mount source ancestor `{}` is not traversable or owned by the worker",
+                directory.display()
+            )));
+        }
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(mode | 0o001))
+            .map_err(|error| {
+                publication_isolation_error(format!(
+                    "publication mount source ancestor `{}` could not gain traversal permission: {error}",
+                    directory.display()
+                ))
+            })?;
+        permission_modes.push((directory.to_path_buf(), mode));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn publication_sudo_chown(workspace: &Path, owner: &str) -> Result<(), AppError> {
+    let output = Command::new("/usr/bin/sudo")
+        .args(["-n", "/usr/bin/chown", "-R", owner, "--"])
+        .arg(workspace)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .env_clear()
+        .output()
+        .map_err(|error| {
+            publication_isolation_error(format!(
+                "publication workspace ownership control could not start: {error}"
+            ))
+        })?;
+    if !output.status.success() {
+        let diagnostic = String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .chars()
+            .take(512)
+            .collect::<String>();
+        return Err(publication_isolation_error(format!(
+            "publication workspace ownership control failed: {diagnostic}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+struct PublicationWorkspaceOwnership;
+
+#[cfg(not(unix))]
+impl PublicationWorkspaceOwnership {
+    fn prepare(_workspace: &Path, _lean_toolchain: &str) -> Result<Self, AppError> {
+        Err(publication_isolation_error(
+            "publication workspace ownership isolation requires a Unix worker",
+        ))
+    }
+}
+
 fn publication_numeric_identity(argument: &str) -> Result<String, AppError> {
     let output = Command::new("/usr/bin/id")
         .arg(argument)
@@ -902,7 +1088,7 @@ fn publication_isolation_error(message: impl Into<String>) -> AppError {
         "MCL_PUBLICATION_ISOLATION_UNAVAILABLE",
         message,
         false,
-        "Run the exact publication profile on protected Linux CI with sudo, Bubblewrap, prlimit, and the pinned Elan toolchain.",
+        "Run the exact publication profile on protected Linux CI with sudo, chown, Bubblewrap, prlimit, and the pinned Elan toolchain.",
     )
 }
 
@@ -1222,18 +1408,8 @@ mod tests {
         .map(|value| value.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
         assert_eq!(
-            &arguments[..9],
-            [
-                "-n",
-                "-u",
-                "#1001",
-                "-g",
-                "#1001",
-                "--",
-                "/usr/bin/bwrap",
-                "--unshare-all",
-                "--die-with-parent",
-            ]
+            &arguments[..4],
+            ["-n", "/usr/bin/bwrap", "--unshare-all", "--die-with-parent"]
         );
         let clear = arguments
             .iter()
