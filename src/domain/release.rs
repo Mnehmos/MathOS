@@ -7,9 +7,14 @@ use crate::canonical::value_hash;
 use crate::domain::artifact::{ArtifactMetadata, ArtifactRestriction};
 use crate::domain::publication::PublicationOutcome;
 use crate::domain::schemas::ExactVersionReference;
+use crate::domain::trust::{
+    CoverageTrustStatus, DefinitionTrustStatus, FidelityTrustStatus, KernelTrustStatus,
+    PromotionAssessment, PromotionProfile, ReuseTrustStatus,
+};
 use crate::error::AppError;
 
 pub const RELEASE_MANIFEST_SCHEMA_VERSION: &str = "release_manifest/1";
+pub const RELEASE_MANIFEST_V2_SCHEMA_VERSION: &str = "release_manifest/2";
 pub const MAX_RELEASE_MEMBERS: usize = 4_096;
 pub const MAX_RELEASE_MEMBER_BYTES: u64 = 256 * 1_048_576;
 pub const MAX_RELEASE_TOTAL_BYTES: u64 = 2 * 1_073_741_824;
@@ -26,6 +31,13 @@ impl ReleaseProfile {
         match self {
             Self::Private => "private",
             Self::Public => "public",
+        }
+    }
+
+    pub const fn promotion_profile(self) -> PromotionProfile {
+        match self {
+            Self::Private => PromotionProfile::Experimental,
+            Self::Public => PromotionProfile::Publication,
         }
     }
 }
@@ -134,27 +146,68 @@ pub struct ReleaseReplayBinding {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct ReleaseTrustBinding {
+    pub assessment_hash: String,
+    pub profile: PromotionProfile,
+    pub subject: ExactVersionReference,
+    pub kernel_status: KernelTrustStatus,
+    pub fidelity_status: FidelityTrustStatus,
+    pub definition_status: DefinitionTrustStatus,
+    pub reuse_status: ReuseTrustStatus,
+    pub coverage_status: CoverageTrustStatus,
+    pub eligible: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReleaseManifest {
     pub schema_version: String,
     pub profile: ReleaseProfile,
     pub publication: ReleasePublicationBinding,
     pub pedagogy: ReleasePedagogyBinding,
     pub replay: ReleaseReplayBinding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<ReleaseTrustBinding>,
     pub members: Vec<ReleaseMember>,
 }
 
 impl ReleaseManifest {
     pub fn validate(&self) -> Result<(), AppError> {
-        if self.schema_version != RELEASE_MANIFEST_SCHEMA_VERSION {
+        if !matches!(
+            self.schema_version.as_str(),
+            RELEASE_MANIFEST_SCHEMA_VERSION | RELEASE_MANIFEST_V2_SCHEMA_VERSION
+        ) {
             return Err(release_error(
                 "MCL_RELEASE_MANIFEST_INVALID",
                 "release manifest uses an unsupported schema version",
-                "Use the committed release_manifest/1 contract.",
+                "Use a committed release_manifest/1 or release_manifest/2 contract.",
             ));
         }
         self.publication.validate()?;
         self.pedagogy.validate()?;
         self.replay.validate(&self.publication)?;
+        match (self.schema_version.as_str(), &self.trust) {
+            (RELEASE_MANIFEST_SCHEMA_VERSION, None) => {}
+            (RELEASE_MANIFEST_V2_SCHEMA_VERSION, Some(trust)) => {
+                trust.validate()?;
+                if trust.subject != self.publication.subject
+                    || trust.profile != self.profile.promotion_profile()
+                {
+                    return Err(release_error(
+                        "MCL_RELEASE_TRUST_BINDING_INVALID",
+                        "release trust assessment does not bind the publication subject and release profile",
+                        "Recompute the promotion assessment for the exact publication formalization and release profile.",
+                    ));
+                }
+            }
+            _ => {
+                return Err(release_error(
+                    "MCL_RELEASE_TRUST_BINDING_INVALID",
+                    "release manifest version and trust binding are inconsistent",
+                    "Keep release_manifest/1 byte-compatible without trust, or use release_manifest/2 with one complete binding.",
+                ));
+            }
+        }
         if self.members.is_empty() || self.members.len() > MAX_RELEASE_MEMBERS {
             return Err(release_error(
                 "MCL_RELEASE_MANIFEST_INVALID",
@@ -204,7 +257,7 @@ impl ReleaseManifest {
                 "Keep the release under 2 GiB and include objects, edges, evidence, artifacts, environments, licenses, replay, reports, and exports.",
             ));
         }
-        let required_paths = [
+        let mut required_paths = vec![
             "reports/publication-report.json".to_owned(),
             "reports/publication-retained-closure.json".to_owned(),
             "reports/publication-stage.json".to_owned(),
@@ -222,6 +275,9 @@ impl ReleaseManifest {
             self.replay.module_path.clone(),
             self.replay.environment_path.clone(),
         ];
+        if self.schema_version == RELEASE_MANIFEST_V2_SCHEMA_VERSION {
+            required_paths.push("reports/promotion-assessment.json".to_owned());
+        }
         for path in &required_paths {
             if self
                 .members
@@ -248,6 +304,38 @@ impl ReleaseManifest {
             )
         })?;
         value_hash(&value)
+    }
+}
+
+impl ReleaseTrustBinding {
+    pub fn from_assessment(assessment: &PromotionAssessment) -> Result<Self, AppError> {
+        assessment.validate()?;
+        Ok(Self {
+            assessment_hash: assessment.assessment_hash()?,
+            profile: assessment.profile,
+            subject: assessment.trust.formalization.clone(),
+            kernel_status: assessment.trust.kernel.status,
+            fidelity_status: assessment.trust.fidelity.status,
+            definition_status: assessment.trust.definition.status,
+            reuse_status: assessment.trust.reuse.status,
+            coverage_status: assessment.trust.coverage.status,
+            eligible: assessment.eligible,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), AppError> {
+        if !is_hash(&self.assessment_hash)
+            || uuid::Uuid::parse_str(&self.subject.object_id).is_err()
+            || !is_hash(&self.subject.version_hash)
+            || !self.eligible
+        {
+            return Err(release_error(
+                "MCL_RELEASE_TRUST_BINDING_INVALID",
+                "release trust binding is not an eligible exact promotion assessment",
+                "Bind one eligible promotion_assessment/1 hash for the exact formalization and profile.",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -407,6 +495,35 @@ pub fn release_manifest_schema() -> Value {
     })
 }
 
+pub fn release_manifest_v2_schema() -> Value {
+    let mut schema = release_manifest_schema();
+    schema["$id"] = json!("https://mnehmos.ai/mathos/schemas/release/manifest/2");
+    schema["title"] = json!("MathOS Portable Release Manifest v2");
+    schema["properties"]["schema_version"] = json!({"const": RELEASE_MANIFEST_V2_SCHEMA_VERSION});
+    let required = schema["required"]
+        .as_array_mut()
+        .expect("release schema required array");
+    required.insert(required.len() - 1, json!("trust"));
+    schema["properties"]["trust"] = json!({"$ref": "#/$defs/trust"});
+    schema["$defs"]["trust"] = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["assessment_hash", "profile", "subject", "kernel_status", "fidelity_status", "definition_status", "reuse_status", "coverage_status", "eligible"],
+        "properties": {
+            "assessment_hash": {"$ref": "#/$defs/hash"},
+            "profile": {"enum": ["experimental", "publication", "upstream"]},
+            "subject": {"$ref": "#/$defs/exact_ref"},
+            "kernel_status": {"enum": ["unverified", "lean_checked", "kernel_verified", "failed"]},
+            "fidelity_status": {"enum": ["unreviewed", "source_mapped", "reviewer_checked", "expert_approved", "rejected"]},
+            "definition_status": {"enum": ["ungrounded", "source_grounded", "project_approved", "upstream_accepted"]},
+            "reuse_status": {"enum": ["experimental", "campaign_specific", "candidate", "review_ready", "upstreamed"]},
+            "coverage_status": {"enum": ["unknown", "statement_only", "analytical_core", "supporting_lemma", "finite_specialization", "asymptotic_component", "full_theorem"]},
+            "eligible": {"const": true}
+        }
+    });
+    schema
+}
+
 fn is_safe_relative_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= 512
@@ -481,6 +598,15 @@ mod tests {
         assert_eq!(
             value_hash(&committed).expect("release schema hash"),
             "63090d65dea509c4c3e1d4e5572d29fa688e4cc30792b3f4c94a1647f9491ae3"
+        );
+        let committed_v2: Value = serde_json::from_str(include_str!(
+            "../../schemas/release/release-manifest-2.schema.json"
+        ))
+        .expect("committed release manifest v2 schema");
+        assert_eq!(committed_v2, release_manifest_v2_schema());
+        assert_eq!(
+            value_hash(&committed_v2).expect("release v2 schema hash"),
+            "3da87107817ca9bf658398aed3cfbe9db65e3878987dcc6e376db0150772e3fc"
         );
     }
 

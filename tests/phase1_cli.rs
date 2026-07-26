@@ -321,7 +321,7 @@ fn init_creates_real_storage_and_health_passes() {
         String::from_utf8_lossy(&initialized.stderr)
     );
     let value = parse_stdout(&initialized);
-    assert_eq!(value["migration_version"], 13);
+    assert_eq!(value["migration_version"], 14);
     assert_eq!(value["journal_mode"], "wal");
     assert!(root.path().join("mcl.toml").is_file());
     assert!(root.path().join(".mcl/state.sqlite3").is_file());
@@ -1081,6 +1081,158 @@ fn verifier_job_cli_dry_runs_enqueues_retries_and_survives_restart() {
         ],
     ));
     let formalization_record = &formalization["record"];
+    let trust_status_arguments = [
+        "verify".to_owned(),
+        "trust-status".to_owned(),
+        "--formalization-object-id".to_owned(),
+        formalization_record["object_id"]
+            .as_str()
+            .expect("trust formalization ID")
+            .to_owned(),
+        "--formalization-version-hash".to_owned(),
+        formalization_record["version_hash"]
+            .as_str()
+            .expect("trust formalization hash")
+            .to_owned(),
+    ];
+    let initial_trust = parse_stdout(&mcl_owned(&root, &trust_status_arguments));
+    assert_eq!(initial_trust["kernel"]["status"], "unverified");
+    assert_eq!(initial_trust["fidelity"]["status"], "unreviewed");
+    assert_eq!(initial_trust["definition"]["status"], "ungrounded");
+    assert_eq!(initial_trust["reuse"]["status"], "experimental");
+    assert_eq!(initial_trust["coverage"]["status"], "unknown");
+    let promotion_by_profile = |trust: &Value, profile: &str| {
+        trust["promotion"]
+            .as_array()
+            .expect("promotion evaluations")
+            .iter()
+            .find(|evaluation| evaluation["profile"] == profile)
+            .unwrap_or_else(|| panic!("missing {profile} promotion evaluation"))
+            .clone()
+    };
+    assert_eq!(
+        initial_trust["promotion"]
+            .as_array()
+            .expect("initial promotion evaluations")
+            .len(),
+        3
+    );
+    for profile in ["experimental", "publication", "upstream"] {
+        assert_eq!(
+            promotion_by_profile(&initial_trust, profile)["eligible"],
+            false
+        );
+    }
+
+    let trust_request = json!({
+        "schema_version": "trust_transition/1",
+        "formalization": {
+            "object_id": formalization_record["object_id"],
+            "version_hash": formalization_record["version_hash"]
+        },
+        "dimension": "definition",
+        "from_status": "ungrounded",
+        "to_status": "source_grounded",
+        "reviewer_identity": "definition-reviewer",
+        "evidence_artifact_hashes": [unsafe_hash],
+        "reason": "The exact source mapping was independently reviewed.",
+        "predecessor_transition_id": null
+    });
+    let reviewer_mismatch = mcl_owned(
+        &root,
+        &[
+            "verify".to_owned(),
+            "transition-trust".to_owned(),
+            "--request-json".to_owned(),
+            trust_request.to_string(),
+            "--actor".to_owned(),
+            "different-reviewer".to_owned(),
+            "--idempotency-key".to_owned(),
+            "trust-transition-reviewer-mismatch".to_owned(),
+            "--dry-run".to_owned(),
+        ],
+    );
+    assert!(!reviewer_mismatch.status.success());
+    let reviewer_mismatch_error: Value =
+        serde_json::from_slice(&reviewer_mismatch.stderr).expect("reviewer mismatch error JSON");
+    assert_eq!(
+        reviewer_mismatch_error["code"],
+        "MCL_TRUST_REVIEWER_MISMATCH"
+    );
+    let transition = |dry_run: bool| {
+        let mut arguments = vec![
+            "verify".to_owned(),
+            "transition-trust".to_owned(),
+            "--request-json".to_owned(),
+            trust_request.to_string(),
+            "--actor".to_owned(),
+            "definition-reviewer".to_owned(),
+            "--idempotency-key".to_owned(),
+            if dry_run {
+                "trust-transition-preview".to_owned()
+            } else {
+                "trust-transition-persist".to_owned()
+            },
+        ];
+        if dry_run {
+            arguments.push("--dry-run".to_owned());
+        }
+        mcl_owned(&root, &arguments)
+    };
+    let preview = parse_stdout(&transition(true));
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["transition"], Value::Null);
+    let persisted = parse_stdout(&transition(false));
+    assert_eq!(persisted["dry_run"], false);
+    assert_eq!(
+        persisted["transition"]["request"]["to_status"],
+        "source_grounded"
+    );
+    assert_eq!(parse_stdout(&transition(false)), persisted);
+    let reviewed_trust = parse_stdout(&mcl_owned(&root, &trust_status_arguments));
+    assert_eq!(reviewed_trust["definition"]["status"], "source_grounded");
+    assert_eq!(reviewed_trust["kernel"]["status"], "unverified");
+    assert_eq!(reviewed_trust["fidelity"]["status"], "unreviewed");
+    assert_eq!(reviewed_trust["reuse"]["status"], "experimental");
+    assert_eq!(reviewed_trust["coverage"]["status"], "unknown");
+    assert_eq!(
+        reviewed_trust["promotion"]
+            .as_array()
+            .expect("reviewed promotion evaluations")
+            .len(),
+        3
+    );
+    for profile in ["experimental", "publication", "upstream"] {
+        assert_eq!(
+            promotion_by_profile(&reviewed_trust, profile)["eligible"],
+            false
+        );
+    }
+    let trust_artifact_path = root
+        .path()
+        .join(".mcl/artifacts/sha256")
+        .join(&unsafe_hash[0..2])
+        .join(&unsafe_hash[2..4])
+        .join(unsafe_hash);
+    let exact_trust_artifact =
+        fs::read(&trust_artifact_path).expect("exact trust evidence artifact reads");
+    fs::write(&trust_artifact_path, b"corrupted trust evidence")
+        .expect("test corrupts trust evidence bytes");
+    let corrupted_trust = mcl_owned(&root, &trust_status_arguments);
+    assert!(!corrupted_trust.status.success());
+    let corrupted_trust_error: Value =
+        serde_json::from_slice(&corrupted_trust.stderr).expect("trust corruption error JSON");
+    assert_eq!(
+        corrupted_trust_error["code"],
+        "MCL_TRUST_STATUS_INTEGRITY_FAILED"
+    );
+    fs::write(&trust_artifact_path, exact_trust_artifact)
+        .expect("exact trust evidence artifact restores");
+    assert_eq!(
+        parse_stdout(&mcl_owned(&root, &trust_status_arguments)),
+        reviewed_trust
+    );
+
     let mut mismatched_payload = formalization_payload.clone();
     mismatched_payload["declaration_name"] = json!("MathOS.Verifier.differentFixture");
     let mismatched_formalization = parse_stdout(&mcl_owned(

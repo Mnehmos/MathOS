@@ -120,6 +120,8 @@ Phase 6f issue [#65](https://github.com/Mnehmos/MathOS/issues/65) completed thro
 
 Phase 6g source-content closure is tracked in issue [#71](https://github.com/Mnehmos/MathOS/issues/71). Non-null `source/1.content_hash` now requires exact verified CAS bytes plus reviewed source-content provenance and compatible license/restriction policy before create, version, dry-run, or retry. Migration 0013 independently rejects direct SQL bypass and invalid legacy bindings. Portable release construction includes those exact bytes and metadata; database-free verification repeats the same semantic policy. Null source hashes remain compatible. The pinned BH source-lock CLI and release fixtures prove byte identity and offline retention but deliberately establish no Pilot C fidelity or mathematical authority.
 
+Issue [#67](https://github.com/Mnehmos/MathOS/issues/67) adds the five-axis `trust_status/1` representation and immutable `trust_transition/1` ledger. Kernel and fidelity remain derived from their existing independent evidence; definition, reuse, and coverage migrate conservatively with no synthetic promotion. Experimental, publication, and upstream profiles return explicit blockers. New `release_manifest/2` bundles retain a hash-bound promotion assessment and every referenced review artifact, while public construction and legacy-public offline verification fail closed. Adversarial coverage keeps a kernel-correct full-theorem trivialization out of publication and upstream profiles when fidelity, definition, or reuse review is incomplete.
+
 ## Migration
 
 - [ ] Legacy proof-search evidence imports without silent trust promotion.

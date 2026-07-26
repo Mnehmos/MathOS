@@ -26,6 +26,18 @@ Add `--dry-run` to execute the same derivation and validation without creating t
 
 Private releases retain explicit member restrictions. A public profile additionally requires every member to be public and licensed. Selecting `public` never downgrades a restriction or invents a license.
 
+Every new build emits `release_manifest/2` and includes
+`reports/promotion-assessment.json`. The manifest binds the assessment hash, exact formalization,
+five trust-axis values, profile, eligibility, and current kernel/fidelity evidence heads. Private
+release maps to the `experimental` promotion profile; public release maps to `publication`.
+Construction stops before writing when that profile is incomplete.
+
+`release_manifest/1` remains readable with its original bytes for legacy private bundles. A legacy
+public bundle fails offline semantic verification because it has no multidimensional trust
+assessment. The exact profile matrix and transition model are documented in
+[Trust Model](../architecture/TRUST_MODEL.md) and
+[ADR-0018](../decisions/ADR-0018-multidimensional-trust-and-promotion-profiles.md).
+
 ## Verify without an instance
 
 Verification does not load `mcl.toml`, create an instance, or open SQLite:
@@ -36,11 +48,19 @@ mcl --root <missing-path-is-allowed> --json release verify \
   --expected-manifest-hash <trusted-sha256>
 ```
 
-The expected hash is required out of band so a coherent replacement manifest cannot silently redefine the release. The verifier checks the exact file inventory, rejects symbolic links and unsafe paths, recomputes every member hash and size, parses exact canonical JSON, validates record hashes and schemas, resolves all object and edge references, requires exact path and retained policy metadata for non-null source content, verifies the persisted authority and current fidelity witnesses, artifacts, environment identities, and controlled repair graph, reproduces the publication report/closure/stage/receipt bindings, compares report copies with their CAS members and the license index, and checks the replay and pedagogy exports against the manifest.
+The expected hash is required out of band so a coherent replacement manifest cannot silently redefine the release. The verifier checks the exact file inventory, rejects symbolic links and unsafe paths, recomputes every member hash and size, parses exact canonical JSON, validates record hashes and schemas, resolves all object and edge references, requires exact path and retained policy metadata for non-null source content, verifies the persisted authority and current fidelity witnesses, artifacts, environment identities, and controlled repair graph, reproduces the publication report/closure/stage/receipt bindings, recomputes the promotion assessment and its trust/evidence bindings, compares report copies with their CAS members and the license index, and checks the replay and pedagogy exports against the manifest.
 
 Only after those checks pass does it replay `replay/Submission.lean`. The executable is fixed to `lean` (or `lean.exe` on Windows), the only argument is the verifier-controlled module path, and the declaration comes from the receipt-bound manifest. The pinned environment controls toolchain, platform, network flag, timeout, and output limit. A platform or Lean-version mismatch fails closed.
 
 The returned `manifest_hash` is the SHA-256 of the exact canonical `manifest.json` bytes. It must remain identical after copying the bundle.
+
+`release_manifest/2` emits fidelity evidence snapshots and report copies only for the exact current
+publication witness and each retained repair witness. MathOS fully replays every underlying
+fidelity supersession chain before construction. Artifacts referenced by the bounded trust
+assessment remain in its CAS closure, but superseded evidence/report pairs cannot grow the release
+inventory. This keeps release size bounded independently of historical review count without
+deleting or reinterpreting canonical evidence. Legacy `release_manifest/1` bundles retain their
+original closed supersession semantics.
 
 ## Project into MathCorpus and MCIP
 

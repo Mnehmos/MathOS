@@ -26,7 +26,7 @@ use crate::domain::schemas::{
 use crate::domain::{
     CounterexampleRepairRequest, EdgeDraft, EdgeKind, GraphTraversalRequest, PublicationOutcome,
     RecordDraft, RecordKind, RunEventDraft, RunEventKind, RunKind, TraversalDirection,
-    VersionedFidelityReviewRequest,
+    TrustTransitionRequest, VersionedFidelityReviewRequest,
 };
 use crate::error::AppError;
 
@@ -290,6 +290,8 @@ pub struct VerifyRequest {
 pub enum VerifyAction {
     ReviewFidelity,
     FidelityStatus,
+    TransitionTrust,
+    TrustStatus,
     ClaimStatus,
     PreparePublication,
     IngestPublication,
@@ -389,7 +391,7 @@ impl MathOsMcp {
                 "pedagogy_actions": ["propose", "version", "get", "validate", "review", "link", "path"],
                 "research_actions": ["start", "observe", "submit"],
                 "counterexample_actions": ["repair", "get"],
-                "verify_actions": ["review_fidelity", "fidelity_status", "claim_status", "prepare_publication", "ingest_publication", "promote_publication_authority", "stage_comparator_authority", "ingest_comparator_authority", "promote_comparator_authority", "comparator_authority_status"],
+                "verify_actions": ["review_fidelity", "fidelity_status", "transition_trust", "trust_status", "claim_status", "prepare_publication", "ingest_publication", "promote_publication_authority", "stage_comparator_authority", "ingest_comparator_authority", "promote_comparator_authority", "comparator_authority_status"],
                 "mutations": true,
                 "authoritative_verification": true,
                 "claim_research_status": "derived_read_only",
@@ -464,7 +466,7 @@ impl MathOsMcp {
     }
 
     #[tool(
-        description = "Create or read controlled fidelity, publication, and Comparator evidence through closed application gates. Fidelity review accepts one closed fidelity_review_request/1 or fidelity_review_request/2 object. Closed actions: review_fidelity, fidelity_status, claim_status, prepare_publication, ingest_publication, promote_publication_authority, stage_comparator_authority, ingest_comparator_authority, promote_comparator_authority, comparator_authority_status. Comparator promotion accepts only a receipt plus mutation attribution; subject, result, authority, environment, and artifacts are application-derived."
+        description = "Create or read controlled fidelity, multidimensional trust, publication, and Comparator evidence through closed application gates. review_fidelity accepts one fidelity_review_request/1 or fidelity_review_request/2 object; transition_trust accepts one trust_transition/1 object. Closed actions: review_fidelity, fidelity_status, transition_trust, trust_status, claim_status, prepare_publication, ingest_publication, promote_publication_authority, stage_comparator_authority, ingest_comparator_authority, promote_comparator_authority, comparator_authority_status. Kernel and fidelity authority remain application-derived and cannot be set through trust transitions. Comparator promotion accepts only its receipt plus mutation attribution; all authority fields remain application-derived."
     )]
     fn verify(&self, Parameters(request): Parameters<VerifyRequest>) -> CallToolResult {
         result_to_tool(self.execute_verify(request))
@@ -1050,6 +1052,159 @@ impl MathOsMcp {
                     )?,
                 };
                 to_value(application.fidelity_status(&formalization)?).map_err(serialization_error)
+            }
+            VerifyAction::TransitionTrust => {
+                reject_present(request.comparator, "comparator", "transition_trust")?;
+                reject_present(
+                    request.claim_object_id,
+                    "claim_object_id",
+                    "transition_trust",
+                )?;
+                reject_present(
+                    request.claim_version_hash,
+                    "claim_version_hash",
+                    "transition_trust",
+                )?;
+                reject_present(
+                    request.formalization_object_id,
+                    "formalization_object_id",
+                    "transition_trust",
+                )?;
+                reject_present(
+                    request.formalization_version_hash,
+                    "formalization_version_hash",
+                    "transition_trust",
+                )?;
+                reject_present(request.outcome, "outcome", "transition_trust")?;
+                reject_present(
+                    request.diagnostic_evidence_id,
+                    "diagnostic_evidence_id",
+                    "transition_trust",
+                )?;
+                reject_present(
+                    request.proof_closure_evidence_id,
+                    "proof_closure_evidence_id",
+                    "transition_trust",
+                )?;
+                reject_present(
+                    request.axiom_audit_evidence_id,
+                    "axiom_audit_evidence_id",
+                    "transition_trust",
+                )?;
+                reject_present(
+                    request.source_commit_sha,
+                    "source_commit_sha",
+                    "transition_trust",
+                )?;
+                reject_present(
+                    request.source_tree_sha,
+                    "source_tree_sha",
+                    "transition_trust",
+                )?;
+                reject_present(
+                    request.report_artifact_hash,
+                    "report_artifact_hash",
+                    "transition_trust",
+                )?;
+                reject_present(
+                    request.attestation_bundle_artifact_hash,
+                    "attestation_bundle_artifact_hash",
+                    "transition_trust",
+                )?;
+                reject_present(
+                    request.publication_receipt_hash,
+                    "publication_receipt_hash",
+                    "transition_trust",
+                )?;
+                let payload = request
+                    .request
+                    .flatten()
+                    .ok_or_else(|| missing_field("request", "transition_trust", "verify"))?;
+                let transition: TrustTransitionRequest =
+                    serde_json::from_value(payload).map_err(|error| {
+                        AppError::new(
+                            "MCL_TRUST_TRANSITION_JSON_INVALID",
+                            error.to_string(),
+                            false,
+                            "Supply one closed trust_transition/1 object.",
+                        )
+                    })?;
+                let actor = required(request.actor.flatten(), "actor", "transition_trust")?;
+                let idempotency_key = required(
+                    request.idempotency_key.flatten(),
+                    "idempotency_key",
+                    "transition_trust",
+                )?;
+                to_value(application.transition_trust(
+                    &transition,
+                    &actor,
+                    &idempotency_key,
+                    mutation_dry_run(request.dry_run, "transition_trust")?,
+                )?)
+                .map_err(serialization_error)
+            }
+            VerifyAction::TrustStatus => {
+                reject_present(request.comparator, "comparator", "trust_status")?;
+                reject_present(request.dry_run, "dry_run", "trust_status")?;
+                reject_present(request.claim_object_id, "claim_object_id", "trust_status")?;
+                reject_present(
+                    request.claim_version_hash,
+                    "claim_version_hash",
+                    "trust_status",
+                )?;
+                reject_present(request.request, "request", "trust_status")?;
+                reject_present(request.actor, "actor", "trust_status")?;
+                reject_present(request.idempotency_key, "idempotency_key", "trust_status")?;
+                reject_present(request.outcome, "outcome", "trust_status")?;
+                reject_present(
+                    request.diagnostic_evidence_id,
+                    "diagnostic_evidence_id",
+                    "trust_status",
+                )?;
+                reject_present(
+                    request.proof_closure_evidence_id,
+                    "proof_closure_evidence_id",
+                    "trust_status",
+                )?;
+                reject_present(
+                    request.axiom_audit_evidence_id,
+                    "axiom_audit_evidence_id",
+                    "trust_status",
+                )?;
+                reject_present(
+                    request.source_commit_sha,
+                    "source_commit_sha",
+                    "trust_status",
+                )?;
+                reject_present(request.source_tree_sha, "source_tree_sha", "trust_status")?;
+                reject_present(
+                    request.report_artifact_hash,
+                    "report_artifact_hash",
+                    "trust_status",
+                )?;
+                reject_present(
+                    request.attestation_bundle_artifact_hash,
+                    "attestation_bundle_artifact_hash",
+                    "trust_status",
+                )?;
+                reject_present(
+                    request.publication_receipt_hash,
+                    "publication_receipt_hash",
+                    "trust_status",
+                )?;
+                let formalization = crate::domain::schemas::ExactVersionReference {
+                    object_id: required(
+                        request.formalization_object_id.flatten(),
+                        "formalization_object_id",
+                        "trust_status",
+                    )?,
+                    version_hash: required(
+                        request.formalization_version_hash.flatten(),
+                        "formalization_version_hash",
+                        "trust_status",
+                    )?,
+                };
+                to_value(application.trust_status(&formalization)?).map_err(serialization_error)
             }
             VerifyAction::ClaimStatus => {
                 reject_present(request.comparator, "comparator", "claim_status")?;

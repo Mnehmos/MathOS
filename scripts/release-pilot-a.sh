@@ -295,8 +295,15 @@ jq -e \
   .total_member_bytes > 0
 ' "$evidence_dir/release-build.json" >/dev/null
 jq -e '
-  .schema_version == "release_manifest/1" and
+  .schema_version == "release_manifest/2" and
   .profile == "private" and
+  .trust.profile == "experimental" and
+  .trust.kernel_status == "kernel_verified" and
+  .trust.fidelity_status == "reviewer_checked" and
+  .trust.definition_status == "ungrounded" and
+  .trust.reuse_status == "experimental" and
+  .trust.coverage_status == "unknown" and
+  .trust.eligible == true and
   (.publication.authority_evidence_id | type) == "string" and
   (.publication.fidelity_evidence_id | type) == "string" and
   ([.members[].kind] | unique | sort) ==

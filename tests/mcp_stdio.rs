@@ -272,6 +272,8 @@ fn stdio_lifecycle_is_pinned_lists_only_safe_tools_and_survives_restart() {
         json!([
             "review_fidelity",
             "fidelity_status",
+            "transition_trust",
+            "trust_status",
             "claim_status",
             "prepare_publication",
             "ingest_publication",
@@ -1302,6 +1304,107 @@ fn controlled_mcp_mutations_preserve_idempotency_cas_and_non_authoritative_runs(
     let formalization_hash = formalization_record["version_hash"]
         .as_str()
         .expect("formalization version hash");
+
+    let initial_trust = server.call(
+        151,
+        "verify",
+        json!({
+            "action": "trust_status",
+            "formalization_object_id": formalization_id,
+            "formalization_version_hash": formalization_hash
+        }),
+    );
+    assert_eq!(initial_trust["result"]["isError"], false);
+    assert_eq!(
+        initial_trust["result"]["structuredContent"]["kernel"]["status"],
+        "unverified"
+    );
+    assert_eq!(
+        initial_trust["result"]["structuredContent"]["fidelity"]["status"],
+        "unreviewed"
+    );
+    assert_eq!(
+        initial_trust["result"]["structuredContent"]["definition"]["status"],
+        "ungrounded"
+    );
+
+    let trust_transition_request = json!({
+        "schema_version": "trust_transition/1",
+        "formalization": {
+            "object_id": formalization_id,
+            "version_hash": formalization_hash
+        },
+        "dimension": "definition",
+        "from_status": "ungrounded",
+        "to_status": "source_grounded",
+        "reviewer_identity": "definition-reviewer",
+        "evidence_artifact_hashes": [module_artifact_hash],
+        "reason": "The exact source mapping was independently reviewed.",
+        "predecessor_transition_id": null
+    });
+    let transition_arguments = json!({
+        "action": "transition_trust",
+        "request": trust_transition_request,
+        "actor": "definition-reviewer",
+        "idempotency_key": "mcp-definition-trust-transition",
+        "dry_run": false
+    });
+    let trust_transition = server.call(152, "verify", transition_arguments.clone());
+    assert_eq!(trust_transition["result"]["isError"], false);
+    assert_eq!(
+        trust_transition["result"]["structuredContent"]["transition"]["request"]["to_status"],
+        "source_grounded"
+    );
+    let retried_trust_transition = server.call(153, "verify", transition_arguments);
+    assert_eq!(
+        retried_trust_transition["result"]["structuredContent"],
+        trust_transition["result"]["structuredContent"]
+    );
+
+    let reviewed_trust = server.call(
+        154,
+        "verify",
+        json!({
+            "action": "trust_status",
+            "formalization_object_id": formalization_id,
+            "formalization_version_hash": formalization_hash
+        }),
+    );
+    assert_eq!(reviewed_trust["result"]["isError"], false);
+    assert_eq!(
+        reviewed_trust["result"]["structuredContent"]["definition"]["status"],
+        "source_grounded"
+    );
+    assert_eq!(
+        reviewed_trust["result"]["structuredContent"]["kernel"]["status"],
+        "unverified"
+    );
+    assert_eq!(
+        reviewed_trust["result"]["structuredContent"]["fidelity"]["status"],
+        "unreviewed"
+    );
+    let cli_trust_status = mcl_owned(
+        root.path(),
+        &[
+            "verify".to_owned(),
+            "trust-status".to_owned(),
+            "--formalization-object-id".to_owned(),
+            formalization_id.to_owned(),
+            "--formalization-version-hash".to_owned(),
+            formalization_hash.to_owned(),
+        ],
+    );
+    assert!(
+        cli_trust_status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_trust_status.stderr)
+    );
+    let cli_trust_status: Value =
+        serde_json::from_slice(&cli_trust_status.stdout).expect("CLI trust status JSON");
+    assert_eq!(
+        reviewed_trust["result"]["structuredContent"],
+        cli_trust_status
+    );
 
     let prohibited = server.call(
         16,

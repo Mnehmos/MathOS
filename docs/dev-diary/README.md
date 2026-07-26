@@ -45,3 +45,6 @@ The diary is intentionally more philosophical than technical. Technical evidence
 35. [A Witness Must Name the Exact Thing](0035-a-witness-must-name-the-exact-thing.md)
 36. [Truth Is the Intersection](0036-truth-is-the-intersection.md)
 37. [A Correction Needs Two Names](0037-a-correction-needs-two-names.md)
+38. [A Lesson Is a Promise](0038-a-lesson-is-a-promise.md)
+39. [The Database Must Be Able to Disappear](0039-the-database-must-be-able-to-disappear.md)
+40. [One Proof, Five Questions](0040-one-proof-five-questions.md)

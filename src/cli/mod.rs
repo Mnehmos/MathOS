@@ -189,6 +189,10 @@ enum VerifyAction {
     PromoteAudit(VerifyPromoteDiagnosticOptions),
     ReviewFidelity(ReviewFidelityOptions),
     FidelityStatus(FidelityStatusOptions),
+    /// Record one evidence-backed definition, reuse, or coverage transition.
+    TransitionTrust(TransitionTrustOptions),
+    /// Derive all five independent trust dimensions and promotion profiles.
+    TrustStatus(FidelityStatusOptions),
     /// Derive the research status of one exact claim version.
     ClaimStatus(ClaimStatusOptions),
     PreparePublication(VerifyPreparePublicationOptions),
@@ -276,6 +280,15 @@ struct FidelityStatusOptions {
 
     #[arg(long)]
     formalization_version_hash: String,
+}
+
+#[derive(Debug, Args)]
+struct TransitionTrustOptions {
+    #[arg(long, help = "Closed trust_transition/1 JSON object")]
+    request_json: String,
+
+    #[command(flatten)]
+    mutation: MutationOptions,
 }
 
 #[derive(Debug, Args)]
@@ -1265,6 +1278,31 @@ fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<Cli
             },
         )?)
         .expect("fidelity status is serializable"),
+        VerifyAction::TransitionTrust(options) => {
+            let request: crate::domain::TrustTransitionRequest =
+                serde_json::from_str(&options.request_json).map_err(|error| {
+                    AppError::new(
+                        "MCL_TRUST_TRANSITION_JSON_INVALID",
+                        error.to_string(),
+                        false,
+                        "Supply one closed trust_transition/1 JSON object.",
+                    )
+                })?;
+            to_value(application.transition_trust(
+                &request,
+                &options.mutation.actor,
+                &options.mutation.idempotency_key,
+                options.mutation.dry_run,
+            )?)
+            .expect("trust transition outcome is serializable")
+        }
+        VerifyAction::TrustStatus(options) => to_value(application.trust_status(
+            &crate::domain::schemas::ExactVersionReference {
+                object_id: options.formalization_object_id,
+                version_hash: options.formalization_version_hash,
+            },
+        )?)
+        .expect("trust status is serializable"),
         VerifyAction::ClaimStatus(options) => to_value(application.claim_research_status(
             &crate::domain::schemas::ExactVersionReference {
                 object_id: options.claim_object_id,
