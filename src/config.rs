@@ -19,6 +19,7 @@ pub struct ConfigFile {
 #[serde(default, deny_unknown_fields)]
 pub struct VerifierConfig {
     pub lean_command: String,
+    pub lake_command: String,
     pub timeout_seconds: u64,
     pub max_output_bytes: usize,
     pub concurrency: usize,
@@ -62,6 +63,7 @@ impl Default for VerifierConfig {
     fn default() -> Self {
         Self {
             lean_command: "lean".to_owned(),
+            lake_command: "lake".to_owned(),
             timeout_seconds: 120,
             max_output_bytes: 1_048_576,
             concurrency: 1,
@@ -119,6 +121,14 @@ impl ResolvedConfig {
                 "verifier.lean_command must be the allowlisted executable `lean` or `lean.exe`",
                 false,
                 "Install Lean on PATH and set verifier.lean_command to the platform name.",
+            ));
+        }
+        if file.verifier.lake_command != "lake" && file.verifier.lake_command != "lake.exe" {
+            return Err(AppError::new(
+                "MCL_CONFIG_INVALID",
+                "verifier.lake_command must be the allowlisted executable `lake` or `lake.exe`",
+                false,
+                "Install Lake on PATH and set verifier.lake_command to the platform name.",
             ));
         }
         if !matches!(

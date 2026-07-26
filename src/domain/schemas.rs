@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use super::RecordKind;
 use super::artifact::{ArtifactCreationSource, ArtifactMetadata, ArtifactRestriction};
+use super::verifier::LeanProjectBinding;
 use crate::error::AppError;
 
 pub const SOURCE_SCHEMA_VERSION: &str = "source/1";
@@ -172,6 +173,8 @@ pub struct FormalizationPayload {
     pub claim_polarity: Option<FormalizationClaimPolarity>,
     pub environment_hash: String,
     pub module_artifact_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<LeanProjectBinding>,
     pub declaration_name: String,
     pub exact_theorem_type: String,
     pub declaration_hash: String,
@@ -438,6 +441,16 @@ pub fn formalization_schema() -> Value {
             "claim_polarity": {"enum": ["claim", "negation"]},
             "environment_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "module_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "project": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["archive_artifact_hash", "archive_root", "module_path"],
+                "properties": {
+                    "archive_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "archive_root": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$"},
+                    "module_path": {"type": "string", "minLength": 6, "maxLength": 512, "pattern": "^[A-Za-z0-9_']+(/[A-Za-z0-9_']+)*\\.lean$"}
+                }
+            },
             "declaration_name": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES},
             "exact_theorem_type": {"type": "string", "minLength": 1, "maxLength": MAX_TEXT_BYTES},
             "declaration_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -676,6 +689,9 @@ fn validate_formalization(formalization: &FormalizationPayload) -> Result<(), Ap
         &formalization.module_artifact_hash,
         "formalization module artifact",
     )?;
+    if let Some(project) = &formalization.project {
+        project.validate()?;
+    }
     valid_hash(&formalization.declaration_hash, "formalization declaration")?;
     nonempty(
         "formalization declaration name",

@@ -26,6 +26,117 @@ fn run(root: &Path, arguments: &[String]) -> Value {
     serde_json::from_slice(&output.stdout).expect("stdout JSON")
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn publication_profile_enforces_memory_and_network_controls() {
+    if std::env::var("MCL_RUN_LEAN_INTEGRATION").as_deref() != Ok("1") {
+        return;
+    }
+    let root = TempDir::new().expect("publication temporary root");
+    run(
+        root.path(),
+        &[
+            "init".to_owned(),
+            "--actor".to_owned(),
+            "publication-ci".to_owned(),
+            "--idempotency-key".to_owned(),
+            "publication-ci-init".to_owned(),
+        ],
+    );
+    let mut environment_manifest: Value =
+        serde_json::from_str(include_str!("../fixtures/environment/lean-4.32-local.json"))
+            .expect("environment fixture JSON");
+    environment_manifest["trust_profile"] = json!("publication");
+    environment_manifest["resource_limits"]["max_memory_bytes"] = json!(4_294_967_296_u64);
+    let environment = run(
+        root.path(),
+        &[
+            "environment".to_owned(),
+            "register".to_owned(),
+            "--manifest-json".to_owned(),
+            environment_manifest.to_string(),
+            "--actor".to_owned(),
+            "publication-ci".to_owned(),
+            "--idempotency-key".to_owned(),
+            "publication-ci-environment".to_owned(),
+        ],
+    );
+    let module = root.path().join("PublicationWorkerFixture.lean");
+    fs::write(
+        &module,
+        b"namespace MathOS.PublicationWorker\ntheorem truth : True := by trivial\nend MathOS.PublicationWorker\n",
+    )
+    .expect("publication Lean source writes");
+    let artifact = run(
+        root.path(),
+        &[
+            "artifact".to_owned(),
+            "ingest".to_owned(),
+            "--input-file".to_owned(),
+            module.to_string_lossy().into_owned(),
+            "--metadata-json".to_owned(),
+            json!({
+                "schema_version": "artifact_metadata/1",
+                "media_type": "text/x-lean",
+                "creation_source": "user_ingest",
+                "license_expression": null,
+                "restriction": "private",
+                "semantic_metadata": {
+                    "declaration_name": "MathOS.PublicationWorker.truth"
+                }
+            })
+            .to_string(),
+            "--actor".to_owned(),
+            "publication-ci".to_owned(),
+            "--idempotency-key".to_owned(),
+            "publication-ci-artifact".to_owned(),
+        ],
+    );
+    run(
+        root.path(),
+        &[
+            "verify".to_owned(),
+            "check".to_owned(),
+            "--environment-hash".to_owned(),
+            environment["proposed_environment_hash"]
+                .as_str()
+                .expect("publication environment hash")
+                .to_owned(),
+            "--module-artifact-hash".to_owned(),
+            artifact["proposed_artifact_hash"]
+                .as_str()
+                .expect("publication artifact hash")
+                .to_owned(),
+            "--declaration-name".to_owned(),
+            "MathOS.PublicationWorker.truth".to_owned(),
+            "--actor".to_owned(),
+            "publication-ci".to_owned(),
+            "--idempotency-key".to_owned(),
+            "publication-ci-job".to_owned(),
+        ],
+    );
+    let worked = run(
+        root.path(),
+        &[
+            "worker".to_owned(),
+            "--worker-id".to_owned(),
+            "publication-ci-worker".to_owned(),
+            "--lease-seconds".to_owned(),
+            "180".to_owned(),
+        ],
+    );
+    assert_eq!(
+        worked["report"]["classification"], "elaborated",
+        "unexpected publication worker outcome: {worked:#}"
+    );
+    assert_eq!(worked["report"]["exit_code"], 0);
+    assert_eq!(worked["report"]["trust_profile"], "publication");
+    assert_eq!(worked["report"]["memory_limit_enforced"], true);
+    assert_eq!(worked["report"]["network_isolation_enforced"], true);
+    assert_eq!(worked["report"]["authoritative"], false);
+    assert_eq!(worked["job"]["state"], "succeeded");
+}
+
 #[test]
 fn pinned_lean_worker_elaborates_real_source_without_granting_authority() {
     if std::env::var("MCL_RUN_LEAN_INTEGRATION").as_deref() != Ok("1") {

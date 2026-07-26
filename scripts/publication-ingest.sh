@@ -166,6 +166,8 @@ formalization_version_hash="$(jq -er '.version_hash' "$candidate_dir/closure/for
 source_object_id="$(jq -er '.object_id' "$candidate_dir/closure/source-version.json")"
 source_version_hash="$(jq -er '.version_hash' "$candidate_dir/closure/source-version.json")"
 module_hash="$(jq -er '.payload.module_artifact_hash' "$candidate_dir/closure/formalization-version.json")"
+project_mode="$(jq -er '.request.project != null' "$candidate_dir/publication-report.json")"
+project_hash="$(jq -r '.request.project.archive_artifact_hash // empty' "$candidate_dir/publication-report.json")"
 
 "$mcl_bin" --root "$state_root" --json verify claim-status \
   --claim-object-id "$claim_object_id" \
@@ -187,7 +189,11 @@ jq -e \
   exit 71
 }
 
-reviewer="protected-fidelity-reviewer"
+if [[ "$project_mode" == true ]]; then
+  reviewer="protected-pilot-c-fidelity-reviewer"
+else
+  reviewer="protected-fidelity-reviewer"
+fi
 "$mcl_bin" --root "$state_root" --json research start \
   --kind literature_review \
   --budget-json '{}' \
@@ -199,39 +205,96 @@ fidelity_run_id="$(jq -er '.run.run_id' "$output_dir/fidelity-review-run.json")"
 reviewed_source_relation="$([ "$expected_evidence_kind" = "lean_kernel_proof" ] && printf claim || printf logical_negation)"
 expected_research_status="$([ "$expected_evidence_kind" = "lean_kernel_proof" ] && printf proved || printf disproved)"
 expected_witness_kind="$([ "$expected_evidence_kind" = "lean_kernel_proof" ] && printf proof || printf refutation)"
-jq -cnS \
-  --arg source_object_id "$source_object_id" \
-  --arg source_version_hash "$source_version_hash" \
-  --arg claim_object_id "$claim_object_id" \
-  --arg claim_version_hash "$claim_version_hash" \
-  --arg formalization_object_id "$formalization_object_id" \
-  --arg formalization_version_hash "$formalization_version_hash" \
-  --arg reviewed_source_relation "$reviewed_source_relation" \
-  --arg reviewer "$reviewer" \
-  --arg module_hash "$module_hash" \
-  --arg fidelity_run_id "$fidelity_run_id" '
-  {
-    schema_version: "fidelity_review_request/2",
-    source: {object_id: $source_object_id, version_hash: $source_version_hash},
-    claim: {object_id: $claim_object_id, version_hash: $claim_version_hash},
-    formalization: {
-      object_id: $formalization_object_id,
-      version_hash: $formalization_version_hash
-    },
-    reviewed_source_relation: $reviewed_source_relation,
-    review_level: "mathematical_statement",
-    verdict: "verified",
-    reviewer_identity: $reviewer,
-    findings: [
-      "Protected role-separated review confirms the exact declaration states the selected source relation."
-    ],
-    ambiguity_disposition: "no_ambiguity",
-    definition_mappings: [],
-    supporting_artifact_hashes: [$module_hash],
-    producing_run_id: $fidelity_run_id,
-    supersedes_evidence_id: null
-  }
-' >"$output_dir/fidelity-review-request.json"
+if [[ "$project_mode" == true ]]; then
+  paper_hash="$(jq -er '.payload.content_hash' "$candidate_dir/closure/source-version.json")"
+  jq -cnS \
+    --arg source_object_id "$source_object_id" \
+    --arg source_version_hash "$source_version_hash" \
+    --arg claim_object_id "$claim_object_id" \
+    --arg claim_version_hash "$claim_version_hash" \
+    --arg formalization_object_id "$formalization_object_id" \
+    --arg formalization_version_hash "$formalization_version_hash" \
+    --arg reviewer "$reviewer" \
+    --arg module_hash "$module_hash" \
+    --arg project_hash "$project_hash" \
+    --arg paper_hash "$paper_hash" \
+    --arg fidelity_run_id "$fidelity_run_id" '
+    {
+      schema_version: "fidelity_review_request/2",
+      source: {object_id: $source_object_id, version_hash: $source_version_hash},
+      claim: {object_id: $claim_object_id, version_hash: $claim_version_hash},
+      formalization: {
+        object_id: $formalization_object_id,
+        version_hash: $formalization_version_hash
+      },
+      reviewed_source_relation: "claim",
+      review_level: "source_paper_correspondence",
+      verdict: "verified",
+      reviewer_identity: $reviewer,
+      findings: [
+        "The paper'\''s Theorem 1 and BH.Final.GaussianBHCounterexample state the same eventual strict lower bound: FDR_N exceeds 13/1250 = 0.0104 for the specified model when BH is run at 1/100.",
+        "The paper indexes positive integers N, while the Lean sample uses 100*(N+1) coordinates at natural-number index N. The successor reindexing preserves the eventually-atTop claim.",
+        "The Lean model preserves the paper'\''s exact 96N:N:3N block proportions, two-sided Gaussian p-values, common-factor construction, and nominal BH level.",
+        "The generated Lean 5000-bin certificate and the paper interval certificate remain distinct provenance-bound artifacts."
+      ],
+      ambiguity_disposition: "resolved_from_source",
+      definition_mappings: [
+        {
+          source_term: "The paper'\''s three-block correlated Gaussian factor model with 96N true-null, N first-signal, and 3N second-signal coordinates.",
+          formal_declaration: "BH.Gaussian.FactorModelSample.M and BH.Gaussian.FactorModelSample.pValueSample",
+          notes: "Lean uses M N = 100*(N+1), preserving the exact 96:1:3 proportions after successor reindexing."
+        },
+        {
+          source_term: "The false discovery rate of ordinary Benjamini-Hochberg at nominal level alpha = 0.01.",
+          formal_declaration: "BH.Gaussian.FiniteSampleFDR.gaussianBHFDR",
+          notes: "This is the expectation of the concrete finite-sample BH false-discovery proportion at 1/100."
+        },
+        {
+          source_term: "For all sufficiently large N, FDR_N > 0.0104.",
+          formal_declaration: "BH.Final.GaussianBHCounterexample",
+          notes: "The exact Lean conclusion is eventually-atTop (13/1250 : Real) < gaussianBHFDR N."
+        }
+      ],
+      supporting_artifact_hashes: [$module_hash, $project_hash, $paper_hash],
+      producing_run_id: $fidelity_run_id,
+      supersedes_evidence_id: null
+    }
+  ' >"$output_dir/fidelity-review-request.json"
+else
+  jq -cnS \
+    --arg source_object_id "$source_object_id" \
+    --arg source_version_hash "$source_version_hash" \
+    --arg claim_object_id "$claim_object_id" \
+    --arg claim_version_hash "$claim_version_hash" \
+    --arg formalization_object_id "$formalization_object_id" \
+    --arg formalization_version_hash "$formalization_version_hash" \
+    --arg reviewed_source_relation "$reviewed_source_relation" \
+    --arg reviewer "$reviewer" \
+    --arg module_hash "$module_hash" \
+    --arg fidelity_run_id "$fidelity_run_id" '
+    {
+      schema_version: "fidelity_review_request/2",
+      source: {object_id: $source_object_id, version_hash: $source_version_hash},
+      claim: {object_id: $claim_object_id, version_hash: $claim_version_hash},
+      formalization: {
+        object_id: $formalization_object_id,
+        version_hash: $formalization_version_hash
+      },
+      reviewed_source_relation: $reviewed_source_relation,
+      review_level: "mathematical_statement",
+      verdict: "verified",
+      reviewer_identity: $reviewer,
+      findings: [
+        "Protected role-separated review confirms the exact declaration states the selected source relation."
+      ],
+      ambiguity_disposition: "no_ambiguity",
+      definition_mappings: [],
+      supporting_artifact_hashes: [$module_hash],
+      producing_run_id: $fidelity_run_id,
+      supersedes_evidence_id: null
+    }
+  ' >"$output_dir/fidelity-review-request.json"
+fi
 
 "$mcl_bin" --root "$state_root" --json verify review-fidelity \
   --request-json "$(<"$output_dir/fidelity-review-request.json")" \
@@ -265,6 +328,24 @@ jq -e \
   printf 'protected fidelity review output failed its closed contract\n' >&2
   exit 71
 }
+if [[ "$project_mode" == true ]]; then
+  jq -e \
+    --arg module_hash "$module_hash" \
+    --arg project_hash "$project_hash" \
+    --arg paper_hash "$paper_hash" '
+    .report.request.review_level == "source_paper_correspondence" and
+    .report.request.ambiguity_disposition == "resolved_from_source" and
+    (.report.request.definition_mappings | length) == 3 and
+    .report.request.supporting_artifact_hashes == [
+      $module_hash,
+      $project_hash,
+      $paper_hash
+    ]
+  ' "$output_dir/fidelity-review.json" >/dev/null || {
+    printf 'Pilot C fidelity review lost its exact source correspondence\n' >&2
+    exit 71
+  }
+fi
 
 "$mcl_bin" --root "$state_root" --json verify claim-status \
   --claim-object-id "$claim_object_id" \
@@ -303,7 +384,133 @@ jq -e \
   exit 71
 }
 
-if [[ "$expected_evidence_kind" == "lean_kernel_refutation" ]]; then
+if [[ "$project_mode" == true ]]; then
+  jq -e \
+    --arg authority_evidence_id "$authority_evidence_id" \
+    --arg fidelity_evidence_id "$fidelity_evidence_id" \
+    --arg reviewer "$reviewer" \
+    --slurpfile authority "$output_dir/publication-authority.json" \
+    --slurpfile fidelity "$output_dir/fidelity-review.json" '
+    .status == "proved" and
+    (.witnesses | length) == 1 and
+    .witnesses[0].kind == "proof" and
+    .witnesses[0].reviewed_source_relation == "claim" and
+    .witnesses[0].authority_evidence_id == $authority_evidence_id and
+    .witnesses[0].fidelity_evidence_id == $fidelity_evidence_id and
+    $authority[0].evidence.created_by == "publication-boundary" and
+    $fidelity[0].evidence.created_by == $reviewer
+  ' "$output_dir/claim-status-after-fidelity.json" >/dev/null || {
+    printf 'Pilot C authority and fidelity violated role separation\n' >&2
+    exit 71
+  }
+
+  trust_reviewer="protected-pilot-c-trust-reviewer"
+  record_trust_transition() {
+    local dimension="$1"
+    local from_status="$2"
+    local to_status="$3"
+    local reason="$4"
+    local evidence_hashes="$5"
+    local output_name="$6"
+    jq -cnS \
+      --arg formalization_object_id "$formalization_object_id" \
+      --arg formalization_version_hash "$formalization_version_hash" \
+      --arg dimension "$dimension" \
+      --arg from_status "$from_status" \
+      --arg to_status "$to_status" \
+      --arg reviewer "$trust_reviewer" \
+      --arg reason "$reason" \
+      --argjson evidence_hashes "$evidence_hashes" '{
+      schema_version: "trust_transition/1",
+      formalization: {
+        object_id: $formalization_object_id,
+        version_hash: $formalization_version_hash
+      },
+      dimension: $dimension,
+      from_status: $from_status,
+      to_status: $to_status,
+      reviewer_identity: $reviewer,
+      evidence_artifact_hashes: $evidence_hashes,
+      reason: $reason,
+      predecessor_transition_id: null
+    }' >"$output_dir/$output_name-request.json"
+    "$mcl_bin" --root "$state_root" --json verify transition-trust \
+      --request-json "$(<"$output_dir/$output_name-request.json")" \
+      --actor "$trust_reviewer" \
+      --idempotency-key "pilot-c-trust-$dimension:$receipt_hash" \
+      >"$output_dir/$output_name.json"
+    jq -e \
+      --arg dimension "$dimension" \
+      --arg from_status "$from_status" \
+      --arg to_status "$to_status" \
+      --arg reviewer "$trust_reviewer" '
+      .dry_run == false and
+      .transition.dimension == $dimension and
+      .transition.from_status == $from_status and
+      .transition.to_status == $to_status and
+      .transition.reviewer_identity == $reviewer
+    ' "$output_dir/$output_name.json" >/dev/null || {
+      printf 'Pilot C %s trust transition failed its closed contract\n' "$dimension" >&2
+      exit 71
+    }
+  }
+
+  definition_evidence="$(jq -cn \
+    --arg module "$module_hash" \
+    --arg project "$project_hash" \
+    --arg fidelity "$fidelity_report_hash" \
+    --arg paper "$paper_hash" \
+    '[$module,$project,$fidelity,$paper]')"
+  reuse_evidence="$(jq -cn \
+    --arg module "$module_hash" \
+    --arg project "$project_hash" \
+    '[$module,$project]')"
+  record_trust_transition \
+    definition \
+    ungrounded \
+    source_grounded \
+    "The exact paper, project closure, headline module, and role-separated correspondence report ground the model, FDR, threshold, and eventual-bound definitions in the cited source." \
+    "$definition_evidence" \
+    definition-trust
+  record_trust_transition \
+    reuse \
+    experimental \
+    campaign_specific \
+    "The headline theorem and generated 5000-bin certificate are paper-specific campaign outputs. The project separately retains reusable statistical lemmas, but this exact formalization is not promoted as a general reusable result." \
+    "$reuse_evidence" \
+    reuse-trust
+  record_trust_transition \
+    coverage \
+    unknown \
+    full_theorem \
+    "The exact declaration covers the paper's advertised Theorem 1 conclusion, not merely a finite specialization or supporting lemma." \
+    "$definition_evidence" \
+    coverage-trust
+
+  "$mcl_bin" --root "$state_root" --json verify trust-status \
+    --formalization-object-id "$formalization_object_id" \
+    --formalization-version-hash "$formalization_version_hash" \
+    >"$output_dir/trust-status.json"
+  jq -e '
+    .schema_version == "trust_status/1" and
+    .kernel.status == "kernel_verified" and
+    .fidelity.status == "reviewer_checked" and
+    .definition.status == "source_grounded" and
+    .reuse.status == "campaign_specific" and
+    .coverage.status == "full_theorem" and
+    (.promotion[] | select(.profile == "experimental") | .eligible) == true and
+    (.promotion[] | select(.profile == "publication") | .eligible) == false and
+    (
+      .promotion[]
+      | select(.profile == "publication")
+      | .blockers
+      | any(.dimension == "reuse" and .current_status == "campaign_specific")
+    )
+  ' "$output_dir/trust-status.json" >/dev/null || {
+    printf 'Pilot C trust status lost an independent promotion axis\n' >&2
+    exit 71
+  }
+elif [[ "$expected_evidence_kind" == "lean_kernel_refutation" ]]; then
   counterexample_researcher="protected-counterexample-researcher"
   "$mcl_bin" --root "$state_root" --json research start \
     --kind counterexample_search \

@@ -1,94 +1,17 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mnehmos.ai/mathos/schemas/release/corpus-export-manifest/1",
-  "title": "MathOS MathCorpus and MCIP Export Manifest v1",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "source_release",
-    "curation",
-    "upstream",
-    "outputs",
-    "members"
-  ],
-  "properties": {
-    "schema_version": { "const": "corpus_export_manifest/1" },
-    "source_release": { "$ref": "#/$defs/source_release" },
-    "curation": { "$ref": "#/$defs/curation" },
-    "upstream": { "$ref": "#/$defs/upstream" },
-    "outputs": { "$ref": "#/$defs/outputs" },
-    "members": {
-      "type": "array",
-      "minItems": 11,
-      "maxItems": 11,
-      "items": { "$ref": "#/$defs/member" }
-    }
-  },
   "$defs": {
-    "hash": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
-    },
-    "git_sha": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{40}$"
-    },
-    "exact_ref": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["object_id", "version_hash"],
-      "properties": {
-        "object_id": { "type": "string", "format": "uuid" },
-        "version_hash": { "$ref": "#/$defs/hash" }
-      }
-    },
-    "source_release": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "release_manifest_hash",
-        "release_profile",
-        "publication_receipt_hash",
-        "authority_evidence_id",
-        "authority_evidence_hash",
-        "fidelity_evidence_id",
-        "fidelity_evidence_hash",
-        "environment_hash",
-        "module_artifact_hash",
-        "declaration_name",
-        "source",
-        "claim",
-        "formalization"
-      ],
-      "properties": {
-        "release_manifest_hash": { "$ref": "#/$defs/hash" },
-        "release_profile": { "enum": ["private", "public"] },
-        "publication_receipt_hash": { "$ref": "#/$defs/hash" },
-        "authority_evidence_id": { "type": "string", "format": "uuid" },
-        "authority_evidence_hash": { "$ref": "#/$defs/hash" },
-        "fidelity_evidence_id": { "type": "string", "format": "uuid" },
-        "fidelity_evidence_hash": { "$ref": "#/$defs/hash" },
-        "environment_hash": { "$ref": "#/$defs/hash" },
-        "module_artifact_hash": { "$ref": "#/$defs/hash" },
-        "declaration_name": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256
-        },
-        "source": { "$ref": "#/$defs/exact_ref" },
-        "claim": { "$ref": "#/$defs/exact_ref" },
-        "formalization": { "$ref": "#/$defs/exact_ref" }
-      }
-    },
     "curation": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["packet_id", "domain", "level", "difficulty_bin", "policy"],
       "properties": {
-        "packet_id": {
-          "type": "string",
-          "pattern": "^[a-z0-9]+([._][a-z0-9]+)*\\.v[0-9]+$"
+        "difficulty_bin": {
+          "enum": [
+            "D0",
+            "D1",
+            "D2",
+            "D3",
+            "D4",
+            "D5"
+          ]
         },
         "domain": {
           "enum": [
@@ -120,13 +43,245 @@
             "L7_frontier"
           ]
         },
-        "difficulty_bin": { "enum": ["D0", "D1", "D2", "D3", "D4", "D5"] },
-        "policy": { "enum": ["private_audit_only", "quarantined"] }
-      }
+        "packet_id": {
+          "pattern": "^[a-z0-9]+([._][a-z0-9]+)*\\.v[0-9]+$",
+          "type": "string"
+        },
+        "policy": {
+          "enum": [
+            "private_audit_only",
+            "quarantined"
+          ]
+        }
+      },
+      "required": [
+        "packet_id",
+        "domain",
+        "level",
+        "difficulty_bin",
+        "policy"
+      ],
+      "type": "object"
+    },
+    "exact_ref": {
+      "additionalProperties": false,
+      "properties": {
+        "object_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "version_hash": {
+          "$ref": "#/$defs/hash"
+        }
+      },
+      "required": [
+        "object_id",
+        "version_hash"
+      ],
+      "type": "object"
+    },
+    "git_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "member": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_size": {
+          "maximum": 16777216,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "content_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "kind": {
+          "enum": [
+            "mathcorpus_packet",
+            "mcip_bundle",
+            "lean_module",
+            "lean_project_archive",
+            "source_release_manifest",
+            "schema",
+            "license"
+          ]
+        },
+        "license_expression": {
+          "maxLength": 512,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "restriction": {
+          "enum": [
+            "public",
+            "restricted",
+            "private"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "content_hash",
+        "byte_size",
+        "license_expression",
+        "restriction"
+      ],
+      "type": "object"
+    },
+    "outputs": {
+      "additionalProperties": false,
+      "properties": {
+        "mcip_bundle_path": {
+          "const": "mcip/bundle.json"
+        },
+        "mcip_bundle_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "module_path": {
+          "const": "lean/Submission.lean"
+        },
+        "module_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "packet_path": {
+          "const": "mathcorpus/packet.json"
+        },
+        "packet_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "project_path": {
+          "const": "lean-project/project.tar"
+        },
+        "project_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      },
+      "required": [
+        "packet_path",
+        "packet_sha256",
+        "mcip_bundle_path",
+        "mcip_bundle_sha256",
+        "module_path",
+        "module_sha256"
+      ],
+      "type": "object"
+    },
+    "source_release": {
+      "additionalProperties": false,
+      "properties": {
+        "authority_evidence_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "authority_evidence_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "claim": {
+          "$ref": "#/$defs/exact_ref"
+        },
+        "declaration_name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "environment_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "fidelity_evidence_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "fidelity_evidence_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "formalization": {
+          "$ref": "#/$defs/exact_ref"
+        },
+        "module_artifact_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "project_archive_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "publication_receipt_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "release_manifest_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "release_profile": {
+          "enum": [
+            "private",
+            "public"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/exact_ref"
+        }
+      },
+      "required": [
+        "release_manifest_hash",
+        "release_profile",
+        "publication_receipt_hash",
+        "authority_evidence_id",
+        "authority_evidence_hash",
+        "fidelity_evidence_id",
+        "fidelity_evidence_hash",
+        "environment_hash",
+        "module_artifact_hash",
+        "declaration_name",
+        "source",
+        "claim",
+        "formalization"
+      ],
+      "type": "object"
     },
     "upstream": {
-      "type": "object",
       "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "license_expression": {
+          "const": "Apache-2.0"
+        },
+        "mcip_bundle_schema_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "mcip_defs_schema_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "mcip_dependency_manifest_schema_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "mcip_packet_identity_schema_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "mcip_proof_variant_schema_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "packet_schema_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "repository": {
+          "const": "Mnehmos/mathcorpus"
+        },
+        "tree_sha": {
+          "$ref": "#/$defs/git_sha"
+        }
+      },
       "required": [
         "repository",
         "commit_sha",
@@ -139,67 +294,45 @@
         "mcip_proof_variant_schema_sha256",
         "mcip_dependency_manifest_schema_sha256"
       ],
-      "properties": {
-        "repository": { "const": "Mnehmos/mathcorpus" },
-        "commit_sha": { "$ref": "#/$defs/git_sha" },
-        "tree_sha": { "$ref": "#/$defs/git_sha" },
-        "license_expression": { "const": "Apache-2.0" },
-        "packet_schema_sha256": { "$ref": "#/$defs/hash" },
-        "mcip_defs_schema_sha256": { "$ref": "#/$defs/hash" },
-        "mcip_bundle_schema_sha256": { "$ref": "#/$defs/hash" },
-        "mcip_packet_identity_schema_sha256": { "$ref": "#/$defs/hash" },
-        "mcip_proof_variant_schema_sha256": { "$ref": "#/$defs/hash" },
-        "mcip_dependency_manifest_schema_sha256": { "$ref": "#/$defs/hash" }
-      }
+      "type": "object"
+    }
+  },
+  "$id": "https://mnehmos.ai/mathos/schemas/release/corpus-export-manifest/1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "curation": {
+      "$ref": "#/$defs/curation"
+    },
+    "members": {
+      "items": {
+        "$ref": "#/$defs/member"
+      },
+      "maxItems": 12,
+      "minItems": 11,
+      "type": "array"
     },
     "outputs": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "packet_path",
-        "packet_sha256",
-        "mcip_bundle_path",
-        "mcip_bundle_sha256",
-        "module_path",
-        "module_sha256"
-      ],
-      "properties": {
-        "packet_path": { "const": "mathcorpus/packet.json" },
-        "packet_sha256": { "$ref": "#/$defs/hash" },
-        "mcip_bundle_path": { "const": "mcip/bundle.json" },
-        "mcip_bundle_sha256": { "$ref": "#/$defs/hash" },
-        "module_path": { "const": "lean/Submission.lean" },
-        "module_sha256": { "$ref": "#/$defs/hash" }
-      }
+      "$ref": "#/$defs/outputs"
     },
-    "member": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "path",
-        "kind",
-        "content_hash",
-        "byte_size",
-        "license_expression",
-        "restriction"
-      ],
-      "properties": {
-        "path": { "type": "string", "minLength": 1, "maxLength": 512 },
-        "kind": {
-          "enum": [
-            "mathcorpus_packet",
-            "mcip_bundle",
-            "lean_module",
-            "source_release_manifest",
-            "schema",
-            "license"
-          ]
-        },
-        "content_hash": { "$ref": "#/$defs/hash" },
-        "byte_size": { "type": "integer", "minimum": 0, "maximum": 16777216 },
-        "license_expression": { "type": ["string", "null"], "maxLength": 512 },
-        "restriction": { "enum": ["public", "restricted", "private"] }
-      }
+    "schema_version": {
+      "const": "corpus_export_manifest/1"
+    },
+    "source_release": {
+      "$ref": "#/$defs/source_release"
+    },
+    "upstream": {
+      "$ref": "#/$defs/upstream"
     }
-  }
+  },
+  "required": [
+    "schema_version",
+    "source_release",
+    "curation",
+    "upstream",
+    "outputs",
+    "members"
+  ],
+  "title": "MathOS MathCorpus and MCIP Export Manifest v1",
+  "type": "object"
 }

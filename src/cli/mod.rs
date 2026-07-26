@@ -221,6 +221,24 @@ struct VerifyCheckOptions {
     #[arg(long)]
     declaration_name: String,
 
+    #[arg(
+        long,
+        requires_all = ["project_archive_root", "project_module_path"]
+    )]
+    project_archive_artifact_hash: Option<String>,
+
+    #[arg(
+        long,
+        requires_all = ["project_archive_artifact_hash", "project_module_path"]
+    )]
+    project_archive_root: Option<String>,
+
+    #[arg(
+        long,
+        requires_all = ["project_archive_artifact_hash", "project_archive_root"]
+    )]
+    project_module_path: Option<String>,
+
     #[arg(long, default_value_t = 0)]
     priority: i32,
 
@@ -1192,11 +1210,23 @@ fn execute_verify(config: &ResolvedConfig, options: VerifyOptions) -> Result<Cli
     let mut application = Application::open(config)?;
     let value = match options.action {
         VerifyAction::Check(options) => {
+            let project = options
+                .project_archive_artifact_hash
+                .zip(options.project_archive_root)
+                .zip(options.project_module_path)
+                .map(|((archive_artifact_hash, archive_root), module_path)| {
+                    crate::domain::LeanProjectBinding {
+                        archive_artifact_hash,
+                        archive_root,
+                        module_path,
+                    }
+                });
             let request = VerifierJobRequest {
                 schema_version: "verifier_request/1".to_owned(),
                 environment_hash: options.environment_hash,
                 module_artifact_hash: options.module_artifact_hash,
                 declaration_name: options.declaration_name,
+                project,
             };
             to_value(application.enqueue_verifier_job(
                 &request,

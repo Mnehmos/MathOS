@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use crate::canonical::value_hash;
 use crate::domain::schemas::ExactVersionReference;
+use crate::domain::verifier::LeanProjectBinding;
 use crate::error::AppError;
 
 pub const PUBLICATION_POLICY_SCHEMA_VERSION: &str = "publication_policy/1";
@@ -104,6 +105,8 @@ pub struct PublicationRequest {
     pub axiom_audit_evidence_hash: String,
     pub environment_hash: String,
     pub module_artifact_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<LeanProjectBinding>,
     pub declaration_name: String,
     pub policy_hash: String,
     pub source_commit_sha: String,
@@ -124,6 +127,7 @@ pub enum PublicationRetainedArtifactRole {
     EnvironmentManifest,
     FormalizationVersion,
     LeanModule,
+    LeanProjectArchive,
     ProofClosureEvidence,
     ProtectedAuditStderr,
     ProtectedAuditStdout,
@@ -141,6 +145,35 @@ pub enum PublicationRetainedArtifactRole {
 }
 
 impl PublicationRetainedArtifactRole {
+    pub const VOCABULARY: [Self; 26] = [
+        Self::AuditJob,
+        Self::AuditPolicy,
+        Self::AuditReport,
+        Self::AuditStderr,
+        Self::AuditStdout,
+        Self::AxiomAuditEvidence,
+        Self::ClaimVersion,
+        Self::DiagnosticEvidence,
+        Self::EnvironmentManifest,
+        Self::FormalizationVersion,
+        Self::LeanModule,
+        Self::LeanProjectArchive,
+        Self::ProofClosureEvidence,
+        Self::ProtectedAuditStderr,
+        Self::ProtectedAuditStdout,
+        Self::ProtectedDependencyStderr,
+        Self::ProtectedDependencyStdout,
+        Self::ProtectedStderr,
+        Self::ProtectedStdout,
+        Self::PublicationPolicy,
+        Self::PublicationRequest,
+        Self::SourceVersion,
+        Self::VerifierJob,
+        Self::VerifierReport,
+        Self::VerifierStderr,
+        Self::VerifierStdout,
+    ];
+
     pub const ALL: [Self; 25] = [
         Self::AuditJob,
         Self::AuditPolicy,
@@ -169,6 +202,40 @@ impl PublicationRetainedArtifactRole {
         Self::VerifierStdout,
     ];
 
+    // Project publication executes inside the publication-profile verifier itself.
+    // Its typed verifier/audit reports and retained raw streams replace the legacy
+    // duplicate protected-run streams used by standalone publication.
+    pub const PROJECT_ALL: [Self; 20] = [
+        Self::AuditJob,
+        Self::AuditPolicy,
+        Self::AuditReport,
+        Self::AuditStderr,
+        Self::AuditStdout,
+        Self::AxiomAuditEvidence,
+        Self::ClaimVersion,
+        Self::DiagnosticEvidence,
+        Self::EnvironmentManifest,
+        Self::FormalizationVersion,
+        Self::LeanModule,
+        Self::LeanProjectArchive,
+        Self::ProofClosureEvidence,
+        Self::PublicationPolicy,
+        Self::PublicationRequest,
+        Self::SourceVersion,
+        Self::VerifierJob,
+        Self::VerifierReport,
+        Self::VerifierStderr,
+        Self::VerifierStdout,
+    ];
+
+    pub const fn required(project: bool) -> &'static [Self] {
+        if project {
+            &Self::PROJECT_ALL
+        } else {
+            &Self::ALL
+        }
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AuditJob => "audit_job",
@@ -182,6 +249,7 @@ impl PublicationRetainedArtifactRole {
             Self::EnvironmentManifest => "environment_manifest",
             Self::FormalizationVersion => "formalization_version",
             Self::LeanModule => "lean_module",
+            Self::LeanProjectArchive => "lean_project_archive",
             Self::ProofClosureEvidence => "proof_closure_evidence",
             Self::ProtectedAuditStderr => "protected_audit_stderr",
             Self::ProtectedAuditStdout => "protected_audit_stdout",
@@ -212,6 +280,7 @@ impl PublicationRetainedArtifactRole {
             Self::EnvironmentManifest => "closure/environment-manifest.json",
             Self::FormalizationVersion => "closure/formalization-version.json",
             Self::LeanModule => "closure/module.lean",
+            Self::LeanProjectArchive => "closure/project.tar",
             Self::ProofClosureEvidence => "closure/proof-closure-evidence.json",
             Self::ProtectedAuditStderr => "closure/protected-audit.stderr",
             Self::ProtectedAuditStdout => "closure/protected-audit.stdout",
@@ -388,6 +457,10 @@ impl PublicationRequest {
             || !is_hash(&self.axiom_audit_evidence_hash)
             || !is_hash(&self.environment_hash)
             || !is_hash(&self.module_artifact_hash)
+            || self.project.as_ref().is_some_and(|project| {
+                project.validate().is_err()
+                    || project.archive_artifact_hash == self.module_artifact_hash
+            })
             || !is_lean_name(&self.declaration_name)
             || self.declaration_name.len() > 256
             || !is_hash(&self.policy_hash)
@@ -413,12 +486,13 @@ impl PublicationRetainedClosure {
     pub fn validate(&self, request: &PublicationRequest) -> Result<(), AppError> {
         request.validate()?;
         let expected_request_hash = request.request_hash()?;
-        let exact_roles = self.artifacts.len() == PublicationRetainedArtifactRole::ALL.len()
+        let required_roles = PublicationRetainedArtifactRole::required(request.project.is_some());
+        let exact_roles = self.artifacts.len() == required_roles.len()
             && self
                 .artifacts
                 .iter()
-                .zip(PublicationRetainedArtifactRole::ALL)
-                .all(|(entry, role)| entry.role == role);
+                .zip(required_roles)
+                .all(|(entry, role)| entry.role == *role);
         let valid_entries = self.artifacts.iter().all(|entry| {
             entry.path == entry.role.expected_path()
                 && is_hash(&entry.identity_hash)
@@ -459,6 +533,13 @@ impl PublicationRetainedClosure {
                 &request.module_artifact_hash,
                 Some(&request.module_artifact_hash),
             )
+            || request.project.as_ref().is_some_and(|project| {
+                !binds(
+                    PublicationRetainedArtifactRole::LeanProjectArchive,
+                    &project.archive_artifact_hash,
+                    Some(&project.archive_artifact_hash),
+                )
+            })
             || !binds(
                 PublicationRetainedArtifactRole::PublicationPolicy,
                 &request.policy_hash,
@@ -567,13 +648,15 @@ impl PublicationReport {
 
 impl PublicationStage {
     pub fn validate(&self) -> Result<(), AppError> {
-        let exact_roles = self.retained_artifacts.len()
-            == PublicationRetainedArtifactRole::ALL.len()
-            && self
-                .retained_artifacts
-                .iter()
-                .zip(PublicationRetainedArtifactRole::ALL)
-                .all(|(entry, role)| entry.role == role);
+        let exact_roles = [false, true].into_iter().any(|project| {
+            let required = PublicationRetainedArtifactRole::required(project);
+            self.retained_artifacts.len() == required.len()
+                && self
+                    .retained_artifacts
+                    .iter()
+                    .zip(required)
+                    .all(|(entry, role)| entry.role == *role)
+        });
         let valid_artifacts = self.retained_artifacts.iter().all(|entry| {
             entry.path == entry.role.expected_path()
                 && is_hash(&entry.identity_hash)
@@ -668,14 +751,14 @@ pub fn publication_stage_schema() -> Value {
             "attestation_bundle_byte_size": {"type": "integer", "minimum": 1, "maximum": MAX_STAGE_INPUT_BYTES},
             "retained_artifacts": {
                 "type": "array",
-                "minItems": PublicationRetainedArtifactRole::ALL.len(),
+                "minItems": PublicationRetainedArtifactRole::PROJECT_ALL.len(),
                 "maxItems": PublicationRetainedArtifactRole::ALL.len(),
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
                     "required": ["role", "path", "identity_hash", "artifact_hash", "byte_size"],
                     "properties": {
-                        "role": {"enum": PublicationRetainedArtifactRole::ALL.map(PublicationRetainedArtifactRole::as_str)},
+                        "role": {"enum": PublicationRetainedArtifactRole::VOCABULARY.map(PublicationRetainedArtifactRole::as_str)},
                         "path": {"type": "string", "minLength": 1, "maxLength": 256},
                         "identity_hash": hash_schema(64),
                         "artifact_hash": hash_schema(64),
@@ -689,10 +772,50 @@ pub fn publication_stage_schema() -> Value {
 }
 
 pub fn committed_publication_policy() -> Result<PublicationPolicy, AppError> {
-    let policy: PublicationPolicy = serde_json::from_str(include_str!(
-        "../../policies/lean-publication-1.json"
+    decode_committed_publication_policy(include_str!("../../policies/lean-publication-1.json"))
+}
+
+pub fn committed_publication_policy_for_toolchain(
+    lean_toolchain: &str,
+) -> Result<PublicationPolicy, AppError> {
+    committed_publication_policies()?
+        .into_iter()
+        .find(|policy| policy.required_lean_toolchain == lean_toolchain)
+        .ok_or_else(|| {
+            publication_error(
+                "MCL_PUBLICATION_POLICY_INVALID",
+                format!("no committed publication policy supports `{lean_toolchain}`"),
+                "Use a toolchain covered by one reviewed protected-workflow policy.",
+            )
+        })
+}
+
+pub fn committed_publication_policy_for_hash(
+    policy_hash: &str,
+) -> Result<PublicationPolicy, AppError> {
+    for policy in committed_publication_policies()? {
+        if policy.policy_hash()? == policy_hash {
+            return Ok(policy);
+        }
+    }
+    Err(publication_error(
+        "MCL_PUBLICATION_POLICY_INVALID",
+        "publication policy hash is not one committed protected-workflow policy",
+        "Use the exact policy selected for the retained environment toolchain.",
     ))
-    .map_err(|error| {
+}
+
+fn committed_publication_policies() -> Result<[PublicationPolicy; 2], AppError> {
+    Ok([
+        committed_publication_policy()?,
+        decode_committed_publication_policy(include_str!(
+            "../../policies/lean-project-publication-1.json"
+        ))?,
+    ])
+}
+
+fn decode_committed_publication_policy(bytes: &str) -> Result<PublicationPolicy, AppError> {
+    let policy: PublicationPolicy = serde_json::from_str(bytes).map_err(|error| {
         publication_error(
             "MCL_PUBLICATION_POLICY_INVALID",
             format!("committed publication policy is invalid: {error}"),
@@ -720,7 +843,7 @@ pub fn publication_policy_schema() -> Value {
             "workflow_path": {"const": ".github/workflows/publication.yml"},
             "required_source_ref": {"const": "refs/heads/main"},
             "required_runner_environment": {"const": "github_hosted"},
-            "required_lean_toolchain": {"pattern": "^leanprover/lean4:v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+            "required_lean_toolchain": {"pattern": "^leanprover/lean4:v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"},
             "allowed_axioms": {"type": "array", "maxItems": MAX_AXIOMS, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
             "requires_clean_checkout": {"const": true},
             "requires_dependency_closure": {"const": true},
@@ -756,6 +879,16 @@ pub fn publication_request_schema() -> Value {
             "axiom_audit_evidence_hash": hash_schema(64),
             "environment_hash": hash_schema(64),
             "module_artifact_hash": hash_schema(64),
+            "project": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["archive_artifact_hash", "archive_root", "module_path"],
+                "properties": {
+                    "archive_artifact_hash": hash_schema(64),
+                    "archive_root": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "module_path": {"type": "string", "minLength": 1, "maxLength": 512}
+                }
+            },
             "declaration_name": {"type": "string", "minLength": 1, "maxLength": 256},
             "policy_hash": hash_schema(64),
             "source_commit_sha": hash_schema(40),
@@ -765,28 +898,32 @@ pub fn publication_request_schema() -> Value {
 }
 
 pub fn publication_retained_closure_schema() -> Value {
-    let roles = PublicationRetainedArtifactRole::ALL
+    let roles = PublicationRetainedArtifactRole::VOCABULARY
         .into_iter()
         .map(|role| Value::String(role.as_str().to_owned()))
         .collect::<Vec<_>>();
-    let paths = PublicationRetainedArtifactRole::ALL
+    let paths = PublicationRetainedArtifactRole::VOCABULARY
         .into_iter()
         .map(|role| Value::String(role.expected_path().to_owned()))
         .collect::<Vec<_>>();
-    let ordered_artifacts = PublicationRetainedArtifactRole::ALL
-        .into_iter()
-        .map(|role| {
-            json!({
-                "allOf": [
-                    {"$ref": "#/$defs/artifact"},
-                    {"properties": {
-                        "role": {"const": role.as_str()},
-                        "path": {"const": role.expected_path()}
-                    }}
-                ]
+    let ordered_artifacts = |roles: &[PublicationRetainedArtifactRole]| {
+        roles
+            .iter()
+            .map(|role| {
+                json!({
+                    "allOf": [
+                        {"$ref": "#/$defs/artifact"},
+                        {"properties": {
+                            "role": {"const": role.as_str()},
+                            "path": {"const": role.expected_path()}
+                        }}
+                    ]
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+    };
+    let base_artifacts = ordered_artifacts(&PublicationRetainedArtifactRole::ALL);
+    let project_artifacts = ordered_artifacts(&PublicationRetainedArtifactRole::PROJECT_ALL);
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://mnehmos.ai/mathos/schemas/publication/retained-closure/1",
@@ -799,12 +936,24 @@ pub fn publication_retained_closure_schema() -> Value {
             "subject": exact_reference_schema(),
             "request_hash": hash_schema(64),
             "artifacts": {
-                "type": "array",
-                "minItems": PublicationRetainedArtifactRole::ALL.len(),
-                "maxItems": PublicationRetainedArtifactRole::ALL.len(),
-                "uniqueItems": true,
-                "prefixItems": ordered_artifacts,
-                "items": false
+                "oneOf": [
+                    {
+                        "type": "array",
+                        "minItems": PublicationRetainedArtifactRole::ALL.len(),
+                        "maxItems": PublicationRetainedArtifactRole::ALL.len(),
+                        "uniqueItems": true,
+                        "prefixItems": base_artifacts,
+                        "items": false
+                    },
+                    {
+                        "type": "array",
+                        "minItems": PublicationRetainedArtifactRole::PROJECT_ALL.len(),
+                        "maxItems": PublicationRetainedArtifactRole::PROJECT_ALL.len(),
+                        "uniqueItems": true,
+                        "prefixItems": project_artifacts,
+                        "items": false
+                    }
+                ]
             }
         },
         "$defs": {
@@ -938,11 +1087,25 @@ fn is_lean_toolchain(value: &str) -> bool {
     let Some(version) = value.strip_prefix("leanprover/lean4:v") else {
         return false;
     };
-    let parts = version.split('.').collect::<Vec<_>>();
+    let (release, prerelease) = version
+        .split_once('-')
+        .map_or((version, None), |(release, prerelease)| {
+            (release, Some(prerelease))
+        });
+    let parts = release.split('.').collect::<Vec<_>>();
     parts.len() == 3
         && parts
             .iter()
             .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        && prerelease.is_none_or(|prerelease| {
+            !prerelease.is_empty()
+                && prerelease.split('.').all(|identifier| {
+                    !identifier.is_empty()
+                        && identifier
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                })
+        })
 }
 
 fn is_semver(value: &str) -> bool {
@@ -1000,6 +1163,7 @@ mod tests {
             axiom_audit_evidence_hash: "d".repeat(64),
             environment_hash: "e".repeat(64),
             module_artifact_hash: "f".repeat(64),
+            project: None,
             declaration_name: "MathOS.Publication.truth".to_owned(),
             policy_hash: policy().policy_hash().expect("policy hash"),
             source_commit_sha: "1".repeat(40),
@@ -1009,8 +1173,9 @@ mod tests {
 
     fn retained_closure(request: &PublicationRequest) -> PublicationRetainedClosure {
         let request_hash = request.request_hash().expect("request hash");
-        let artifacts = PublicationRetainedArtifactRole::ALL
-            .into_iter()
+        let artifacts = PublicationRetainedArtifactRole::required(request.project.is_some())
+            .iter()
+            .copied()
             .enumerate()
             .map(|(index, role)| PublicationRetainedClosureEntry {
                 role,
@@ -1056,6 +1221,13 @@ mod tests {
             &request.module_artifact_hash,
             Some(&request.module_artifact_hash),
         );
+        if let Some(project) = &request.project {
+            bind(
+                PublicationRetainedArtifactRole::LeanProjectArchive,
+                &project.archive_artifact_hash,
+                Some(&project.archive_artifact_hash),
+            );
+        }
         bind(
             PublicationRetainedArtifactRole::PublicationPolicy,
             &request.policy_hash,
@@ -1109,6 +1281,41 @@ mod tests {
         assert!(retained_hashes.contains(&duplicate_log_hash));
         assert!(retained_hashes.contains(&closure_artifact_hash));
         assert_eq!(retained_hashes.len(), closure.artifacts.len());
+    }
+
+    #[test]
+    fn project_retained_closure_uses_typed_execution_roles_and_exact_archive() {
+        let mut request = request();
+        let policy = committed_publication_policy_for_toolchain("leanprover/lean4:v4.32.0-rc1")
+            .expect("project publication policy");
+        request.policy_hash = policy.policy_hash().expect("project policy hash");
+        request.project = Some(crate::domain::LeanProjectBinding {
+            archive_artifact_hash: "9".repeat(64),
+            archive_root: "project".to_owned(),
+            module_path: "Final.lean".to_owned(),
+        });
+
+        let closure = retained_closure(&request);
+        closure
+            .validate(&request)
+            .expect("closed project retention set");
+        assert_eq!(
+            closure.artifacts.len(),
+            PublicationRetainedArtifactRole::PROJECT_ALL.len()
+        );
+        let project = closure
+            .artifacts
+            .iter()
+            .find(|entry| entry.role == PublicationRetainedArtifactRole::LeanProjectArchive)
+            .expect("project archive role");
+        assert_eq!(
+            project.artifact_hash,
+            request
+                .project
+                .as_ref()
+                .expect("project binding")
+                .archive_artifact_hash
+        );
     }
 
     #[test]
@@ -1500,6 +1707,22 @@ mod tests {
         assert_eq!(
             policy.policy_hash().expect("committed policy hash"),
             include_str!("../../policies/lean-publication-1.sha256").trim()
+        );
+        let project_policy =
+            committed_publication_policy_for_toolchain("leanprover/lean4:v4.32.0-rc1")
+                .expect("committed project policy");
+        project_policy
+            .validate()
+            .expect("committed project policy validates");
+        let project_policy_hash = project_policy.policy_hash().expect("project policy hash");
+        assert_eq!(
+            project_policy_hash,
+            include_str!("../../policies/lean-project-publication-1.sha256").trim()
+        );
+        assert_eq!(
+            committed_publication_policy_for_hash(&project_policy_hash)
+                .expect("project policy by hash"),
+            project_policy
         );
     }
 

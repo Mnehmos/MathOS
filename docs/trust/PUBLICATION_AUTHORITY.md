@@ -18,7 +18,7 @@ The committed `publication_policy/1` binds:
 - exact action commit identities for attestation and artifact retention.
 - GitHub CLI attestation verifier version, archive digest, and executable digest.
 
-The `publication_request/1` binds one exact formalization, intended proof or refutation outcome, diagnostic elaboration evidence, proof-closure evidence, axiom-audit evidence, environment, Lean module, declaration, policy, Git commit, and Git tree.
+The `publication_request/1` binds one exact formalization, intended proof or refutation outcome, diagnostic elaboration evidence, proof-closure evidence, axiom-audit evidence, environment, Lean module, optional exact Lake project archive/module binding, declaration, policy, Git commit, and Git tree.
 
 The `publication_report/1` records the observed controls, axiom surface, workflow identity, run identity, and retained artifact closure. A passed report is valid only when every required control is true and every observed axiom is allowed.
 
@@ -66,9 +66,24 @@ Each candidate rebuilds the exact no-import module inside Bubblewrap for elabora
 
 The earlier `MathOS.Publication.smoke : True` module remains the standalone non-authoritative isolation smoke. Historical protected artifacts also retain an independently audited authoritative proof for that declaration. Changing the canonical candidate to Pilot A does not reinterpret or overwrite that evidence: the new source, claim, negation-polarity formalization, request, receipt, and refutation evidence all receive new immutable identities.
 
-The request-bound environment remains truthfully marked `local` because it describes the diagnostic and audit evidence created by the ordinary worker. Its manifest contains the exact Lean toolchain, no dependencies, no imports, and the checked-in `lean-toolchain` hash. The candidate report separately records the stronger GitHub-hosted runner, clean checkout, dependency closure, network isolation, and memory controls actually observed by the protected workflow. A local trust-profile label is never upgraded in place.
+The standalone request-bound environment remains truthfully marked `local` because its diagnostic
+and audit evidence comes from the ordinary worker; its separate protected streams establish the
+stronger publication controls. The Pilot C project instead uses an immutable `publication`
+environment that binds every locked dependency, scanned import, project configuration hash,
+dependency-preparation mode, Lake command shape, concurrency value, and memory limit. Its
+diagnostic build and controlled driver run inside the protected worker's Bubblewrap boundary, and
+the typed verifier/audit reports record the controls. A trust-profile label is never upgraded in
+place.
 
-`publication_retained_closure/1` has exactly 25 sorted roles with fixed lowercase paths. It retains the request; source, claim, and formalization snapshots; environment; Lean module; publication and audit policies; diagnostic and audit evidence; terminal jobs, reports, and local logs; and protected rebuild, Lean parser-derived dependency, and axiom-audit logs. Every entry binds a semantic identity and the SHA-256 of its exact bytes. The candidate report contains the sorted unique set of all member hashes plus the canonical closure-manifest hash; it cannot include its own hash without creating a recursive identity.
+`publication_retained_closure/1` keeps the historical 25-role standalone shape byte-compatible.
+A project closure has 20 roles: it adds the exact `lean_project_archive` and retains the
+publication-profile verifier/audit reports and raw streams, while omitting the six redundant
+standalone `protected_*` copies. Paths remain fixed and lowercase. Both shapes retain the request;
+source, claim, and formalization snapshots; environment; Lean module; publication and audit
+policies; diagnostic and audit evidence; and terminal jobs and reports. Every entry binds a
+semantic identity and the SHA-256 of its exact bytes. The candidate report contains the sorted
+unique set of all member hashes plus the canonical closure-manifest hash; it cannot include its own
+hash without creating a recursive identity.
 
 Before attestation, the workflow invokes:
 
@@ -79,9 +94,27 @@ mcl verify validate-publication-candidate \
   --retained-root <contained-output-root>
 ```
 
-The application requires exact canonical JSON, bounded contained regular files, fixed paths with no symbolic-link components, and byte hashes for every retained member. It replays the source-to-claim-to-formalization references, environment and policy hashes, all evidence identities, terminal job/report/log closures, the pinned Lean `--deps` output, and both local and protected axiom outputs. For this no-import contract, the environment and formalization manifests must both be empty and protected discovery may contain only Lean's implicit pinned `Init.olean`. It then dry-run re-derives the request from current Store and CAS state and verifies the registered request artifact. The validator creates no canonical record or artifact, performs no promotion, and always returns `authoritative: false`; opening an instance may create ordinary operational directories or SQLite WAL files.
+The application requires exact canonical JSON, bounded contained regular files, fixed paths with no
+symbolic-link components, and byte hashes for every retained member. It replays the
+source-to-claim-to-formalization references, environment and policy hashes, all evidence
+identities, and terminal job/report/log closures. For the standalone no-import contract it also
+checks the pinned Lean `--deps` stream and separate protected axiom output. For a project contract
+it checks the exact archive binding, publication trust profile, successful control flags, complete
+locked environment, and declaration-specific axiom result in the protected verifier/audit
+streams. It then dry-run re-derives the request from current Store and CAS state and verifies the
+registered request artifact. The validator creates no canonical record or artifact, performs no
+promotion, and always returns `authoritative: false`; opening an instance may create ordinary
+operational directories or SQLite WAL files.
 
 The sandbox clears the inherited process environment and applies wall-clock, address-space, and output-file limits. A bounded structured attempt summary, per-execution classifications, and available CAS bytes are retained outside the authoritative closure on both success and failure so a rejected build is not erased.
+
+Pilot C uses two protected jobs because each exact serial BH build is multi-hour and the candidate
+plus independent release replay cannot fit serially inside one six-hour job. The first job performs
+the single publication-profile build, attestation, ingestion, and authority promotion, then
+transfers the exact hidden canonical state as a retained artifact. A dependent fresh job downloads
+that state and performs the database-free release replay. This preserves an independent replay
+while keeping each job below GitHub's six-hour bound; candidate generation does not perform a
+second manual build.
 
 Pull-request CI exercises the fresh-state refutation producer in an explicitly `simulated-main`, non-attested context and therefore cannot manufacture the repaired claim needed by the child producer. Only the protected `main` workflow may ingest the first attestation, create that exact repair, and attest the resulting repaired-proof report. Direct Lean validation still elaborates the whole shared module, including the repaired theorem, on pull requests.
 
@@ -113,7 +146,7 @@ mcl verify stage-publication-candidate \
   --idempotency-key <stable-key>
 ```
 
-Staging requires contained regular files, rejects symbolic-link and traversal substitutions, bounds every input, validates the canonical report and fixed 25-role closure, and atomically records one immutable `publication_stage/1`. The physical bytes use the existing content-addressed store, including exact zero-byte log members. Stage registration is publication-scoped quarantine metadata, not canonical `artifact` provenance, and is always `authoritative: false`. CAS writes that precede a failed database transaction remain harmless unregistered orphans; retry rehashes and reuses them.
+Staging requires contained regular files, rejects symbolic-link and traversal substitutions, bounds every input, validates the canonical report and exact standalone-or-project role closure, and atomically records one immutable `publication_stage/1`. The physical bytes use the existing content-addressed store, including exact zero-byte log members. Stage registration is publication-scoped quarantine metadata, not canonical `artifact` provenance, and is always `authoritative: false`. CAS writes that precede a failed database transaction remain harmless unregistered orphans; retry rehashes and reuses them.
 
 Staging an archive in a fresh instance does not import its record, evidence, or job snapshots as canonical state. Ingestion still requires those exact identities to exist and be current in the Store. This prevents a downloaded archive from declaring its own currentness.
 
@@ -154,7 +187,13 @@ mcl verify promote-publication-authority \
 
 MCP exposes the same application operation as `verify.promote_publication_authority`. Neither surface accepts a subject, outcome, evidence kind, result, authority class, report, receipt object, artifact list, verifier argument, fidelity verdict, or caller-authored evidence payload.
 
-The receipt hash is only a locator. The application revalidates the immutable receipt and stage projections; rehashes the report, closure manifest, Sigstore bundle, all 25 staged members, raw verifier output, and canonical attestation-verification bytes; repeats the closed candidate, retained-semantic, canonical-Store, request-rederivation, and attestation-parser checks; and explicitly rejects every report classification except `passed`. It derives proof versus refutation from the request outcome already constrained by the current formalization's typed polarity.
+The receipt hash is only a locator. The application revalidates the immutable receipt and stage
+projections; rehashes the report, closure manifest, Sigstore bundle, every required standalone or
+project staged member, raw verifier output, and canonical attestation-verification bytes; repeats
+the closed candidate, retained-semantic, canonical-Store, request-rederivation, and
+attestation-parser checks; and explicitly rejects every report classification except `passed`. It
+derives proof versus refutation from the request outcome already constrained by the current
+formalization's typed polarity.
 
 `evidence/2` is a separate closed contract so existing `evidence/1` identities remain byte-compatible. It can encode only `accepted` plus `authoritative` `lean_kernel_proof` or `lean_kernel_refutation`. Its nested `publication_authority_binding/1` binds the receipt, stage, report, retained closure, bundle, raw verification, request, and policy hashes. Its artifact list is the sorted unique complete CAS closure. Local run and job UUIDs are null because the protected GitHub workflow identity is external and already content-bound inside the replayed report and receipt.
 

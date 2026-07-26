@@ -18,6 +18,12 @@ After that scan, the worker creates a verifier-controlled driver containing:
 
 The parser accepts exactly one declaration-specific Lean result. It canonicalizes a bounded, duplicate-free axiom list and rejects malformed, ambiguous, or excessive output.
 
+For a Lake project, the elaboration worker's controlled driver already performs both `#check` and
+`#print axioms` after the exact bound module build. The audit worker rematerializes and revalidates
+the complete project/source closure, then reopens that immutable diagnostic report and its hashed
+logs instead of treating a second build cache as independent evidence. The later protected
+publication build remains the separate clean authority boundary.
+
 The local allowlist contains only:
 
 - `Classical.choice`
@@ -44,17 +50,21 @@ Promotion re-reads and hashes the private verifier report, validates its closed 
 
 ## Trust boundary
 
-Every report and promoted record produced by this path has:
+Every report and promoted record produced by this path remains:
 
 ```text
-trust_profile = local
 authority_class = diagnostic
 authoritative = false
-memory_limit_enforced = false
-network_isolation_enforced = false
 ```
 
-A passed local audit does not prove or disprove the source claim. It does not establish statement fidelity. It does not authorize publication. Authoritative proof evidence remains impossible until a separate publication-profile worker enforces the required isolation, clean-build, dependency, and retained-evidence controls.
+A local audit reports `trust_profile = local` with both control flags false. A project audit derived
+from a successful protected execution reports `trust_profile = publication` with both flags true
+and reuses the exact immutable verifier streams; it does not rerun or reinterpret them.
+
+Neither audit proves or disproves the source claim, establishes statement fidelity, or authorizes
+publication. Authoritative proof evidence remains impossible until the protected attestation and
+receipt-only gate revalidate the clean build, dependency closure, audit, exact retained evidence,
+and source-bound request.
 
 ## Commands
 

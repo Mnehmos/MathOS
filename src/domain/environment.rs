@@ -10,7 +10,7 @@ pub const ENVIRONMENT_SCHEMA_VERSION: &str = "environment/1";
 const MAX_DEPENDENCIES: usize = 256;
 const MAX_IMPORTS: usize = 1_000;
 const MAX_CONFIGS: usize = 32;
-const MAX_TIMEOUT_SECONDS: u64 = 3_600;
+const MAX_TIMEOUT_SECONDS: u64 = 21_600;
 const MAX_OUTPUT_BYTES: u64 = 16 * 1_048_576;
 const MAX_MEMORY_BYTES: u64 = 16 * 1_073_741_824;
 const MIN_MEMORY_BYTES: u64 = 64 * 1_048_576;
@@ -23,6 +23,8 @@ pub struct EnvironmentManifest {
     pub formal_system: EnvironmentFormalSystem,
     pub lean_toolchain: String,
     pub dependencies: Vec<DependencyRevision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependency_preparation: Option<DependencyPreparation>,
     pub import_manifest: Vec<String>,
     pub project_configuration_hashes: BTreeMap<String, String>,
     pub platform: EnvironmentPlatform,
@@ -52,6 +54,12 @@ pub enum EnvironmentFormalSystem {
 pub struct DependencyRevision {
     pub name: String,
     pub revision: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyPreparation {
+    MathlibCacheGet,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -88,10 +96,15 @@ pub struct VerifierCommandTemplate {
 #[serde(rename_all = "snake_case")]
 pub enum VerifierExecutable {
     Lean,
+    Lake,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum VerifierArgument {
+    #[serde(rename = "env")]
+    Env,
+    #[serde(rename = "lean")]
+    Lean,
     #[serde(rename = "{module_path}")]
     ModulePath,
 }
@@ -126,13 +139,48 @@ impl EnvironmentManifest {
         validate_dependencies(&self.dependencies)?;
         validate_imports(&self.import_manifest)?;
         validate_configuration_hashes(&self.project_configuration_hashes)?;
-        if self.verifier_command.arguments != [VerifierArgument::ModulePath] {
+        let command_valid = matches!(
+            (
+                self.verifier_command.executable,
+                self.verifier_command.arguments.as_slice()
+            ),
+            (VerifierExecutable::Lean, [VerifierArgument::ModulePath])
+                | (
+                    VerifierExecutable::Lake,
+                    [
+                        VerifierArgument::Env,
+                        VerifierArgument::Lean,
+                        VerifierArgument::ModulePath
+                    ]
+                )
+        );
+        if !command_valid {
             return Err(environment_error(
-                "verifier command arguments must be exactly [`{module_path}`]",
-                "Use the typed Lean module-path command template.",
+                "verifier command must be exactly `lean {module_path}` or `lake env lean {module_path}`",
+                "Use a closed standalone Lean or Lake-project elaboration template.",
+            ));
+        }
+        if self.dependency_preparation.is_some()
+            && (self.verifier_command.executable != VerifierExecutable::Lake
+                || !self
+                    .dependencies
+                    .iter()
+                    .any(|dependency| dependency.name == "mathlib"))
+        {
+            return Err(environment_error(
+                "dependency preparation is only available to a Lake project pinned to mathlib",
+                "Use the fixed mathlib cache preparation only with an exact locked Mathlib project.",
             ));
         }
         validate_resource_limits(&self.resource_limits)?;
+        if self.trust_profile == TrustProfile::Publication
+            && self.resource_limits.max_memory_bytes.is_none()
+        {
+            return Err(environment_error(
+                "publication environments require an exact memory limit",
+                "Set max_memory_bytes to the reviewed publication bound.",
+            ));
+        }
         if self.network_access {
             return Err(environment_error(
                 "authoritative environment manifests cannot enable network access",
@@ -167,16 +215,39 @@ pub fn environment_schema() -> Value {
         "type": "object",
         "additionalProperties": false,
         "required": ["schema_version", "formal_system", "lean_toolchain", "dependencies", "import_manifest", "project_configuration_hashes", "platform", "trust_profile", "verifier_command", "resource_limits", "network_access", "working_directory_policy"],
+        "allOf": [{
+            "if": {
+                "required": ["trust_profile"],
+                "properties": {"trust_profile": {"const": "publication"}}
+            },
+            "then": {
+                "properties": {
+                    "resource_limits": {
+                        "properties": {"max_memory_bytes": {"type": "integer"}}
+                    }
+                }
+            }
+        }],
         "properties": {
             "schema_version": {"const": ENVIRONMENT_SCHEMA_VERSION},
             "formal_system": {"enum": ["lean4"]},
-            "lean_toolchain": {"type": "string", "pattern": "^leanprover/lean4:v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+            "lean_toolchain": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^leanprover/lean4:v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+            },
             "dependencies": {"type": "array", "maxItems": MAX_DEPENDENCIES, "items": {"type": "object", "additionalProperties": false, "required": ["name", "revision"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 128}, "revision": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"}}}},
+            "dependency_preparation": {"enum": ["mathlib_cache_get"]},
             "import_manifest": {"type": "array", "maxItems": MAX_IMPORTS, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
             "project_configuration_hashes": {"type": "object", "minProperties": 1, "maxProperties": MAX_CONFIGS, "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
             "platform": {"enum": ["linux_x86_64", "windows_x86_64"]},
             "trust_profile": {"enum": ["local", "publication"]},
-            "verifier_command": {"type": "object", "additionalProperties": false, "required": ["executable", "arguments"], "properties": {"executable": {"const": "lean"}, "arguments": {"const": ["{module_path}"]}}},
+            "verifier_command": {
+                "oneOf": [
+                    {"type": "object", "additionalProperties": false, "required": ["executable", "arguments"], "properties": {"executable": {"const": "lean"}, "arguments": {"const": ["{module_path}"]}}},
+                    {"type": "object", "additionalProperties": false, "required": ["executable", "arguments"], "properties": {"executable": {"const": "lake"}, "arguments": {"const": ["env", "lean", "{module_path}"]}}}
+                ]
+            },
             "resource_limits": {"type": "object", "additionalProperties": false, "required": ["timeout_seconds", "max_output_bytes", "max_memory_bytes", "concurrency"], "properties": {"timeout_seconds": {"type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECONDS}, "max_output_bytes": {"type": "integer", "minimum": 1, "maximum": MAX_OUTPUT_BYTES}, "max_memory_bytes": {"type": ["integer", "null"], "minimum": MIN_MEMORY_BYTES, "maximum": MAX_MEMORY_BYTES}, "concurrency": {"type": "integer", "minimum": 1, "maximum": MAX_CONCURRENCY}}},
             "network_access": {"const": false},
             "working_directory_policy": {"const": "temporary_workspace"}
@@ -187,11 +258,16 @@ pub fn environment_schema() -> Value {
 fn validate_toolchain(toolchain: &str) -> Result<(), AppError> {
     let Some(version) = toolchain.strip_prefix("leanprover/lean4:v") else {
         return Err(environment_error(
-            "Lean toolchain must use the pinned `leanprover/lean4:vX.Y.Z` form",
+            "Lean toolchain must use the pinned `leanprover/lean4:vX.Y.Z[-prerelease]` form",
             "Pin an exact Lean release without channels or local paths.",
         ));
     };
-    let parts = version.split('.').collect::<Vec<_>>();
+    let (release, prerelease) = version
+        .split_once('-')
+        .map_or((version, None), |(release, prerelease)| {
+            (release, Some(prerelease))
+        });
+    let parts = release.split('.').collect::<Vec<_>>();
     if parts.len() != 3
         || parts
             .iter()
@@ -200,6 +276,21 @@ fn validate_toolchain(toolchain: &str) -> Result<(), AppError> {
         return Err(environment_error(
             "Lean toolchain version must contain exactly three numeric components",
             "Use an exact release such as `leanprover/lean4:v4.32.0`.",
+        ));
+    }
+    if prerelease.is_some_and(|prerelease| {
+        prerelease.is_empty()
+            || prerelease.len() > 64
+            || prerelease.split('.').any(|identifier| {
+                identifier.is_empty()
+                    || !identifier
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            })
+    }) {
+        return Err(environment_error(
+            "Lean toolchain prerelease identifier is malformed",
+            "Pin an exact release candidate such as `leanprover/lean4:v4.32.0-rc1`.",
         ));
     }
     Ok(())
@@ -341,7 +432,7 @@ fn validate_resource_limits(limits: &ResourceLimits) -> Result<(), AppError> {
     {
         return Err(environment_error(
             "environment resource limits are zero or outside the reviewed bounds",
-            "Use timeout 1..3600 seconds, output 1..16777216 bytes, optional memory 64 MiB..16 GiB, and concurrency 1..16.",
+            "Use timeout 1..21600 seconds, output 1..16777216 bytes, optional memory 64 MiB..16 GiB, and concurrency 1..16.",
         ));
     }
     Ok(())
@@ -364,6 +455,7 @@ mod tests {
                 name: "mathlib".to_owned(),
                 revision: "1".repeat(40),
             }],
+            dependency_preparation: None,
             import_manifest: vec!["Mathlib".to_owned(), "Mathlib.Data.Nat.Prime".to_owned()],
             project_configuration_hashes: BTreeMap::from([
                 ("lake-manifest.json".to_owned(), "2".repeat(64)),
@@ -399,6 +491,79 @@ mod tests {
     }
 
     #[test]
+    fn publication_environment_requires_a_memory_bound() {
+        let mut publication = manifest();
+        publication.trust_profile = TrustProfile::Publication;
+        assert_eq!(
+            publication
+                .validate()
+                .expect_err("unbounded publication environment rejected")
+                .code,
+            "MCL_ENVIRONMENT_INVALID"
+        );
+        publication.resource_limits.max_memory_bytes = Some(12 * 1_073_741_824);
+        publication
+            .validate()
+            .expect("bounded publication environment");
+    }
+
+    #[test]
+    fn exact_prerelease_toolchains_are_valid_and_hash_distinctly() {
+        let release = manifest();
+        let mut release_candidate = release.clone();
+        release_candidate.lean_toolchain = "leanprover/lean4:v4.32.0-rc1".to_owned();
+
+        release_candidate
+            .validate()
+            .expect("exact Lean release candidate validates");
+        assert_ne!(
+            release.environment_hash().expect("release hash"),
+            release_candidate
+                .environment_hash()
+                .expect("release-candidate hash")
+        );
+    }
+
+    #[test]
+    fn lake_projects_use_the_closed_elaboration_command_and_six_hour_bound() {
+        let mut project = manifest();
+        project
+            .project_configuration_hashes
+            .insert("lakefile.lean".to_owned(), "4".repeat(64));
+        project.verifier_command = VerifierCommandTemplate {
+            executable: VerifierExecutable::Lake,
+            arguments: vec![
+                VerifierArgument::Env,
+                VerifierArgument::Lean,
+                VerifierArgument::ModulePath,
+            ],
+        };
+        project.dependency_preparation = Some(DependencyPreparation::MathlibCacheGet);
+        project.resource_limits.timeout_seconds = MAX_TIMEOUT_SECONDS;
+        project.validate().expect("closed Lake project environment");
+
+        let mut mismatched = project.clone();
+        mismatched.verifier_command.arguments = vec![VerifierArgument::ModulePath];
+        assert_eq!(
+            mismatched
+                .validate()
+                .expect_err("Lake without closed env lean arguments rejected")
+                .code,
+            "MCL_ENVIRONMENT_INVALID"
+        );
+
+        let mut excessive = project;
+        excessive.resource_limits.timeout_seconds = MAX_TIMEOUT_SECONDS + 1;
+        assert_eq!(
+            excessive
+                .validate()
+                .expect_err("timeout above six hours rejected")
+                .code,
+            "MCL_ENVIRONMENT_INVALID"
+        );
+    }
+
+    #[test]
     fn committed_schema_and_golden_environment_identity_are_stable() {
         let committed_schema: Value = serde_json::from_str(include_str!(
             "../../schemas/environment/environment-1.schema.json"
@@ -428,6 +593,32 @@ mod tests {
         assert!(no_imports.dependencies.is_empty());
         assert!(no_imports.import_manifest.is_empty());
         assert_eq!(no_imports.trust_profile, TrustProfile::Local);
+
+        let project: EnvironmentManifest = serde_json::from_str(include_str!(
+            "../../fixtures/environment/lean-4.32-rc1-bh-project-linux.json"
+        ))
+        .expect("Pilot C project environment fixture");
+        let expected_project =
+            include_str!("../../fixtures/environment/lean-4.32-rc1-bh-project-linux.sha256").trim();
+        project.validate().expect("project fixture validates");
+        assert_eq!(
+            project.environment_hash().expect("project fixture hash"),
+            expected_project
+        );
+        assert_eq!(
+            project.dependency_preparation,
+            Some(DependencyPreparation::MathlibCacheGet)
+        );
+        assert_eq!(
+            project.verifier_command.executable,
+            VerifierExecutable::Lake
+        );
+        assert_eq!(project.trust_profile, TrustProfile::Publication);
+        assert_eq!(
+            project.resource_limits.max_memory_bytes,
+            Some(12 * 1_073_741_824)
+        );
+        assert_eq!(project.resource_limits.concurrency, 1);
     }
 
     #[test]
@@ -466,6 +657,19 @@ mod tests {
             unsorted.validate().expect_err("unsorted imports").code,
             "MCL_ENVIRONMENT_INVALID"
         );
+
+        for invalid_toolchain in [
+            "leanprover/lean4:v4.32.0-",
+            "leanprover/lean4:v4.32.0-rc.1/../../local",
+            "leanprover/lean4:nightly",
+        ] {
+            let mut invalid = manifest();
+            invalid.lean_toolchain = invalid_toolchain.to_owned();
+            assert_eq!(
+                invalid.validate().expect_err("unsafe toolchain").code,
+                "MCL_ENVIRONMENT_INVALID"
+            );
+        }
     }
 
     #[test]

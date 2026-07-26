@@ -1,37 +1,51 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://mnehmos.ai/mathos/schemas/publication/stage/1",
-  "title": "MathOS Publication Stage v1",
-  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "report_artifact_hash",
-    "report_byte_size",
-    "retained_closure_artifact_hash",
-    "retained_closure_byte_size",
-    "attestation_bundle_artifact_hash",
-    "attestation_bundle_byte_size",
-    "retained_artifacts",
-    "authoritative"
-  ],
   "properties": {
-    "schema_version": { "const": "publication_stage/1" },
-    "report_artifact_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "report_byte_size": { "type": "integer", "minimum": 1, "maximum": 16777216 },
-    "retained_closure_artifact_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "retained_closure_byte_size": { "type": "integer", "minimum": 1, "maximum": 16777216 },
-    "attestation_bundle_artifact_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "attestation_bundle_byte_size": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+    "attestation_bundle_artifact_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "attestation_bundle_byte_size": {
+      "maximum": 16777216,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "authoritative": {
+      "const": false
+    },
+    "report_artifact_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "report_byte_size": {
+      "maximum": 16777216,
+      "minimum": 1,
+      "type": "integer"
+    },
     "retained_artifacts": {
-      "type": "array",
-      "minItems": 25,
-      "maxItems": 25,
       "items": {
-        "type": "object",
         "additionalProperties": false,
-        "required": ["role", "path", "identity_hash", "artifact_hash", "byte_size"],
         "properties": {
+          "artifact_hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "byte_size": {
+            "maximum": 16777216,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "identity_hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "path": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
           "role": {
             "enum": [
               "audit_job",
@@ -45,6 +59,7 @@
               "environment_manifest",
               "formalization_version",
               "lean_module",
+              "lean_project_archive",
               "proof_closure_evidence",
               "protected_audit_stderr",
               "protected_audit_stdout",
@@ -60,14 +75,45 @@
               "verifier_stderr",
               "verifier_stdout"
             ]
-          },
-          "path": { "type": "string", "minLength": 1, "maxLength": 256 },
-          "identity_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-          "artifact_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-          "byte_size": { "type": "integer", "minimum": 0, "maximum": 16777216 }
-        }
-      }
+          }
+        },
+        "required": [
+          "role",
+          "path",
+          "identity_hash",
+          "artifact_hash",
+          "byte_size"
+        ],
+        "type": "object"
+      },
+      "maxItems": 25,
+      "minItems": 20,
+      "type": "array"
     },
-    "authoritative": { "const": false }
-  }
+    "retained_closure_artifact_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "retained_closure_byte_size": {
+      "maximum": 16777216,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "publication_stage/1"
+    }
+  },
+  "required": [
+    "schema_version",
+    "report_artifact_hash",
+    "report_byte_size",
+    "retained_closure_artifact_hash",
+    "retained_closure_byte_size",
+    "attestation_bundle_artifact_hash",
+    "attestation_bundle_byte_size",
+    "retained_artifacts",
+    "authoritative"
+  ],
+  "title": "MathOS Publication Stage v1",
+  "type": "object"
 }

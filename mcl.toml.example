@@ -5,6 +5,7 @@ artifacts = "artifacts"
 
 [verifier]
 lean_command = "lean"
+lake_command = "lake"
 timeout_seconds = 120
 max_output_bytes = 1048576
 concurrency = 1

@@ -24,6 +24,17 @@ The identity includes:
 
 It excludes timestamps, database row numbers, local paths, machine names, and host-specific secrets.
 
+For a bound Lake project, the verifier maps the manifest's concurrency value to the
+application-owned `LEAN_NUM_THREADS` process environment used by Lake's task manager. The worker
+clears the inherited process environment first, so the caller cannot add a build flag or override
+that value through the host environment.
+
+A `publication` trust profile must declare `max_memory_bytes`. It is executable only on the
+matching Linux worker, where the proof build and verifier-controlled driver run through the fixed
+Bubblewrap network namespace and `prlimit` address-space boundary. Registering the profile does
+not prove those controls ran; only the resulting typed report records whether the successful inner
+execution reached both boundaries.
+
 Registering an environment does not execute Lean. It does not establish elaboration, kernel correctness, statement fidelity, acceptable axioms, clean rebuild, or publication readiness.
 
 ## Register from CLI
@@ -69,6 +80,7 @@ Registration fails closed when a manifest contains:
 - unknown fields such as a machine name;
 - duplicate or noncanonical dependency and import ordering;
 - network access;
+- a publication profile without an exact memory limit;
 - zero or excessive resource limits;
 - malformed or non-SHA-256 project configuration hashes.
 
