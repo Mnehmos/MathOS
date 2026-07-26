@@ -1221,6 +1221,7 @@ jq -e \
   --arg commit "$PUBLICATION_SOURCE_COMMIT_SHA" \
   --arg tree "$PUBLICATION_SOURCE_TREE_SHA" \
   --arg outcome "$PUBLICATION_OUTCOME" \
+  --arg project_hash "$project_archive_hash" \
   --argjson project_mode "$PROJECT_MODE" '
   .dry_run == false and
   .proposed_artifact_hash == $request_hash and
