@@ -1062,7 +1062,11 @@ jq -e \
   .report.classification == "elaborated" and
   .report.exit_code == 0 and
   .report.forbidden_source_token == null and
-  .report.observed_axioms == $expected_axioms and
+  (if $project_mode then
+    .report.observed_axioms == $expected_axioms
+  else
+    (.report | has("observed_axioms") | not)
+  end) and
   (if $project_mode then
     .report.project == {
       archive_artifact_hash: $project_hash,
