@@ -709,16 +709,33 @@ fn publication_sandbox_arguments(
     network_isolated: bool,
     mathlib_cache_directory: Option<&str>,
 ) -> Vec<OsString> {
-    let mut sandbox_arguments = [
-        "-n",
-        "/usr/bin/bwrap",
-        "--unshare-all",
-        "--die-with-parent",
-        "--new-session",
-    ]
-    .into_iter()
-    .map(OsString::from)
-    .collect::<Vec<_>>();
+    // Preserve the worker's host identity across sudo. Launching Bubblewrap as root
+    // maps the requested sandbox uid to host root, which cannot access or update
+    // runner-owned private mount sources after the user namespace is created.
+    let mut sandbox_arguments = ["-n", "-u"]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+    sandbox_arguments.push(OsString::from(format!("#{uid}")));
+    sandbox_arguments.push(OsString::from("-g"));
+    sandbox_arguments.push(OsString::from(format!("#{gid}")));
+    sandbox_arguments.extend(
+        [
+            "--",
+            "/usr/bin/bwrap",
+            "--unshare-all",
+            "--die-with-parent",
+            "--new-session",
+            "--cap-drop",
+            "ALL",
+            "--uid",
+        ]
+        .into_iter()
+        .map(OsString::from),
+    );
+    sandbox_arguments.push(OsString::from(uid));
+    sandbox_arguments.push(OsString::from("--gid"));
+    sandbox_arguments.push(OsString::from(gid));
     if !network_isolated {
         sandbox_arguments.push(OsString::from("--share-net"));
     }
@@ -747,9 +764,6 @@ fn publication_sandbox_arguments(
     sandbox_arguments.push(OsString::from("--ro-bind"));
     sandbox_arguments.push(toolchain_root.as_os_str().to_owned());
     sandbox_arguments.push(OsString::from("/opt"));
-    // Bubblewrap handles setup in argument order. Open every host mount source while
-    // the sudo launcher can traverse it, then drop capabilities and identity before
-    // changing directory or executing the verifier.
     sandbox_arguments.extend(
         [
             "--proc",
@@ -764,20 +778,12 @@ fn publication_sandbox_arguments(
             "/run",
             "--tmpfs",
             "/tmp",
-            "--cap-drop",
-            "ALL",
-            "--gid",
+            "--chdir",
+            "/mnt",
+            "/usr/bin/prlimit",
         ]
         .into_iter()
         .map(OsString::from),
-    );
-    sandbox_arguments.push(OsString::from(gid));
-    sandbox_arguments.push(OsString::from("--uid"));
-    sandbox_arguments.push(OsString::from(uid));
-    sandbox_arguments.extend(
-        ["--chdir", "/mnt", "/usr/bin/prlimit"]
-            .into_iter()
-            .map(OsString::from),
     );
     sandbox_arguments.push(OsString::from(format!("--as={memory_limit}")));
     sandbox_arguments.push(OsString::from("--"));
@@ -1216,8 +1222,18 @@ mod tests {
         .map(|value| value.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
         assert_eq!(
-            &arguments[..4],
-            ["-n", "/usr/bin/bwrap", "--unshare-all", "--die-with-parent"]
+            &arguments[..9],
+            [
+                "-n",
+                "-u",
+                "#1001",
+                "-g",
+                "#1001",
+                "--",
+                "/usr/bin/bwrap",
+                "--unshare-all",
+                "--die-with-parent",
+            ]
         );
         let clear = arguments
             .iter()
@@ -1258,25 +1274,6 @@ mod tests {
             arguments
                 .windows(3)
                 .any(|values| values == ["--ro-bind", "elan", "/opt"])
-        );
-        let toolchain_mount = arguments
-            .windows(3)
-            .position(|values| values == ["--ro-bind", "elan", "/opt"])
-            .expect("exact toolchain mount");
-        let capability_drop = arguments
-            .windows(2)
-            .position(|values| values == ["--cap-drop", "ALL"])
-            .expect("capability drop");
-        let gid_drop = arguments
-            .windows(2)
-            .position(|values| values == ["--gid", "1001"])
-            .expect("group identity drop");
-        let uid_drop = arguments
-            .windows(2)
-            .position(|values| values == ["--uid", "1001"])
-            .expect("user identity drop");
-        assert!(
-            toolchain_mount < capability_drop && capability_drop < gid_drop && gid_drop < uid_drop
         );
         assert!(!arguments.iter().any(|value| value == "--share-net"));
         for masked in ["/home", "/root", "/run", "/tmp"] {
