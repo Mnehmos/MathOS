@@ -715,16 +715,10 @@ fn publication_sandbox_arguments(
         "--unshare-all",
         "--die-with-parent",
         "--new-session",
-        "--cap-drop",
-        "ALL",
-        "--uid",
     ]
     .into_iter()
     .map(OsString::from)
     .collect::<Vec<_>>();
-    sandbox_arguments.push(OsString::from(uid));
-    sandbox_arguments.push(OsString::from("--gid"));
-    sandbox_arguments.push(OsString::from(gid));
     if !network_isolated {
         sandbox_arguments.push(OsString::from("--share-net"));
     }
@@ -753,6 +747,9 @@ fn publication_sandbox_arguments(
     sandbox_arguments.push(OsString::from("--ro-bind"));
     sandbox_arguments.push(toolchain_root.as_os_str().to_owned());
     sandbox_arguments.push(OsString::from("/opt"));
+    // Bubblewrap handles setup in argument order. Open every host mount source while
+    // the sudo launcher can traverse it, then drop capabilities and identity before
+    // changing directory or executing the verifier.
     sandbox_arguments.extend(
         [
             "--proc",
@@ -767,12 +764,20 @@ fn publication_sandbox_arguments(
             "/run",
             "--tmpfs",
             "/tmp",
-            "--chdir",
-            "/mnt",
-            "/usr/bin/prlimit",
+            "--cap-drop",
+            "ALL",
+            "--gid",
         ]
         .into_iter()
         .map(OsString::from),
+    );
+    sandbox_arguments.push(OsString::from(gid));
+    sandbox_arguments.push(OsString::from("--uid"));
+    sandbox_arguments.push(OsString::from(uid));
+    sandbox_arguments.extend(
+        ["--chdir", "/mnt", "/usr/bin/prlimit"]
+            .into_iter()
+            .map(OsString::from),
     );
     sandbox_arguments.push(OsString::from(format!("--as={memory_limit}")));
     sandbox_arguments.push(OsString::from("--"));
@@ -1253,6 +1258,25 @@ mod tests {
             arguments
                 .windows(3)
                 .any(|values| values == ["--ro-bind", "elan", "/opt"])
+        );
+        let toolchain_mount = arguments
+            .windows(3)
+            .position(|values| values == ["--ro-bind", "elan", "/opt"])
+            .expect("exact toolchain mount");
+        let capability_drop = arguments
+            .windows(2)
+            .position(|values| values == ["--cap-drop", "ALL"])
+            .expect("capability drop");
+        let gid_drop = arguments
+            .windows(2)
+            .position(|values| values == ["--gid", "1001"])
+            .expect("group identity drop");
+        let uid_drop = arguments
+            .windows(2)
+            .position(|values| values == ["--uid", "1001"])
+            .expect("user identity drop");
+        assert!(
+            toolchain_mount < capability_drop && capability_drop < gid_drop && gid_drop < uid_drop
         );
         assert!(!arguments.iter().any(|value| value == "--share-net"));
         for masked in ["/home", "/root", "/run", "/tmp"] {
