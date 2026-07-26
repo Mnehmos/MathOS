@@ -4175,11 +4175,10 @@ impl Application {
         }
         let trust_binding =
             crate::domain::ReleaseTrustBinding::from_assessment(&promotion_assessment)?;
-        let mut fidelity_entries = fidelity_status
-            .history
-            .iter()
-            .map(|entry| (entry.evidence.evidence_id.clone(), entry.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let mut fidelity_entries = BTreeMap::from([(
+            fidelity_entry.evidence.evidence_id.clone(),
+            fidelity_entry.clone(),
+        )]);
 
         let mut evidence = BTreeMap::<String, EvidenceSnapshot>::new();
         for role in [
@@ -4199,9 +4198,10 @@ impl Application {
             authority_evidence.evidence_id.clone(),
             authority_evidence.clone(),
         );
-        for entry in fidelity_entries.values() {
-            evidence.insert(entry.evidence.evidence_id.clone(), entry.evidence.clone());
-        }
+        evidence.insert(
+            fidelity_entry.evidence.evidence_id.clone(),
+            fidelity_entry.evidence.clone(),
+        );
 
         let mut edges = BTreeMap::<String, EdgeSnapshot>::new();
         for hit in &path.edges {
@@ -4268,10 +4268,25 @@ impl Application {
                     "Rebuild the repair lifecycle from current exact evidence.",
                 ));
             }
-            for entry in original_fidelity.history {
-                evidence.insert(entry.evidence.evidence_id.clone(), entry.evidence.clone());
-                fidelity_entries.insert(entry.evidence.evidence_id.clone(), entry);
-            }
+            let fidelity_entry = original_fidelity
+                .history
+                .into_iter()
+                .find(|entry| {
+                    entry.evidence.evidence_id
+                        == package.package.refutation_witness.fidelity_evidence_id
+                })
+                .ok_or_else(|| {
+                    release_build_error(
+                        "MCL_RELEASE_LOGICAL_EDGE_INVALID",
+                        "counterexample package fidelity head disappeared during release projection",
+                        "Retry against unchanged exact fidelity evidence.",
+                    )
+                })?;
+            evidence.insert(
+                fidelity_entry.evidence.evidence_id.clone(),
+                fidelity_entry.evidence.clone(),
+            );
+            fidelity_entries.insert(fidelity_entry.evidence.evidence_id.clone(), fidelity_entry);
             repair_packages.insert(repair.counterexample_package_artifact_hash, package);
         }
         let mut pending = BTreeSet::new();
@@ -10103,7 +10118,23 @@ mod tests {
             "release-authority-promotion",
             false,
         )?;
-        add_fixture_verified_fidelity(&mut fixture, None, "release")?;
+        let superseded_fidelity =
+            add_fixture_verified_fidelity(&mut fixture, None, "release-superseded")?;
+        let current_fidelity =
+            add_fixture_verified_fidelity(&mut fixture, None, "release-current")?;
+        let superseded_fidelity_evidence = superseded_fidelity
+            .evidence
+            .expect("superseded fidelity evidence persists");
+        let current_fidelity_evidence = current_fidelity
+            .evidence
+            .expect("current fidelity evidence persists");
+        assert_eq!(
+            current_fidelity_evidence
+                .payload
+                .supersedes_evidence_id
+                .as_deref(),
+            Some(superseded_fidelity_evidence.evidence_id.as_str())
+        );
         let (source, claim, _) = fixture_fidelity_lineage(&fixture);
         let bh_source_content = fixture
             .application
@@ -10365,6 +10396,61 @@ mod tests {
         assert_eq!(
             trust.coverage_status,
             crate::domain::CoverageTrustStatus::Unknown
+        );
+        assert_eq!(
+            verified.manifest.publication.fidelity_evidence_id,
+            current_fidelity_evidence.evidence_id
+        );
+        let member_paths = verified
+            .manifest
+            .members
+            .iter()
+            .map(|member| member.path.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            member_paths.contains(
+                format!(
+                    "evidence/{}@{}.json",
+                    current_fidelity_evidence.evidence_id, current_fidelity_evidence.evidence_hash
+                )
+                .as_str()
+            )
+        );
+        assert!(
+            member_paths.contains(
+                format!(
+                    "reports/fidelity/{}@{}.json",
+                    current_fidelity_evidence.evidence_id, current_fidelity_evidence.evidence_hash
+                )
+                .as_str()
+            )
+        );
+        assert!(
+            member_paths
+                .iter()
+                .filter(|path| path.starts_with("reports/fidelity/"))
+                .count()
+                == 1
+        );
+        assert!(
+            !member_paths.contains(
+                format!(
+                    "evidence/{}@{}.json",
+                    superseded_fidelity_evidence.evidence_id,
+                    superseded_fidelity_evidence.evidence_hash
+                )
+                .as_str()
+            )
+        );
+        assert!(
+            !member_paths.contains(
+                format!(
+                    "reports/fidelity/{}@{}.json",
+                    superseded_fidelity_evidence.evidence_id,
+                    superseded_fidelity_evidence.evidence_hash
+                )
+                .as_str()
+            )
         );
         assert_eq!(verified.manifest.pedagogy.root, root_ref);
         let bh_artifact_path = format!("artifacts/{}", bh_source_content.artifact_hash);

@@ -724,12 +724,35 @@ fn validate_evidence(
             return Err(invalid_semantics("evidence snapshot closure mismatch"));
         }
     }
+    let retained_fidelity_heads = std::iter::once(&manifest.publication.fidelity_evidence_id)
+        .chain(
+            repair_witnesses
+                .iter()
+                .map(|witness| &witness.fidelity_evidence_id),
+        )
+        .collect::<BTreeSet<_>>();
+    let compact_fidelity_projection =
+        manifest.schema_version == crate::domain::RELEASE_MANIFEST_V2_SCHEMA_VERSION;
+    if compact_fidelity_projection
+        && snapshots.values().any(|evidence| {
+            evidence.payload.evidence_kind == crate::domain::EvidenceKind::StatementFidelityReview
+                && !retained_fidelity_heads.contains(&evidence.evidence_id)
+        })
+    {
+        return Err(invalid_semantics(
+            "v2 release contains fidelity evidence outside its exact current witnesses",
+        ));
+    }
     if snapshots.values().any(|evidence| {
         evidence
             .payload
             .supersedes_evidence_id
             .as_ref()
             .is_some_and(|id| !snapshots.contains_key(id))
+            && !(compact_fidelity_projection
+                && evidence.payload.evidence_kind
+                    == crate::domain::EvidenceKind::StatementFidelityReview
+                && retained_fidelity_heads.contains(&evidence.evidence_id))
     }) {
         return Err(invalid_semantics(
             "evidence supersession reference is absent from the release",

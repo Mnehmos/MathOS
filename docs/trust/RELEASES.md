@@ -54,6 +54,14 @@ Only after those checks pass does it replay `replay/Submission.lean`. The execut
 
 The returned `manifest_hash` is the SHA-256 of the exact canonical `manifest.json` bytes. It must remain identical after copying the bundle.
 
+`release_manifest/2` emits fidelity evidence snapshots and report copies only for the exact current
+publication witness and each retained repair witness. MathOS fully replays every underlying
+fidelity supersession chain before construction. Artifacts referenced by the bounded trust
+assessment remain in its CAS closure, but superseded evidence/report pairs cannot grow the release
+inventory. This keeps release size bounded independently of historical review count without
+deleting or reinterpreting canonical evidence. Legacy `release_manifest/1` bundles retain their
+original closed supersession semantics.
+
 ## Project into MathCorpus and MCIP
 
 `mcl release export` is a deterministic child projection of a verified portable release. It
