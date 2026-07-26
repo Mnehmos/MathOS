@@ -47,7 +47,7 @@ fn publication_profile_enforces_memory_and_network_controls() {
         serde_json::from_str(include_str!("../fixtures/environment/lean-4.32-local.json"))
             .expect("environment fixture JSON");
     environment_manifest["trust_profile"] = json!("publication");
-    environment_manifest["resource_limits"]["max_memory_bytes"] = json!(4_294_967_296_u64);
+    environment_manifest["resource_limits"]["max_memory_bytes"] = json!(12_884_901_888_u64);
     let environment = run(
         root.path(),
         &[
@@ -125,9 +125,26 @@ fn publication_profile_enforces_memory_and_network_controls() {
             "180".to_owned(),
         ],
     );
+    let publication_stderr = worked["report"]["stderr_artifact_hash"]
+        .as_str()
+        .filter(|hash| hash.len() == 64 && hash.is_ascii())
+        .and_then(|hash| {
+            fs::read(
+                root.path()
+                    .join(".mcl")
+                    .join("artifacts")
+                    .join("sha256")
+                    .join(&hash[..2])
+                    .join(&hash[2..4])
+                    .join(hash),
+            )
+            .ok()
+        })
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default();
     assert_eq!(
         worked["report"]["classification"], "elaborated",
-        "unexpected publication worker outcome: {worked:#}"
+        "unexpected publication worker outcome: {worked:#}\nretained stderr:\n{publication_stderr}"
     );
     assert_eq!(worked["report"]["exit_code"], 0);
     assert_eq!(worked["report"]["trust_profile"], "publication");
