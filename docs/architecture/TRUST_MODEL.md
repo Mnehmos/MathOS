@@ -79,6 +79,8 @@ interfaces return the same canonical representation.
 - Migration creates no synthetic definition, reuse, or coverage promotion.
 - Definition and reuse promotions are adjacent and predecessor-guarded; explicit demotions remain
   auditable. Coverage changes are reviewed classifications.
+- Offline assessment validation reconstructs every definition, reuse, and coverage
+  `trust_transition/1` request from the ordered axis history and recomputes its decision hash.
 - Release construction rejects an incomplete profile before writing a directory.
 - Offline verification recomputes the assessment and checks its subject, profile, statuses,
   evidence heads, artifact closure, and hash binding.

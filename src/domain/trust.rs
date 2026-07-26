@@ -570,7 +570,7 @@ impl TrustStatusSnapshot {
             KernelTrustStatus::ALL
                 .map(KernelTrustStatus::as_str)
                 .as_slice(),
-            false,
+            None,
         )?;
         validate_axis(
             &self.fidelity,
@@ -579,7 +579,7 @@ impl TrustStatusSnapshot {
             FidelityTrustStatus::ALL
                 .map(FidelityTrustStatus::as_str)
                 .as_slice(),
-            false,
+            None,
         )?;
         validate_axis(
             &self.definition,
@@ -588,7 +588,7 @@ impl TrustStatusSnapshot {
             DefinitionTrustStatus::ALL
                 .map(DefinitionTrustStatus::as_str)
                 .as_slice(),
-            true,
+            Some((&self.formalization, ReviewedTrustDimension::Definition)),
         )?;
         validate_axis(
             &self.reuse,
@@ -597,7 +597,7 @@ impl TrustStatusSnapshot {
             ReuseTrustStatus::ALL
                 .map(ReuseTrustStatus::as_str)
                 .as_slice(),
-            true,
+            Some((&self.formalization, ReviewedTrustDimension::Reuse)),
         )?;
         validate_axis(
             &self.coverage,
@@ -606,7 +606,7 @@ impl TrustStatusSnapshot {
             CoverageTrustStatus::ALL
                 .map(CoverageTrustStatus::as_str)
                 .as_slice(),
-            true,
+            Some((&self.formalization, ReviewedTrustDimension::Coverage)),
         )?;
         let expected = promotion_evaluations(self);
         if self.promotion != expected {
@@ -888,7 +888,7 @@ fn validate_axis<T: Copy + Eq>(
     default: T,
     as_str: fn(T) -> &'static str,
     allowed: &[&str],
-    enforce_reviewed_state_machine: bool,
+    reviewed: Option<(&ExactVersionReference, ReviewedTrustDimension)>,
 ) -> Result<(), AppError> {
     if axis.history.len() > MAX_TRUST_HISTORY
         || axis.head_decision_id.is_some() != axis.head_decision_hash.is_some()
@@ -897,20 +897,26 @@ fn validate_axis<T: Copy + Eq>(
     }
     let mut previous_key: Option<(i64, &str)> = None;
     let mut previous_status = as_str(default);
+    let mut predecessor_transition_id = None;
     for decision in &axis.history {
         decision.validate(allowed)?;
         let key = (decision.decided_at, decision.decision_id.as_str());
         if previous_key.is_some_and(|previous| previous >= key)
             || decision.from_status != previous_status
-            || (enforce_reviewed_state_machine
-                && !ReviewedTrustStatus::from_name(&decision.from_status)
-                    .zip(ReviewedTrustStatus::from_name(&decision.to_status))
-                    .is_some_and(|(from, to)| from.valid_transition(to)))
+            || reviewed.is_some_and(|(formalization, dimension)| {
+                !reviewed_decision_hash_matches(
+                    decision,
+                    formalization,
+                    dimension,
+                    predecessor_transition_id,
+                )
+            })
         {
             return Err(trust_status_error());
         }
         previous_key = Some(key);
         previous_status = &decision.to_status;
+        predecessor_transition_id = Some(decision.decision_id.as_str());
     }
     if axis.history.is_empty() {
         if axis.status != default
@@ -942,6 +948,33 @@ fn validate_axis<T: Copy + Eq>(
         return Err(trust_status_error());
     }
     Ok(())
+}
+
+fn reviewed_decision_hash_matches(
+    decision: &TrustDecision,
+    formalization: &ExactVersionReference,
+    dimension: ReviewedTrustDimension,
+    predecessor_transition_id: Option<&str>,
+) -> bool {
+    let Some((from_status, to_status)) = ReviewedTrustStatus::from_name(&decision.from_status)
+        .zip(ReviewedTrustStatus::from_name(&decision.to_status))
+    else {
+        return false;
+    };
+    let request = TrustTransitionRequest {
+        schema_version: TRUST_TRANSITION_SCHEMA_VERSION.to_owned(),
+        formalization: formalization.clone(),
+        dimension,
+        from_status,
+        to_status,
+        reviewer_identity: decision.reviewer_identity.clone(),
+        evidence_artifact_hashes: decision.evidence_artifact_hashes.clone(),
+        reason: decision.reason.clone(),
+        predecessor_transition_id: predecessor_transition_id.map(ToOwned::to_owned),
+    };
+    request
+        .transition_hash()
+        .is_ok_and(|hash| hash == decision.decision_hash)
 }
 
 fn definition_status(status: ReviewedTrustStatus) -> Option<DefinitionTrustStatus> {
@@ -1138,6 +1171,43 @@ mod tests {
         }
     }
 
+    fn reviewed_decision(
+        id_suffix: u8,
+        dimension: ReviewedTrustDimension,
+        from_status: ReviewedTrustStatus,
+        to_status: ReviewedTrustStatus,
+        decided_at: i64,
+        predecessor: Option<&TrustDecision>,
+    ) -> TrustDecision {
+        let decision_id = format!("00000000-0000-4000-8000-{id_suffix:012}");
+        let reviewer_identity = "independent-reviewer".to_owned();
+        let evidence_artifact_hashes = vec!["f".repeat(64)];
+        let reason = "Exact evidence-backed review decision.".to_owned();
+        let request = TrustTransitionRequest {
+            schema_version: TRUST_TRANSITION_SCHEMA_VERSION.to_owned(),
+            formalization: reference(),
+            dimension,
+            from_status,
+            to_status,
+            reviewer_identity: reviewer_identity.clone(),
+            evidence_artifact_hashes: evidence_artifact_hashes.clone(),
+            reason: reason.clone(),
+            predecessor_transition_id: predecessor.map(|decision| decision.decision_id.clone()),
+        };
+        TrustDecision {
+            decision_id,
+            decision_hash: request
+                .transition_hash()
+                .expect("valid reviewed transition"),
+            from_status: from_status.as_str().to_owned(),
+            to_status: to_status.as_str().to_owned(),
+            decided_at,
+            reviewer_identity,
+            evidence_artifact_hashes,
+            reason,
+        }
+    }
+
     fn axis<T>(status: T, history: Vec<TrustDecision>) -> TrustAxisSnapshot<T> {
         let (head_decision_id, head_decision_hash) =
             history.last().map_or((None, None), |decision| {
@@ -1167,12 +1237,90 @@ mod tests {
             reuse: axis(ReuseTrustStatus::Experimental, Vec::new()),
             coverage: axis(
                 CoverageTrustStatus::FullTheorem,
-                vec![decision(2, "unknown", "full_theorem", 2)],
+                vec![reviewed_decision(
+                    2,
+                    ReviewedTrustDimension::Coverage,
+                    ReviewedTrustStatus::Unknown,
+                    ReviewedTrustStatus::FullTheorem,
+                    2,
+                    None,
+                )],
             ),
             promotion: Vec::new(),
         };
         snapshot.promotion = promotion_evaluations(&snapshot);
         snapshot
+    }
+
+    #[test]
+    fn trust_snapshots_recompute_reviewed_decision_hashes_and_predecessors() {
+        let first = reviewed_decision(
+            4,
+            ReviewedTrustDimension::Reuse,
+            ReviewedTrustStatus::Experimental,
+            ReviewedTrustStatus::CampaignSpecific,
+            3,
+            None,
+        );
+        let second = reviewed_decision(
+            5,
+            ReviewedTrustDimension::Reuse,
+            ReviewedTrustStatus::CampaignSpecific,
+            ReviewedTrustStatus::Candidate,
+            4,
+            Some(&first),
+        );
+        let mut snapshot = adversarial_snapshot();
+        snapshot.reuse = axis(
+            ReuseTrustStatus::Candidate,
+            vec![first.clone(), second.clone()],
+        );
+        snapshot.promotion = promotion_evaluations(&snapshot);
+        snapshot
+            .validate()
+            .expect("exact reviewed transition hashes validate");
+
+        let mut changed_reason = snapshot.clone();
+        changed_reason.reuse.history[1]
+            .reason
+            .push_str(" Substituted.");
+        assert_eq!(
+            changed_reason
+                .validate()
+                .expect_err("changed reviewed reason must invalidate its decision hash")
+                .code,
+            "MCL_TRUST_STATUS_INVALID"
+        );
+
+        let mut changed_formalization = snapshot.clone();
+        changed_formalization.formalization.version_hash = "b".repeat(64);
+        assert_eq!(
+            changed_formalization
+                .validate()
+                .expect_err("changed formalization must invalidate reviewed decision hashes")
+                .code,
+            "MCL_TRUST_STATUS_INVALID"
+        );
+
+        let wrong_predecessor = reviewed_decision(
+            5,
+            ReviewedTrustDimension::Reuse,
+            ReviewedTrustStatus::CampaignSpecific,
+            ReviewedTrustStatus::Candidate,
+            4,
+            None,
+        );
+        let mut changed_predecessor = snapshot;
+        changed_predecessor.reuse.history[1].decision_hash =
+            wrong_predecessor.decision_hash.clone();
+        changed_predecessor.reuse.head_decision_hash = Some(wrong_predecessor.decision_hash);
+        assert_eq!(
+            changed_predecessor
+                .validate()
+                .expect_err("wrong reviewed predecessor must invalidate the decision hash")
+                .code,
+            "MCL_TRUST_STATUS_INVALID"
+        );
     }
 
     #[test]
